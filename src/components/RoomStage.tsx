@@ -81,7 +81,7 @@ function hits(b: Ball, px: number, py: number) {
 }
 
 /** Wygląd osoby, rozgłaszany przez Presence. */
-type Meta = { at: number; color: string; nick: string | null };
+type Meta = { at: number; color: string; nick: string | null; x?: number; y?: number; d?: unknown };
 /** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek. */
 type Pos = { x: number; y: number; d: Dir };
 type Others = Record<string, Meta & Pos>;
@@ -223,6 +223,8 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     const my = Math.min(SPAWN_MARGIN, freeH / 4);
     let x = mx + Math.random() * (freeW - 2 * mx);
     let y = TAG_H + my + Math.random() * (freeH - 2 * my);
+    // Spawn znany od razu, żeby pierwsze wysłanie / Presence nie niosło pozycji ze środka.
+    myPos.current = { ...clampPos(x, y), d: DIR_DOWN };
     let last = performance.now();
     let lastSent = 0;
     let dirty = false;
@@ -497,13 +499,15 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
           if (k === key) continue;
           const latest = metas.reduce<Meta | null>((b, m) => (b && b.at >= m.at ? b : m), null);
           if (!latest) continue;
+          // Pozycja z broadcastu jest świeższa; bez niej bierzemy tę z Presence (dołączenie).
+          if (!posRef.current[k]) {
+            if (!Number.isFinite(latest.x) || !Number.isFinite(latest.y)) continue;
+            posRef.current[k] = { ...clampPos(latest.x!, latest.y!), d: asDir(latest.d) };
+          }
           next[k] = {
             ...latest,
             color: safeColor(latest.color),
-            ...(posRef.current[k] ?? {
-              ...clampPos(WORLD_W / 2, WORLD_H / 2),
-              d: DIR_DOWN,
-            }),
+            ...posRef.current[k],
           };
         }
         for (const k of Object.keys(posRef.current)) if (!next[k]) delete posRef.current[k];
@@ -516,7 +520,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       })
       .subscribe(async (status) => {
         if (status !== "SUBSCRIBED") return;
-        await channel.track({ ...metaRef.current, at: Date.now() });
+        await channel.track({ ...metaRef.current, ...myPos.current, at: Date.now() });
         sendPos();
       });
 
@@ -539,7 +543,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     colorRef.current = color;
     metaRef.current = { at: Date.now(), color, nick };
     const channel = channelRef.current;
-    if (channel?.state === "joined") void channel.track(metaRef.current);
+    if (channel?.state === "joined") void channel.track({ ...metaRef.current, ...myPos.current });
   }, [color, nick]);
 
   // Warstwa na cały ekran, pod treścią strony: postacie są „za” tekstem i czatem, lekko przygaszone.
