@@ -3,6 +3,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useEffect, useRef, useState } from "react";
 import { DIR_DOWN, type Dir, PixelPerson } from "@/components/PixelPerson";
 import { getSupabase } from "@/lib/supabase";
+import { useAccountLock } from "@/lib/useAccountLock";
 import { safeColor, useMyProfile } from "@/lib/useProfile";
 import { useSession } from "@/lib/useSession";
 
@@ -91,8 +92,6 @@ type Meta = {
   nick: string | null;
   /** Id zalogowanego użytkownika (null bez konta) — jedno konto to jedna postać. */
   user?: string | null;
-  /** Kiedy ta karta przejęła konto — nowsza karta tego samego konta wypiera starszą. */
-  claim?: number;
   x?: number;
   y?: number;
   d?: unknown;
@@ -220,11 +219,10 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   // Klucz tej karty w kanale; pozycje innych trzymamy osobno od Presence.
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
-  const metaRef = useRef<Meta>({ at: 0, color, nick, user: userId, claim: 0 });
-  const claimRef = useRef(0);
-  // Czy ta karta steruje postacią; false, gdy nowsza karta tego konta przejęła sesję.
+  const metaRef = useRef<Meta>({ at: 0, color, nick, user: userId });
+  // Czy ta karta steruje postacią; false, gdy nowsza karta tego konta (w dowolnym pokoju) przejęła konto.
   const activeRef = useRef(true);
-  const [superseded, setSuperseded] = useState(false);
+  const { superseded, reclaim } = useAccountLock(userId);
   // Pozycja z bazy czeka tu na najbliższą klatkę pętli ruchu.
   const spawnRef = useRef<Pos | null>(null);
   // Zapisu pozycji nie wolno zacząć przed wczytaniem starej — inaczej losowy start ją nadpisze.
@@ -503,7 +501,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!activeRef.current || typing(e.target) || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (!activeRef.current || document.documentElement.dataset.stale || typing(e.target) || e.altKey || e.ctrlKey || e.metaKey) return;
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
         if (!e.repeat && chargeStart === null) {
@@ -556,7 +554,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     if (!sb || !ready || !spawned) return;
     const key = crypto.randomUUID();
     keyRef.current = key;
-    const channel = sb.channel(`world2:${roomSlug}`, {
+    const channel = sb.channel(`world3:${roomSlug}`, {
       config: { presence: { key } },
     });
     channelRef.current = channel;
@@ -608,24 +606,16 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       })
       .on("presence", { event: "sync" }, () => {
         const next: Others = {};
-        // Jedno konto = jedna postać: kolejne karty tego samego użytkownika pomijamy
-        // (zostaje ta, która przejęła konto najpóźniej), a inne karty własnego konta w ogóle nie są „innymi”.
-        const claimOf = (m: Meta) => m.claim ?? m.at;
+        // Jedno konto = jedna postać: o tym, która karta jest aktywna, decyduje useAccountLock
+        // (wyparta karta robi untrack). Gdyby na moment zostały dwie, pokazujemy najświeższą,
+        // a własne konto nigdy nie jest „innym”.
         const byUser = new Map<string, { k: string; at: number }>();
         const state = channel.presenceState<Meta>();
         for (const [k, metas] of Object.entries(state)) {
-          const m = metas.reduce<Meta | null>((b, x) => (b && claimOf(b) >= claimOf(x) ? b : x), null);
+          const m = metas.reduce<Meta | null>((b, x) => (b && b.at >= x.at ? b : x), null);
           if (!m?.user) continue;
           const seen = byUser.get(m.user);
-          if (!seen || claimOf(m) > seen.at) byUser.set(m.user, { k, at: claimOf(m) });
-        }
-        // Nowsza karta tego samego konta przejęła postać — ta przestaje nią sterować.
-        const me = userIdRef.current;
-        const mine = byUser.get(me ?? "");
-        if (me && activeRef.current && mine && mine.k !== key && mine.at > claimRef.current) {
-          activeRef.current = false;
-          setSuperseded(true);
-          void channel.untrack();
+          if (!seen || m.at > seen.at) byUser.set(m.user, { k, at: m.at });
         }
         for (const [k, metas] of Object.entries(state)) {
           if (k === key) continue;
@@ -653,15 +643,12 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       })
       .subscribe(async (status) => {
         if (status !== "SUBSCRIBED") return;
-        claimRef.current = Date.now();
-        metaRef.current = { ...metaRef.current, claim: claimRef.current };
+        if (!activeRef.current) return;
         await channel.track({ ...metaRef.current, ...myPos.current, at: Date.now() });
         sendPos();
       });
 
     return () => {
-      activeRef.current = true;
-      setSuperseded(false);
       channelRef.current = null;
       posRef.current = {};
       chargingRef.current = {};
@@ -673,20 +660,28 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   // „Play here” w wypartej karcie: bierzemy postać z miejsca, gdzie zostawiła ją druga karta,
   // i przejmujemy konto z powrotem (tamta karta zostaje wyparta).
   const resume = async () => {
-    const channel = channelRef.current;
-    if (!channel || !userId) return;
+    if (!userId) return;
     const p = await fetchSpawn(userId, roomSlug);
     if (p) {
       myPos.current = p;
       spawnRef.current = p;
     }
-    claimRef.current = Date.now();
-    metaRef.current = { ...metaRef.current, claim: claimRef.current };
     activeRef.current = true;
-    setSuperseded(false);
+    await reclaim();
+    const channel = channelRef.current;
+    if (!channel) return;
     await channel.track({ ...metaRef.current, ...myPos.current, at: Date.now() });
     channel.send({ type: "broadcast", event: "pos", payload: { k: keyRef.current, ...myPos.current } });
   };
+
+  // Wyparta karta przestaje sterować postacią i znika z pokoju.
+  useEffect(() => {
+    activeRef.current = !superseded;
+    if (superseded) {
+      for (const k of Object.keys(chargingRef.current)) delete chargingRef.current[k];
+      void channelRef.current?.untrack();
+    }
+  }, [superseded]);
 
   // Pętla rysowania korzysta z aktualnej listy osób i własnego koloru bez przebudowy efektu.
   useEffect(() => {
@@ -697,7 +692,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   useEffect(() => {
     colorRef.current = color;
     userIdRef.current = userId;
-    metaRef.current = { at: Date.now(), color, nick, user: userId, claim: claimRef.current };
+    metaRef.current = { at: Date.now(), color, nick, user: userId };
     const channel = channelRef.current;
     if (channel?.state === "joined" && activeRef.current) void channel.track({ ...metaRef.current, ...myPos.current });
   }, [color, nick, userId]);
@@ -725,11 +720,12 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       </div>
     )}
     {superseded && (
+      <div className="fixed inset-0 z-40 flex items-end justify-center bg-zinc-950/40 pb-6 backdrop-blur-[2px]">
       <div
         role="alert"
-        className="fixed bottom-6 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-full bg-zinc-900/90 px-4 py-2 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100/95 dark:text-zinc-900"
+        className="flex items-center gap-3 rounded-full bg-zinc-900/90 px-4 py-2 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100/95 dark:text-zinc-900"
       >
-        <span>Your character is active in another window.</span>
+        <span>Your account is active in another window.</span>
         <button
           type="button"
           onClick={() => void resume()}
@@ -737,6 +733,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
         >
           Play here
         </button>
+      </div>
       </div>
     )}
     <div ref={stageRef} className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
