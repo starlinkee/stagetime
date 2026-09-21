@@ -86,7 +86,7 @@ function ProfileForm({
     <div className="flex flex-col gap-2">
       <span className="text-zinc-400">Nickname</span>
       <span className="text-zinc-200">{nickname}</span>
-      <span className="text-xs text-zinc-600">Taken from your Discord account.</span>
+      <span className="text-xs text-zinc-600">Taken from your Discord account at sign-up.</span>
       <span className="mt-1 text-zinc-400">Character color</span>
       <div className="flex items-end gap-3">
         <PixelPerson color={color} size={4} />

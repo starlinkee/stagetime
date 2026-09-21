@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthButton } from "@/components/AuthButton";
 import { PresenceBar } from "@/components/PresenceBar";
+import { VersionWatcher } from "@/components/VersionWatcher";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -31,6 +32,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         </header>
         {children}
         <PresenceBar />
+        <VersionWatcher />
       </body>
     </html>
   );

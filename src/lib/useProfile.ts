@@ -84,7 +84,7 @@ export function useMyProfile(): MyProfile {
         // Brak wiersza (konto sprzed migracji 0002) → zostaje nazwa od dostawcy.
         setLoaded({
           userId,
-          nickname: fallback ?? data?.nickname ?? "User",
+          nickname: data?.nickname ?? fallback ?? "User",
           color: safeColor(data?.color),
         });
       });
@@ -102,16 +102,12 @@ export function useMyProfile(): MyProfile {
     return () => saved.removeEventListener("saved", onSaved);
   }, [userId]);
 
+  const currentNickname = (loaded?.userId === userId ? loaded.nickname : fallback) ?? "User";
+
   const save = useCallback(
     async (color: string) => {
       // Nowa próba zaczyna z czystym kontem — inaczej zostaje błąd z wczytywania.
       setError(null);
-      const value = fallback?.trim() ?? "";
-      const invalid = validateNickname(value);
-      if (invalid) {
-        setError(invalid);
-        return false;
-      }
       if (!COLOR_RE.test(color)) {
         setError("Invalid color.");
         return false;
@@ -124,22 +120,25 @@ export function useMyProfile(): MyProfile {
         setError("Session expired — please sign in again.");
         return false;
       }
-      // upsert, bo profil może jeszcze nie istnieć (konto sprzed migracji 0002).
+      // Klient zmienia tylko kolor — nick jest chroniony uprawnieniami kolumn (migracja 0004).
       const { error } = await sb
         .from("profiles")
-        .upsert({ id: userId, nickname: value, color, updated_at: new Date().toISOString() });
+        .update({ color, updated_at: new Date().toISOString() })
+        .eq("id", userId);
       if (error) {
         // Bez treści od Postgresa nie da się odróżnić braku tabeli od braku polityki RLS.
-        console.error("profiles upsert", error);
-        setError(`Failed to save nickname: ${saveHint(error)}`);
+        console.error("profiles update", error);
+        setError(`Failed to save color: ${saveHint(error)}`);
         return false;
       }
       setError(null);
       // Dotyczy też tej instancji (listener powyżej), więc osobny setLoaded nie jest potrzebny.
-      saved.dispatchEvent(new CustomEvent("saved", { detail: { userId, nickname: value, color } }));
+      saved.dispatchEvent(
+        new CustomEvent("saved", { detail: { userId, nickname: currentNickname, color } }),
+      );
       return true;
     },
-    [sb, userId, fallback],
+    [sb, userId, currentNickname],
   );
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
@@ -147,7 +146,7 @@ export function useMyProfile(): MyProfile {
   const mine = loaded?.userId === userId ? loaded : null;
   return {
     ready: sessionReady && (offline || mine !== null),
-    nickname: fallback ?? mine?.nickname ?? null,
+    nickname: mine?.nickname ?? fallback,
     color: mine?.color ?? DEFAULT_COLOR,
     error,
     save,

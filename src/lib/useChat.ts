@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useMyProfile, useProfiles } from "./useProfile";
+import { useProfiles } from "./useProfile";
 import { getSupabase } from "./supabase";
-import { displayName, useSession } from "./useSession";
+import { useSession } from "./useSession";
 
 export type ChatMessage = {
   id: string;
@@ -38,7 +38,6 @@ export type ChatState = {
 export function useChat(roomSlug: string): ChatState {
   const sb = getSupabase();
   const { session } = useSession();
-  const { nickname } = useMyProfile();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,20 +89,23 @@ export function useChat(roomSlug: string): ChatState {
         .insert({
           room_slug: roomSlug,
           user_id: session.user.id,
-          author: nickname ?? displayName(session),
           body: text,
         })
         .select()
         .single();
       if (error) {
-        setError("Failed to send the message.");
+        setError(
+          error.message === "rate_limit"
+            ? "You're sending messages too fast — wait a moment."
+            : "Failed to send the message.",
+        );
         return;
       }
       setError(null);
       // Własna wiadomość pojawia się od razu; echo z Realtime odfiltruje się po id.
       setMessages((prev) => append(prev, data as ChatMessage));
     },
-    [sb, session, nickname, roomSlug],
+    [sb, session, roomSlug],
   );
 
   const authors = useMemo(() => messages.map((m) => m.user_id), [messages]);
