@@ -3,8 +3,7 @@
 ## Idea
 
 Serwis, w którym **wszyscy widzą dokładnie ten sam timer** (zgodność co do sekundy). To nie zegar
-godzinowy, tylko timer pracy i przerw: cykle startują o ustalonych momentach (np. o pełnej godzinie,
-12:00), więc każdy, kto wejdzie na stronę, dołącza do już trwającej sesji – jak do pokoju coworkingowego.
+godzinowy, tylko timer pracy i przerw: cykle biegną nieprzerwanie od wspólnego punktu startu, więc każdy, kto wejdzie na stronę, dołącza do już trwającej sesji – jak do pokoju coworkingowego.
 
 ## Pojęcia
 
@@ -23,11 +22,10 @@ godzinowy, tylko timer pracy i przerw: cykle startują o ustalonych momentach (n
   synchronizowania, więc wszyscy zawsze widzą to samo.
 - Klient wyznacza offset względem zegara serwera (`GET /api/time`, próbki wybierane po najmniejszym RTT),
   okresowo synchronizuje ponownie.
-- Zasady harmonogramu:
-  - cykl (praca+przerwa) ≤ 60 min → cykle startują od pełnej godziny; niemieszcząca się reszta godziny
-    jest doliczana do ostatniej przerwy (np. 20+5: praca 12:00–12:20, przerwa do 12:25, praca 12:25–12:45, przerwa wydłużona do 13:00); o pełnej godzinie wszyscy startują razem;
-  - cykl > 60 min (np. 55+15) → cykle biegną nieprzerwanie od północy UTC.
-- Wyświetlanie: faza (praca/przerwa), pozostały czas, pasek postępu, numer cyklu.
+- Harmonogram: jeden wspólny punkt startu (`EPOCH_MS` = 2026-01-01 00:00 UTC). Każdy pokój od tej chwili
+  odlicza własne cykle (praca + przerwa) w nieskończoność, bez resetów o pełnej godzinie. Cykl pokoju 55+15
+  trwa 70 min, więc jego starty nie wypadają o pełnych godzinach – to zamierzone.
+- Wyświetlanie: faza (praca/przerwa), pozostały czas, pasek postępu.
 
 ### Obecność (presence)
 - Licznik osób z aktywną kartą w pokoju (Supabase Realtime Presence).
@@ -78,9 +76,8 @@ Kod: `src/lib/timer.ts` (logika, testowana), `src/lib/useServerClock.ts` (synchr
 RLS: użytkownik czyta/edytuje tylko swój profil; XP zmienia wyłącznie funkcja serwerowa (RPC / Edge Function).
 
 ## Otwarte pytania
-1. Strefa czasowa harmonogramu: UTC dla wszystkich czy lokalna godzina użytkownika (ta sama „pełna godzina” w strefach niecałogodzinnych)?
-2. Czy pokoje są tylko predefiniowane, czy użytkownicy mogą tworzyć własne (np. `45+15`)?
-3. Waluta: czy XP wystarcza, czy osobne monety do sklepu?
-4. Czy XP za przerwy, czy tylko za fazę pracy?
-5. Styl graficzny postaci (pixel art 2D? kanwa `<canvas>` / PixiJS / Phaser?).
-6. Czat lub emotki na scenie?
+1. Czy pokoje są tylko predefiniowane, czy użytkownicy mogą tworzyć własne (np. `45+15`)?
+2. Waluta: czy XP wystarcza, czy osobne monety do sklepu?
+3. Czy XP za przerwy, czy tylko za fazę pracy?
+4. Styl graficzny postaci (pixel art 2D? kanwa `<canvas>` / PixiJS / Phaser?).
+5. Czat lub emotki na scenie?

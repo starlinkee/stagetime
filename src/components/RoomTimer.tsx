@@ -20,7 +20,7 @@ export function RoomTimer({ room }: { room: RoomConfig }) {
           isWork ? "bg-rose-500/20 text-rose-300" : "bg-emerald-500/20 text-emerald-300"
         }`}
       >
-        {isWork ? "Praca" : "Przerwa"} · cykl {s.cycle}
+        {isWork ? "Praca" : "Przerwa"}
       </span>
       <div className="font-mono text-8xl tabular-nums">{formatMs(s.remainingMs)}</div>
       <div className="h-2 w-72 overflow-hidden rounded-full bg-zinc-800">

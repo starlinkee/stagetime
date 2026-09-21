@@ -13,19 +13,18 @@ export interface TimerState {
   remainingMs: number;
   /** długość bieżącej fazy w ms */
   phaseMs: number;
-  /** numer cyklu w bieżącym okresie (od 1) */
+  /** numer cyklu od EPOCH_MS (od 1) */
   cycle: number;
 }
 
 const MIN = 60_000;
-const HOUR = 60 * MIN;
-const DAY = 24 * HOUR;
+
+/** Wspólny punkt startu wszystkich pokoi: od tej chwili każdy pokój odlicza swoje cykle w nieskończoność. */
+export const EPOCH_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
 
 /**
- * Czysta funkcja: stan timera zależy wyłącznie od czasu serwera (UTC) i konfiguracji pokoju.
- * - cykl <= 60 min: cykle startują od pełnej godziny; reszta godziny, w której nie mieści się
- *   pełny cykl, jest doliczana do ostatniej przerwy (wszyscy startują razem o pełnej godzinie).
- * - cykl > 60 min: cykle biegną nieprzerwanie od północy UTC.
+ * Czysta funkcja: stan timera zależy wyłącznie od czasu serwera i konfiguracji pokoju.
+ * Cykle (praca + przerwa) biegną nieprzerwanie od EPOCH_MS, bez żadnych resetów.
  */
 export function getTimerState(
   nowMs: number,
@@ -35,26 +34,10 @@ export function getTimerState(
   const brk = room.breakMin * MIN;
   const cycleMs = work + brk;
 
-  if (cycleMs <= HOUR) {
-    const pos = nowMs % HOUR;
-    const cycles = Math.floor(HOUR / cycleMs);
-    const idx = Math.min(Math.floor(pos / cycleMs), cycles - 1);
-    const inCycle = pos - idx * cycleMs;
-    if (inCycle < work) {
-      return { phase: "work", remainingMs: work - inCycle, phaseMs: work, cycle: idx + 1 };
-    }
-    const cycleEnd = idx === cycles - 1 ? HOUR - idx * cycleMs : cycleMs;
-    return {
-      phase: "break",
-      remainingMs: cycleEnd - inCycle,
-      phaseMs: cycleEnd - work,
-      cycle: idx + 1,
-    };
-  }
+  const elapsed = nowMs - EPOCH_MS;
+  const idx = Math.floor(elapsed / cycleMs);
+  const inCycle = elapsed - idx * cycleMs;
 
-  const pos = nowMs % DAY;
-  const idx = Math.floor(pos / cycleMs);
-  const inCycle = pos - idx * cycleMs;
   if (inCycle < work) {
     return { phase: "work", remainingMs: work - inCycle, phaseMs: work, cycle: idx + 1 };
   }
