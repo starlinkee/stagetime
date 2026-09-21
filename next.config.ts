@@ -2,8 +2,10 @@ import type { NextConfig } from "next";
 
 // Jeden identyfikator wdrożenia: hash commita z hosta albo znacznik czasu builda.
 // W trybie dev pomijamy, żeby nie wymuszać przeładowań przy każdym restarcie.
-const buildId =
-  process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? String(Date.now());
+// Vercel wymaga deploymentId o długości max 32 znaków, więc skracamy pełny hash.
+const buildId = (
+  process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? String(Date.now())
+).slice(0, 12);
 const isDev = process.env.NODE_ENV !== "production";
 
 const nextConfig: NextConfig = {
