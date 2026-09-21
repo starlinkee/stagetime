@@ -85,7 +85,16 @@ function hits(b: Ball, px: number, py: number) {
 }
 
 /** Wygląd osoby, rozgłaszany przez Presence. */
-type Meta = { at: number; color: string; nick: string | null; x?: number; y?: number; d?: unknown };
+type Meta = {
+  at: number;
+  color: string;
+  nick: string | null;
+  /** Id zalogowanego użytkownika (null bez konta) — jedno konto to jedna postać. */
+  user?: string | null;
+  x?: number;
+  y?: number;
+  d?: unknown;
+};
 /** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek. */
 type Pos = { x: number; y: number; d: Dir };
 type Others = Record<string, Meta & Pos>;
@@ -167,6 +176,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   const profile = useMyProfile();
   const color = session ? profile.color : "#ffffff";
   const nick = session ? profile.nickname : null;
+  const userId = session?.user.id ?? null;
 
   const stageRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -177,7 +187,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   // Klucz tej karty w kanale; pozycje innych trzymamy osobno od Presence.
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
-  const metaRef = useRef<Meta>({ at: 0, color, nick });
+  const metaRef = useRef<Meta>({ at: 0, color, nick, user: userId });
   const myPos = useRef<Pos>({
     ...clampPos(WORLD_W / 2, WORLD_H / 2),
     d: DIR_DOWN,
@@ -195,6 +205,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   const chargingRef = useRef<Record<string, number>>({});
   const othersRef = useRef<Others>({});
   const colorRef = useRef(color);
+  const userIdRef = useRef(userId);
 
   // Ruch własnej postaci, kule i wysyłanie pozycji.
   useEffect(() => {
@@ -499,10 +510,21 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       })
       .on("presence", { event: "sync" }, () => {
         const next: Others = {};
-        for (const [k, metas] of Object.entries(channel.presenceState<Meta>())) {
+        // Jedno konto = jedna postać: kolejne karty tego samego użytkownika pomijamy
+        // (zostaje najświeżej dołączona), a inne karty własnego konta w ogóle nie są „innymi”.
+        const byUser = new Map<string, { k: string; at: number }>();
+        const state = channel.presenceState<Meta>();
+        for (const [k, metas] of Object.entries(state)) {
+          const m = metas.reduce<Meta | null>((b, x) => (b && b.at >= x.at ? b : x), null);
+          if (!m?.user) continue;
+          const seen = byUser.get(m.user);
+          if (!seen || m.at > seen.at) byUser.set(m.user, { k, at: m.at });
+        }
+        for (const [k, metas] of Object.entries(state)) {
           if (k === key) continue;
           const latest = metas.reduce<Meta | null>((b, m) => (b && b.at >= m.at ? b : m), null);
           if (!latest) continue;
+          if (latest.user && (latest.user === userIdRef.current || byUser.get(latest.user)?.k !== k)) continue;
           // Pozycja z broadcastu jest świeższa; bez niej bierzemy tę z Presence (dołączenie).
           if (!posRef.current[k]) {
             if (!Number.isFinite(latest.x) || !Number.isFinite(latest.y)) continue;
@@ -545,10 +567,11 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   // Zmiana koloru / nicku (np. po zalogowaniu) — odświeżamy wpis w Presence.
   useEffect(() => {
     colorRef.current = color;
-    metaRef.current = { at: Date.now(), color, nick };
+    userIdRef.current = userId;
+    metaRef.current = { at: Date.now(), color, nick, user: userId };
     const channel = channelRef.current;
     if (channel?.state === "joined") void channel.track({ ...metaRef.current, ...myPos.current });
-  }, [color, nick]);
+  }, [color, nick, userId]);
 
   // Hint dla wszystkich (też bez konta): widoczny HINT_MS, potem HINT_FADE_MS zanikania.
   const [hint, setHint] = useState<"show" | "fade" | "done">("show");
