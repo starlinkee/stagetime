@@ -7,7 +7,7 @@ export default function Home() {
       <div>
         <h1 className="text-4xl font-bold">stagetime.io</h1>
         <p className="mt-2 text-zinc-400">
-          Jeden wspólny timer dla wszystkich – co do sekundy. Wybierz pokój.
+          One shared timer for everyone — accurate to the second. Pick a room.
         </p>
       </div>
       <ul className="grid gap-3 sm:grid-cols-2">

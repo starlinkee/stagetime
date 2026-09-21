@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { AuthButton } from "@/components/AuthButton";
+import { PresenceBar } from "@/components/PresenceBar";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,16 +16,22 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "stagetime.io",
-  description: "Wspólny timer pracy i przerw dla wszystkich",
+  description: "A shared work and break timer for everyone",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="pl"
+      lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <header className="flex h-14 items-center justify-end px-6">
+          <AuthButton />
+        </header>
+        {children}
+        <PresenceBar />
+      </body>
     </html>
   );
 }

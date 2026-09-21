@@ -29,7 +29,15 @@ godzinowy, tylko timer pracy i przerw: cykle biegną nieprzerwanie od wspólnego
 
 ### Obecność (presence)
 - Licznik osób z aktywną kartą w pokoju (Supabase Realtime Presence).
-- Osobno: liczba zalogowanych uczestników.
+- Zalogowani i obserwatorzy są rozłączni: zalogowany liczy się jako uczestnik, nigdy jako obserwator
+  (kilka kart tej samej osoby to jeden uczestnik).
+- Stopka pokazuje sumę dla całej strony (wspólny kanał `presence:global`, niezależny od pokoju).
+
+### Czat
+- Każdy pokój ma własny czat; historia (ostatnie 50 wiadomości) w tabeli `messages`, nowe wiadomości
+  przez Realtime (`postgres_changes`).
+- Czytają wszyscy (także obserwatorzy), piszą wyłącznie zalogowani — RLS wymusza `auth.uid() = user_id`.
+- Nazwa autora zapisywana przy wysyłce (obserwator nie ma dostępu do `auth.users`).
 
 ### Konta i logowanie (Supabase Auth)
 - Rejestracja/logowanie (e-mail magic link + później OAuth, np. Google).
@@ -72,6 +80,7 @@ Kod: `src/lib/timer.ts` (logika, testowana), `src/lib/useServerClock.ts` (synchr
 - `items(id, name, kind, price, required_level)`
 - `inventory(user_id, item_id, acquired_at)`
 - `xp_events(id, user_id, room_slug, amount, created_at)` – log do audytu / antycheat
+- `messages(id, room_slug, user_id, author, body, created_at)` – czat pokoi (SQL w `supabase/migrations`)
 
 RLS: użytkownik czyta/edytuje tylko swój profil; XP zmienia wyłącznie funkcja serwerowa (RPC / Edge Function).
 
@@ -80,4 +89,4 @@ RLS: użytkownik czyta/edytuje tylko swój profil; XP zmienia wyłącznie funkcj
 2. Waluta: czy XP wystarcza, czy osobne monety do sklepu?
 3. Czy XP za przerwy, czy tylko za fazę pracy?
 4. Styl graficzny postaci (pixel art 2D? kanwa `<canvas>` / PixiJS / Phaser?).
-5. Czat lub emotki na scenie?
+5. Emotki i moderacja czatu (zgłaszanie, blokady)?

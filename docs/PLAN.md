@@ -17,8 +17,11 @@ Zasada: każdy etap kończy się działającą, uruchamialną aplikacją.
 
 ## Etap 2 — Logowanie
 - [ ] `@supabase/ssr`, magic link (e-mail), strona `/login`, callback
-- [ ] Tabela `profiles` + trigger tworzący profil po rejestracji, RLS
-- [ ] Nagłówek z stanem sesji; licznik zalogowanych vs. obserwatorów (Presence z metadanymi)
+- [x] Tabela `profiles` + trigger tworzący profil po rejestracji, RLS (`supabase/migrations/0002_profiles.sql`)
+- [x] Nagłówek z stanem sesji; licznik zalogowanych vs. obserwatorów (Presence z metadanymi)
+- [x] Globalny licznik obecności w stopce (wszystkie pokoje razem)
+- [x] Czat pokoju: tabela `messages` + RLS (`supabase/migrations/0001_messages.sql`), pisać mogą zalogowani
+- [x] Zmiana nicku w menu profilu — obowiązuje też wstecz, w całej historii czatu
 
 ## Etap 3 — Scena i ruch postaci
 - [ ] Komponent sceny (`<canvas>`), prosta postać (kółko/sprite)
@@ -34,7 +37,7 @@ Zasada: każdy etap kończy się działającą, uruchamialną aplikacją.
 - [ ] Odblokowywanie poziomami / zakup, ekwipowanie na postaci
 
 ## Etap 6 — Rozwój
-- [ ] Pokoje tworzone przez użytkowników, ranking, czat/emotki, strefy czasowe, PWA
+- [ ] Pokoje tworzone przez użytkowników, ranking, emotki, moderacja czatu, strefy czasowe, PWA
 
 ## Zależności / ryzyka
 - Presence i Broadcast mają limity planu darmowego Supabase – sprawdzić przy większym ruchu.

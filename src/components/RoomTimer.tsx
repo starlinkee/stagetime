@@ -1,35 +1,73 @@
 "use client";
 import { formatMs, getTimerState, type RoomConfig } from "@/lib/timer";
 import { useServerNow } from "@/lib/useServerClock";
-import { usePresence } from "@/lib/usePresence";
+
+function Counter({
+  label,
+  time,
+  active,
+  color,
+}: {
+  label: string;
+  time: string;
+  active: boolean;
+  color: "sky" | "emerald";
+}) {
+  const tone = color === "sky" ? "text-sky-300" : "text-emerald-300";
+  return (
+    <div className={`flex flex-col items-center gap-2 ${active ? "" : "opacity-40"}`}>
+      <span className={`text-sm font-medium ${tone}`}>{label}</span>
+      <span className="font-mono text-6xl tabular-nums sm:text-7xl">{time}</span>
+    </div>
+  );
+}
 
 export function RoomTimer({ room }: { room: RoomConfig }) {
   const now = useServerNow();
-  const viewers = usePresence(room.slug);
 
-  if (now === null) return <p className="text-zinc-400">Synchronizuję zegar…</p>;
+  if (now === null) return <p className="text-zinc-400">Syncing clock…</p>;
 
   const s = getTimerState(now, room);
   const isWork = s.phase === "work";
   const progress = 1 - s.remainingMs / s.phaseMs;
+  const workMs = room.workMin * 60_000;
+  const breakMs = room.breakMin * 60_000;
+
+  // Aktywna faza pokazuje pozostały czas, nieaktywna — pełną długość.
+  const workFill = isWork ? progress : 1;
+  const breakFill = isWork ? 0 : progress;
 
   return (
-    <div className="flex flex-col items-center gap-6">
-      <span
-        className={`rounded-full px-4 py-1 text-sm font-medium ${
-          isWork ? "bg-rose-500/20 text-rose-300" : "bg-emerald-500/20 text-emerald-300"
-        }`}
-      >
-        {isWork ? "Praca" : "Przerwa"}
-      </span>
-      <div className="font-mono text-8xl tabular-nums">{formatMs(s.remainingMs)}</div>
-      <div className="h-2 w-72 overflow-hidden rounded-full bg-zinc-800">
-        <div
-          className={`h-full ${isWork ? "bg-rose-400" : "bg-emerald-400"}`}
-          style={{ width: `${progress * 100}%` }}
+    <div className="flex w-full max-w-2xl flex-col items-center gap-6">
+      <div className="flex w-full items-start justify-center gap-10">
+        <Counter
+          label="Work"
+          time={formatMs(isWork ? s.remainingMs : workMs)}
+          active={isWork}
+          color="sky"
+        />
+        <Counter
+          label="Break"
+          time={formatMs(isWork ? breakMs : s.remainingMs)}
+          active={!isWork}
+          color="emerald"
         />
       </div>
-      <p className="text-zinc-400">👀 Obserwujących: {viewers}</p>
+      {/* Szerokość segmentów proporcjonalna do długości faz */}
+      <div className="flex h-3 w-full gap-1">
+        <div
+          className={`overflow-hidden rounded-full bg-sky-500/20 ${isWork ? "" : "opacity-50"}`}
+          style={{ flexGrow: workMs, flexBasis: 0 }}
+        >
+          <div className="h-full bg-sky-400" style={{ width: `${workFill * 100}%` }} />
+        </div>
+        <div
+          className={`min-w-2 overflow-hidden rounded-full bg-emerald-500/20 ${isWork ? "opacity-50" : ""}`}
+          style={{ flexGrow: breakMs, flexBasis: 0 }}
+        >
+          <div className="h-full bg-emerald-400" style={{ width: `${breakFill * 100}%` }} />
+        </div>
+      </div>
     </div>
   );
 }
