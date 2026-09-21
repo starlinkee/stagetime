@@ -35,7 +35,7 @@ export function ProfileMenu({ session }: { session: Session }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        className="rounded-lg border border-zinc-800 px-3 py-1.5 text-zinc-300 hover:border-zinc-600"
+        className="rounded-lg bg-[#5865F2] px-3 py-1.5 text-white hover:bg-[#4752c4]"
       >
         {shown}
       </button>
