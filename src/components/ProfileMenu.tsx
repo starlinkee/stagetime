@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { PixelPerson } from "@/components/PixelPerson";
-import { COLOR_CHOICES, MAX_NICKNAME, useMyProfile, validateNickname } from "@/lib/useProfile";
+import { COLOR_CHOICES, useMyProfile } from "@/lib/useProfile";
 import { displayName, signOut } from "@/lib/useSession";
 
 /** Nazwa w nagłówku: klik otwiera panel ze zmianą nicku i wylogowaniem. */
@@ -47,7 +47,7 @@ export function ProfileMenu({ session }: { session: Session }) {
           className="absolute right-0 z-10 mt-2 w-72 rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-xl"
         >
           {ready ? (
-            <NicknameForm current={shown} currentColor={color} error={error} save={save} />
+            <ProfileForm nickname={shown} currentColor={color} error={error} save={save} />
           ) : (
             <p className="text-zinc-500">Loading…</p>
           )}
@@ -63,52 +63,30 @@ export function ProfileMenu({ session }: { session: Session }) {
   );
 }
 
-function NicknameForm({
-  current,
+function ProfileForm({
+  nickname,
   currentColor,
   error,
   save,
 }: {
-  current: string;
+  nickname: string;
   currentColor: string;
   error: string | null;
-  save: (nickname: string, color: string) => Promise<boolean>;
+  save: (color: string) => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState(current);
   const [color, setColor] = useState(currentColor);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const invalid = validateNickname(draft);
-  const unchanged = draft.trim() === current && color === currentColor;
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (invalid || unchanged || saving) return;
-    setSaving(true);
-    setSaved(false);
-    try {
-      setSaved(await save(draft, color));
-    } finally {
-      setSaving(false);
-    }
+  // Zmiana koloru zapisuje się od razu; przy błędzie wracamy do zapisanego koloru.
+  async function pick(c: string) {
+    setColor(c);
+    if (!(await save(c))) setColor(currentColor);
   }
 
   return (
-    <form onSubmit={onSubmit} className="flex flex-col gap-2">
-      <label htmlFor="nickname" className="text-zinc-400">
-        Nickname
-      </label>
-      <input
-        id="nickname"
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value);
-          setSaved(false);
-        }}
-        maxLength={MAX_NICKNAME}
-        autoFocus
-        className="rounded-lg border border-zinc-800 bg-transparent px-3 py-2 outline-none focus:border-zinc-600"
-      />
+    <div className="flex flex-col gap-2">
+      <span className="text-zinc-400">Nickname</span>
+      <span className="text-zinc-200">{nickname}</span>
+      <span className="text-xs text-zinc-600">Taken from your Discord account.</span>
       <span className="mt-1 text-zinc-400">Character color</span>
       <div className="flex items-end gap-3">
         <PixelPerson color={color} size={4} />
@@ -120,30 +98,14 @@ function NicknameForm({
               role="radio"
               aria-checked={c === color}
               aria-label={c}
-              onClick={() => {
-                setColor(c);
-                setSaved(false);
-              }}
+              onClick={() => pick(c)}
               style={{ backgroundColor: c }}
               className={`h-6 w-6 rounded-md border-2 ${c === color ? "border-white" : "border-transparent"}`}
             />
           ))}
         </div>
       </div>
-      <button
-        type="submit"
-        disabled={saving || unchanged || invalid !== null}
-        className="rounded-lg border border-zinc-700 px-3 py-2 hover:border-zinc-500 disabled:opacity-40"
-      >
-        {saving ? "Saving…" : "Save"}
-      </button>
-      <p className="text-xs text-zinc-600">
-        Your nickname also changes in all your earlier chat messages.
-      </p>
-      {(error ?? (draft !== current ? invalid : null)) && (
-        <p className="text-xs text-rose-400">{error ?? invalid}</p>
-      )}
-      {saved && !error && <p className="text-xs text-emerald-400">Saved.</p>}
-    </form>
+      {error && <p className="text-xs text-rose-400">{error}</p>}
+    </div>
   );
 }

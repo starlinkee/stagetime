@@ -18,3 +18,11 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
+
+/* Chód postaci: dwie klatki naprzemiennie i lekkie podskoki. */
+@keyframes pp-a { 0%, 49.9% { visibility: visible; } 50%, 100% { visibility: hidden; } }
+@keyframes pp-b { 0%, 49.9% { visibility: hidden; } 50%, 100% { visibility: visible; } }
+@keyframes pp-bob { 0%, 49.9% { transform: translateY(0); } 50%, 100% { transform: translateY(0.5px); } }
+.pp-fa { animation: pp-a 0.32s steps(1) infinite; }
+.pp-fb { animation: pp-b 0.32s steps(1) infinite; }
+.pp-bob { animation: pp-bob 0.32s steps(1) infinite; }

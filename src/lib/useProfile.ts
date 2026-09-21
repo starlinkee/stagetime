@@ -48,8 +48,8 @@ export type MyProfile = {
   /** Kolor postaci (domyślny, gdy nie wybrano). */
   color: string;
   error: string | null;
-  /** Zapisuje nick i kolor; zwraca true przy powodzeniu. */
-  save: (nickname: string, color: string) => Promise<boolean>;
+  /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
+  save: (color: string) => Promise<boolean>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -84,7 +84,7 @@ export function useMyProfile(): MyProfile {
         // Brak wiersza (konto sprzed migracji 0002) → zostaje nazwa od dostawcy.
         setLoaded({
           userId,
-          nickname: data?.nickname ?? fallback ?? "User",
+          nickname: fallback ?? data?.nickname ?? "User",
           color: safeColor(data?.color),
         });
       });
@@ -103,10 +103,10 @@ export function useMyProfile(): MyProfile {
   }, [userId]);
 
   const save = useCallback(
-    async (nickname: string, color: string) => {
+    async (color: string) => {
       // Nowa próba zaczyna z czystym kontem — inaczej zostaje błąd z wczytywania.
       setError(null);
-      const value = nickname.trim();
+      const value = fallback?.trim() ?? "";
       const invalid = validateNickname(value);
       if (invalid) {
         setError(invalid);
@@ -139,7 +139,7 @@ export function useMyProfile(): MyProfile {
       saved.dispatchEvent(new CustomEvent("saved", { detail: { userId, nickname: value, color } }));
       return true;
     },
-    [sb, userId],
+    [sb, userId, fallback],
   );
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
@@ -147,7 +147,7 @@ export function useMyProfile(): MyProfile {
   const mine = loaded?.userId === userId ? loaded : null;
   return {
     ready: sessionReady && (offline || mine !== null),
-    nickname: mine?.nickname ?? fallback,
+    nickname: fallback ?? mine?.nickname ?? null,
     color: mine?.color ?? DEFAULT_COLOR,
     error,
     save,
