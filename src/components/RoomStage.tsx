@@ -21,6 +21,10 @@ const NO_NAME = "[no-name]";
 /** Najczęściej co ile ms wysyłamy własną pozycję. */
 const SEND_EVERY = 60;
 
+/** Hint o strzałkach: tyle ms w pełni widoczny, potem tyle ms zanikania. */
+const HINT_MS = 5000;
+const HINT_FADE_MS = 1000;
+
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
 
 /** Wektory ośmiu kierunków (kolejność jak w Dir: E, SE, S, SW, W, NW, N, NE). */
@@ -546,8 +550,28 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     if (channel?.state === "joined") void channel.track({ ...metaRef.current, ...myPos.current });
   }, [color, nick]);
 
+  // Hint dla wszystkich (też bez konta): widoczny HINT_MS, potem HINT_FADE_MS zanikania.
+  const [hint, setHint] = useState<"show" | "fade" | "done">("show");
+  useEffect(() => {
+    const fade = setTimeout(() => setHint("fade"), HINT_MS);
+    const done = setTimeout(() => setHint("done"), HINT_MS + HINT_FADE_MS);
+    return () => {
+      clearTimeout(fade);
+      clearTimeout(done);
+    };
+  }, []);
+
   // Warstwa na cały ekran, pod treścią strony: postacie są „za” tekstem i czatem, lekko przygaszone.
   return (
+    <>
+    {hint !== "done" && (
+      <div
+        role="status"
+        className={`pointer-events-none fixed left-1/2 top-6 z-10 -translate-x-1/2 rounded-full transition-opacity duration-1000 ${hint === "fade" ? "opacity-0" : "opacity-100"} bg-zinc-900/80 px-4 py-2 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100/90 dark:text-zinc-900`}
+      >
+        Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge, release to shoot
+      </div>
+    )}
     <div ref={stageRef} className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
       <div
         ref={worldRef}
@@ -571,5 +595,6 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
       </div>
     </div>
+    </>
   );
 }
