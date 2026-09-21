@@ -19,10 +19,13 @@ body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
 
-/* Chód postaci: dwie klatki naprzemiennie i lekkie podskoki. */
-@keyframes pp-a { 0%, 49.9% { visibility: visible; } 50%, 100% { visibility: hidden; } }
-@keyframes pp-b { 0%, 49.9% { visibility: hidden; } 50%, 100% { visibility: visible; } }
-@keyframes pp-bob { 0%, 49.9% { transform: translateY(0); } 50%, 100% { transform: translateY(0.5px); } }
-.pp-fa { animation: pp-a 0.32s steps(1) infinite; }
-.pp-fb { animation: pp-b 0.32s steps(1) infinite; }
-.pp-bob { animation: pp-bob 0.32s steps(1) infinite; }
+/* Chód postaci: 4 klatki (krok, przejście, krok, przejście), każda widoczna przez ćwierć cyklu. */
+@keyframes pp-f0 { 0%, 24.9% { visibility: visible; } 25%, 100% { visibility: hidden; } }
+@keyframes pp-f1 { 0%, 24.9% { visibility: hidden; } 25%, 49.9% { visibility: visible; } 50%, 100% { visibility: hidden; } }
+@keyframes pp-f2 { 0%, 49.9% { visibility: hidden; } 50%, 74.9% { visibility: visible; } 75%, 100% { visibility: hidden; } }
+@keyframes pp-f3 { 0%, 74.9% { visibility: hidden; } 75%, 100% { visibility: visible; } }
+.pp-f { visibility: hidden; animation-duration: 0.5s; animation-timing-function: steps(1); animation-iteration-count: infinite; }
+.pp-f0 { animation-name: pp-f0; }
+.pp-f1 { animation-name: pp-f1; }
+.pp-f2 { animation-name: pp-f2; }
+.pp-f3 { animation-name: pp-f3; }

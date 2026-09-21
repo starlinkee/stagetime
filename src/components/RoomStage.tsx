@@ -6,7 +6,10 @@ import { getSupabase } from "@/lib/supabase";
 import { safeColor, useMyProfile } from "@/lib/useProfile";
 import { useSession } from "@/lib/useSession";
 
-/** Prędkość w px na sekundę. */
+/** Stały świat gry (jednostki): każdy widzi tę samą planszę, okno tylko ją skaluje. */
+const WORLD_W = 1600;
+const WORLD_H = 900;
+/** Prędkość w jednostkach świata na sekundę. */
 const SPEED = 220;
 const PERSON_W = 32;
 const PERSON_H = 48;
@@ -45,8 +48,24 @@ const ORB_R_MAX = 30;
 /** Prędkość lotu kuli w px na sekundę. */
 const BALL_SPEED = 520;
 
-type Ball = { x: number; y: number; vx: number; vy: number; r: number; color: string; owner: string };
-type Shard = { x: number; y: number; vx: number; vy: number; r: number; color: string; born: number };
+type Ball = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  color: string;
+  owner: string;
+};
+type Shard = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  color: string;
+  born: number;
+};
 
 /** Czas trwania animacji uderzenia (ms) i życia odłamków kuli. */
 const HIT_MS = 350;
@@ -63,7 +82,7 @@ function hits(b: Ball, px: number, py: number) {
 
 /** Wygląd osoby, rozgłaszany przez Presence. */
 type Meta = { at: number; color: string; nick: string | null };
-/** Pozycja jako ułamek sceny (0–1), żeby różne rozmiary okien pokazywały to samo miejsce, plus kierunek. */
+/** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek. */
 type Pos = { x: number; y: number; d: Dir };
 type Others = Record<string, Meta & Pos>;
 
@@ -74,13 +93,11 @@ const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 const asDir = (d: unknown): Dir =>
   Number.isInteger(d) && (d as number) >= 0 && (d as number) <= 7 ? (d as Dir) : DIR_DOWN;
 
-/** Ułamkowa pozycja postaci → piksele jej lewego górnego rogu na scenie. */
-function toPx(pos: { x: number; y: number }, sw: number, sh: number) {
-  return {
-    x: pos.x * Math.max(1, sw - PERSON_W),
-    y: TAG_H + pos.y * Math.max(1, sh - PERSON_H - TAG_H),
-  };
-}
+/** Ogranicza pozycję (np. z sieci) do planszy. */
+const clampPos = (x: number, y: number) => ({
+  x: Math.min(WORLD_W - PERSON_W, Math.max(0, x)),
+  y: Math.min(WORLD_H - PERSON_H, Math.max(TAG_H, y)),
+});
 
 /** Środek kuli ładowanej nad głową postaci (nie wychodzi poza górną krawędź sceny). */
 function orbAt(x: number, y: number, p: number) {
@@ -93,17 +110,18 @@ function launch(balls: Ball[], x: number, y: number, d: Dir, p: number, color: s
   const { r, cx, cy } = orbAt(x, y, p);
   const [ux, uy] = DIRS[d];
   const n = Math.hypot(ux, uy);
-  balls.push({ x: cx, y: cy, vx: (ux / n) * BALL_SPEED, vy: (uy / n) * BALL_SPEED, r, color, owner });
+  balls.push({
+    x: cx,
+    y: cy,
+    vx: (ux / n) * BALL_SPEED,
+    vy: (uy / n) * BALL_SPEED,
+    r,
+    color,
+    owner,
+  });
 }
 
-function drawOrb(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  cy: number,
-  r: number,
-  color: string,
-  glow: number,
-) {
+function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, glow: number) {
   ctx.save();
   ctx.shadowColor = color;
   ctx.shadowBlur = 6 + glow * 18;
@@ -147,6 +165,7 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
   const nick = session ? profile.nickname : null;
 
   const stageRef = useRef<HTMLDivElement>(null);
+  const worldRef = useRef<HTMLDivElement>(null);
   const personRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
@@ -155,7 +174,10 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
   const metaRef = useRef<Meta>({ at: 0, color, nick });
-  const myPos = useRef<Pos>({ x: 0.5, y: 0.5, d: DIR_DOWN });
+  const myPos = useRef<Pos>({
+    ...clampPos(WORLD_W / 2, WORLD_H / 2),
+    d: DIR_DOWN,
+  });
   const [myDir, setMyDir] = useState<Dir>(DIR_DOWN);
   const [myWalking, setMyWalking] = useState(false);
   // Kto z innych właśnie się porusza (do animacji chodu) i timery wygaszania.
@@ -173,10 +195,24 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
   // Ruch własnej postaci, kule i wysyłanie pozycji.
   useEffect(() => {
     const stage = stageRef.current;
+    const world = worldRef.current;
     const person = personRef.current;
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
-    if (!stage || !person || !canvas || !ctx) return;
+    if (!stage || !world || !person || !canvas || !ctx) return;
+
+    // Dopasowanie planszy do okna: jedna skala, plansza wyśrodkowana (pasy po bokach).
+    const resize = () => {
+      const scale = Math.min(stage.clientWidth / WORLD_W, stage.clientHeight / WORLD_H);
+      const ox = (stage.clientWidth - WORLD_W * scale) / 2;
+      const oy = (stage.clientHeight - WORLD_H * scale) / 2;
+      world.style.transform = `translate(${ox}px, ${oy}px) scale(${scale})`;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(WORLD_W * scale * dpr);
+      canvas.height = Math.round(WORLD_H * scale * dpr);
+      ctx.setTransform(canvas.width / WORLD_W, 0, 0, canvas.height / WORLD_H, 0, 0);
+    };
+    resize();
 
     const held = new Set<string>();
     let x: number;
@@ -184,19 +220,24 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
     if (roomSlug) {
       // W pokoju: losowe miejsce z marginesem od krawędzi. Na malutkim ekranie margines
       // maleje (max ¼ wolnego miejsca), a gdy miejsca brak — postać ląduje na środku.
-      const freeW = Math.max(0, stage.clientWidth - PERSON_W);
-      const freeH = Math.max(0, stage.clientHeight - PERSON_H - TAG_H);
+      const freeW = WORLD_W - PERSON_W;
+      const freeH = WORLD_H - PERSON_H - TAG_H;
       const mx = Math.min(SPAWN_MARGIN, freeW / 4);
       const my = Math.min(SPAWN_MARGIN, freeH / 4);
       x = mx + Math.random() * (freeW - 2 * mx);
       y = TAG_H + my + Math.random() * (freeH - 2 * my);
     } else {
       // Ekran główny: start tuż nad tytułem strony (h1); bez tytułu — nieco powyżej środka.
-      x = (stage.clientWidth - PERSON_W) / 2;
+      x = (WORLD_W - PERSON_W) / 2;
       const h1 = document.querySelector("h1");
-      y = Math.max(
-        TAG_H,
-        h1 ? h1.getBoundingClientRect().top - PERSON_H - 8 : (stage.clientHeight - PERSON_H) * 0.3,
+      const wr = world.getBoundingClientRect();
+      const scale = wr.width / WORLD_W || 1;
+      y = Math.min(
+        WORLD_H - PERSON_H,
+        Math.max(
+          TAG_H,
+          h1 ? (h1.getBoundingClientRect().top - wr.top) / scale - PERSON_H - 8 : (WORLD_H - PERSON_H) * 0.3,
+        ),
       );
     }
     let last = performance.now();
@@ -217,14 +258,6 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
     };
     const send = () => emit("pos", myPos.current);
 
-    const resize = () => {
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.round(stage.clientWidth * dpr);
-      canvas.height = Math.round(stage.clientHeight * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    resize();
-
     const release = () => {
       if (chargeStart === null) return;
       const p = Math.min(1, (performance.now() - chargeStart) / CHARGE_MS);
@@ -239,9 +272,7 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
     };
 
     const draw = (t: number) => {
-      const sw = stage.clientWidth;
-      const sh = stage.clientHeight;
-      ctx.clearRect(0, 0, sw, sh);
+      ctx.clearRect(0, 0, WORLD_W, WORLD_H);
       ctx.globalAlpha = 0.85;
       // W pełni naładowana kula pulsuje.
       const pulse = (p: number) => (p >= 1 ? 1 + 0.06 * Math.sin(t / 70) : 1);
@@ -254,8 +285,7 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
         const pos = posRef.current[k];
         if (!pos) continue;
         const p = Math.min(1, (t - start) / CHARGE_MS);
-        const px = toPx(pos, sw, sh);
-        const { r, cx, cy } = orbAt(px.x, px.y, p);
+        const { r, cx, cy } = orbAt(pos.x, pos.y, p);
         drawOrb(ctx, cx, cy, r * pulse(p), othersRef.current[k]?.color ?? "#ffffff", p);
       }
       for (const b of ballsRef.current) drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6);
@@ -278,7 +308,7 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
       };
       flash(x, y, hitRef.current.me);
       for (const [k, o] of Object.entries(othersRef.current)) {
-        const px = toPx(posRef.current[k] ?? o, sw, sh);
+        const px = posRef.current[k] ?? o;
         flash(px.x, px.y, hitRef.current[k]);
       }
       // Odłamki rozpadniętej kuli.
@@ -331,8 +361,8 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
         }
       }
       const norm = dx && dy ? Math.SQRT1_2 : 1;
-      const maxX = Math.max(1, stage.clientWidth - PERSON_W);
-      const maxY = Math.max(1, stage.clientHeight - PERSON_H);
+      const maxX = WORLD_W - PERSON_W;
+      const maxY = WORLD_H - PERSON_H;
       const nx = Math.max(0, Math.min(maxX, x + dx * SPEED * dt * norm));
       const ny = Math.max(TAG_H, Math.min(maxY, y + dy * SPEED * dt * norm));
       if (nx !== x || ny !== y) dirty = true;
@@ -342,7 +372,7 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
       const hitAge = t - (hitRef.current.me ?? -Infinity);
       const shake = hitAge < HIT_MS ? Math.sin(hitAge / 18) * 5 * (1 - hitAge / HIT_MS) : 0;
       person.style.transform = `translate(${x + shake}px, ${y}px)`;
-      myPos.current = { x: x / maxX, y: (y - TAG_H) / Math.max(1, maxY - TAG_H), d: dir };
+      myPos.current = { x, y, d: dir };
       // Ostatnią pozycję po zatrzymaniu też wysyłamy (dirty zostaje do skutecznego wysłania).
       if (dirty && t - lastSent >= SEND_EVERY) {
         send();
@@ -350,8 +380,6 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
         dirty = false;
       }
       // Kule w locie (własne i cudze) znikają po opuszczeniu sceny.
-      const sw = stage.clientWidth;
-      const sh = stage.clientHeight;
       ballsRef.current = ballsRef.current.filter((b) => {
         b.x += b.vx * dt;
         b.y += b.vy * dt;
@@ -361,7 +389,7 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
         else {
           for (const [k, o] of Object.entries(othersRef.current)) {
             if (k === b.owner) continue;
-            const px = toPx(posRef.current[k] ?? o, sw, sh);
+            const px = posRef.current[k] ?? o;
             if (hits(b, px.x, px.y)) {
               target = k;
               break;
@@ -373,7 +401,7 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
           burst(b, t);
           return false;
         }
-        return b.x > -b.r && b.x < sw + b.r && b.y > -b.r && b.y < sh + b.r;
+        return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
       });
       draw(t);
       raf = requestAnimationFrame(tick);
@@ -431,18 +459,29 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
     if (!sb || !ready || !roomSlug) return;
     const key = crypto.randomUUID();
     keyRef.current = key;
-    const channel = sb.channel(`world:${roomSlug}`, { config: { presence: { key } } });
+    const channel = sb.channel(`world:${roomSlug}`, {
+      config: { presence: { key } },
+    });
     channelRef.current = channel;
 
     const sendPos = () =>
-      channel.send({ type: "broadcast", event: "pos", payload: { k: key, ...myPos.current } });
+      channel.send({
+        type: "broadcast",
+        event: "pos",
+        payload: { k: key, ...myPos.current },
+      });
 
     channel
       .on("broadcast", { event: "pos" }, ({ payload }) => {
-        const { k, x, y, d } = payload as { k: string; x: number; y: number; d: unknown };
+        const { k, x, y, d } = payload as {
+          k: string;
+          x: number;
+          y: number;
+          d: unknown;
+        };
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y)) return;
         const prev = posRef.current[k];
-        posRef.current[k] = { x: clamp01(x), y: clamp01(y), d: asDir(d) };
+        posRef.current[k] = { ...clampPos(x, y), d: asDir(d) };
         if (!prev || prev.x !== posRef.current[k].x || prev.y !== posRef.current[k].y) {
           setWalkers((w) => (w[k] ? w : { ...w, [k]: true }));
           clearTimeout(walkTimers.current[k]);
@@ -457,11 +496,16 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
         else delete chargingRef.current[k];
       })
       .on("broadcast", { event: "fire" }, ({ payload }) => {
-        const { k, x, y, d, p } = payload as { k: string; x: number; y: number; d: unknown; p: number };
-        const stage = stageRef.current;
-        if (k === key || !stage || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(p)) return;
+        const { k, x, y, d, p } = payload as {
+          k: string;
+          x: number;
+          y: number;
+          d: unknown;
+          p: number;
+        };
+        if (k === key || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(p)) return;
         delete chargingRef.current[k];
-        const px = toPx({ x: clamp01(x), y: clamp01(y) }, stage.clientWidth, stage.clientHeight);
+        const px = clampPos(x, y);
         const c = othersRef.current[k]?.color ?? "#ffffff";
         launch(ballsRef.current, px.x, px.y, asDir(d), clamp01(p), c, k);
       })
@@ -474,7 +518,10 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
           next[k] = {
             ...latest,
             color: safeColor(latest.color),
-            ...(posRef.current[k] ?? { x: 0.5, y: 0.5, d: DIR_DOWN }),
+            ...(posRef.current[k] ?? {
+              ...clampPos(WORLD_W / 2, WORLD_H / 2),
+              d: DIR_DOWN,
+            }),
           };
         }
         for (const k of Object.keys(posRef.current)) if (!next[k]) delete posRef.current[k];
@@ -513,28 +560,30 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
     if (channel?.state === "joined") void channel.track(metaRef.current);
   }, [color, nick]);
 
-  // Pozycje innych liczymy z rozmiaru okna; przejście CSS wygładza rzadkie aktualizacje.
-  const w = typeof window === "undefined" ? 0 : window.innerWidth - PERSON_W;
-  const h = typeof window === "undefined" ? 0 : window.innerHeight - PERSON_H - TAG_H;
-
   // Warstwa na cały ekran, pod treścią strony: postacie są „za” tekstem i czatem, lekko przygaszone.
   return (
     <div ref={stageRef} className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-      {Object.entries(others).map(([k, o]) => (
-        <div
-          key={k}
-          className="absolute left-0 top-0 opacity-70 transition-transform duration-100 ease-linear"
-          style={{ transform: `translate(${o.x * w}px, ${TAG_H + o.y * h}px)` }}
-        >
-          <NameTag name={o.nick} />
-          <PixelPerson color={o.color} label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={walkers[k]} />
+      <div
+        ref={worldRef}
+        className="absolute left-0 top-0 origin-top-left outline outline-1 outline-zinc-400/30"
+        style={{ width: WORLD_W, height: WORLD_H }}
+      >
+        {Object.entries(others).map(([k, o]) => (
+          <div
+            key={k}
+            className="absolute left-0 top-0 opacity-70 transition-transform duration-100 ease-linear"
+            style={{ transform: `translate(${o.x}px, ${o.y}px)` }}
+          >
+            <NameTag name={o.nick} />
+            <PixelPerson color={o.color} label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={walkers[k]} />
+          </div>
+        ))}
+        <div ref={personRef} className="absolute left-0 top-0 opacity-70 will-change-transform">
+          <NameTag name={nick} />
+          <PixelPerson color={color} label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myDir} walking={myWalking} />
         </div>
-      ))}
-      <div ref={personRef} className="absolute left-0 top-0 opacity-70 will-change-transform">
-        <NameTag name={nick} />
-        <PixelPerson color={color} label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myDir} walking={myWalking} />
+        <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
       </div>
-      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
     </div>
   );
 }
