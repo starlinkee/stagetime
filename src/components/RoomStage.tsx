@@ -158,7 +158,7 @@ function NameTag({ name }: { name: string | null }) {
  * Przytrzymana spacja ładuje nad postacią kulę (do 3 s), puszczona wystrzeliwuje ją w stronę,
  * w którą patrzy postać.
  */
-export function RoomStage({ roomSlug }: { roomSlug?: string }) {
+export function RoomStage({ roomSlug }: { roomSlug: string }) {
   const { ready, session } = useSession();
   const profile = useMyProfile();
   const color = session ? profile.color : "#ffffff";
@@ -215,31 +215,14 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
     resize();
 
     const held = new Set<string>();
-    let x: number;
-    let y: number;
-    if (roomSlug) {
-      // W pokoju: losowe miejsce z marginesem od krawędzi. Na malutkim ekranie margines
-      // maleje (max ¼ wolnego miejsca), a gdy miejsca brak — postać ląduje na środku.
-      const freeW = WORLD_W - PERSON_W;
-      const freeH = WORLD_H - PERSON_H - TAG_H;
-      const mx = Math.min(SPAWN_MARGIN, freeW / 4);
-      const my = Math.min(SPAWN_MARGIN, freeH / 4);
-      x = mx + Math.random() * (freeW - 2 * mx);
-      y = TAG_H + my + Math.random() * (freeH - 2 * my);
-    } else {
-      // Ekran główny: start tuż nad tytułem strony (h1); bez tytułu — nieco powyżej środka.
-      x = (WORLD_W - PERSON_W) / 2;
-      const h1 = document.querySelector("h1");
-      const wr = world.getBoundingClientRect();
-      const scale = wr.width / WORLD_W || 1;
-      y = Math.min(
-        WORLD_H - PERSON_H,
-        Math.max(
-          TAG_H,
-          h1 ? (h1.getBoundingClientRect().top - wr.top) / scale - PERSON_H - 8 : (WORLD_H - PERSON_H) * 0.3,
-        ),
-      );
-    }
+    // Losowe miejsce z marginesem od krawędzi. Na malutkim ekranie margines
+    // maleje (max ¼ wolnego miejsca), a gdy miejsca brak — postać ląduje na środku.
+    const freeW = WORLD_W - PERSON_W;
+    const freeH = WORLD_H - PERSON_H - TAG_H;
+    const mx = Math.min(SPAWN_MARGIN, freeW / 4);
+    const my = Math.min(SPAWN_MARGIN, freeH / 4);
+    let x = mx + Math.random() * (freeW - 2 * mx);
+    let y = TAG_H + my + Math.random() * (freeH - 2 * my);
     let last = performance.now();
     let lastSent = 0;
     let dirty = false;
@@ -455,11 +438,10 @@ export function RoomStage({ roomSlug }: { roomSlug?: string }) {
   // Kanał pokoju: Presence mówi, kto jest i jak wygląda, Broadcast niesie pozycje i kule.
   useEffect(() => {
     const sb = getSupabase();
-    // Bez pokoju (ekran główny) chodzimy sami — kanału nie ma, więc nikogo nie widać.
-    if (!sb || !ready || !roomSlug) return;
+    if (!sb || !ready) return;
     const key = crypto.randomUUID();
     keyRef.current = key;
-    const channel = sb.channel(`world:${roomSlug}`, {
+    const channel = sb.channel(`world2:${roomSlug}`, {
       config: { presence: { key } },
     });
     channelRef.current = channel;

@@ -5,7 +5,7 @@ import { ROOMS } from "@/lib/rooms";
 export default function Home() {
   return (
     <>
-    <RoomStage />
+    <RoomStage roomSlug="lobby" />
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center gap-8 p-8">
       <div>
         <h1 className="text-4xl font-bold">stagetime.io</h1>
