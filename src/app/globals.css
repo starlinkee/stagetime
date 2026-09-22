@@ -29,3 +29,26 @@ body {
 .pp-f1 { animation-name: pp-f1; }
 .pp-f2 { animation-name: pp-f2; }
 .pp-f3 { animation-name: pp-f3; }
+
+/* Napis w klimacie logo Super Mario 64: bombiaste litery, żółto-czerwony gradient, niebieska obwódka i 3D wytłoczenie. */
+.title-64 {
+  font-family: var(--font-fredoka), var(--font-sans), sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.1;
+  background: linear-gradient(180deg, #fff6b0 0%, #ffd23f 35%, #ff8a1e 70%, #ff5a1e 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-stroke: 2px #d61f1f;
+  text-shadow:
+    0 1px 0 #ffe27a,
+    0 2px 0 #ffcf3d,
+    0 3px 0 #ff9d2e,
+    0 4px 0 #e2621f,
+    0 5px 0 #c94a1a,
+    0 6px 0 #a83a16,
+    0 7px 6px rgba(0, 0, 0, 0.55),
+    0 0 18px rgba(46, 108, 255, 0.35);
+  filter: drop-shadow(0 2px 0 #1e3fbf) drop-shadow(0 -1px 0 #1e3fbf);
+}

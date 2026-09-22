@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useProfiles } from "./useProfile";
 import { getSupabase } from "./supabase";
 import { useSession } from "./useSession";
@@ -22,6 +22,9 @@ const HISTORY_LIMIT = 50;
 /** Limit długości wiadomości — taki sam jak CHECK w bazie. */
 export const MAX_BODY = 500;
 
+/** "room": tylko bieżący pokój. "all": wszystkie pokoje naraz (podgląd, do wysyłania nadal służy roomSlug). */
+export type ChatScope = "room" | "all";
+
 export type ChatState = {
   /** Historia z nazwami autorów podmienionymi na ich aktualne nicki. */
   messages: ChatMessage[];
@@ -31,44 +34,62 @@ export type ChatState = {
   available: boolean;
   /** Tylko zalogowani mogą pisać. */
   canSend: boolean;
-  send: (body: string) => Promise<void>;
+  /** true, gdy wiadomość faktycznie poszła do bazy — false przy błędzie (patrz `error`). */
+  send: (body: string) => Promise<boolean>;
+  /** true po pierwszym zakończeniu (sukcesem lub błędem) wczytywania historii tego pokoju/scope. */
+  loaded: boolean;
 };
 
-/** Czat jednego pokoju: historia z tabeli `messages` + nowe wiadomości przez Realtime. */
-export function useChat(roomSlug: string): ChatState {
+/**
+ * Czat: historia z tabeli `messages` + nowe wiadomości przez Realtime.
+ * scope "room" (domyślnie) filtruje po roomSlug, scope "all" pokazuje wszystkie pokoje.
+ * Wysyłanie zawsze trafia do roomSlug — to fizyczny pokój, w którym stoi postać.
+ * enabled: false wstrzymuje fetch/subskrypcję (np. podgląd "all" otwierany tylko na żądanie).
+ */
+export function useChat(
+  roomSlug: string,
+  opts: { scope?: ChatScope; enabled?: boolean } = {},
+): ChatState {
+  const { scope = "room", enabled = true } = opts;
   const sb = getSupabase();
   const { session } = useSession();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  // Unikalny sufiks per instancja hooka — RoomStage subskrybuje jednocześnie scope "room"
+  // i "all"; bez tego dwie instancje o tym samym topicu dzieliłyby jeden kanał Realtime,
+  // a drugi .on() po subscribe() rzucałby błąd.
+  const instanceId = useId();
 
   useEffect(() => {
-    if (!sb) return;
+    setLoaded(false);
+    if (!sb || !enabled) return;
     let cancelled = false;
 
-    sb.from("messages")
-      .select("*")
-      .eq("room_slug", roomSlug)
-      .order("created_at", { ascending: false })
-      .limit(HISTORY_LIMIT)
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) {
-          setError("Chat unavailable — the `messages` table is missing (see supabase/migrations).");
-          return;
-        }
-        setError(null);
-        setMessages((data as ChatMessage[]).reverse());
-      });
+    let query = sb.from("messages").select("*").order("created_at", { ascending: false }).limit(HISTORY_LIMIT);
+    if (scope === "room") query = query.eq("room_slug", roomSlug);
+
+    query.then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) {
+        setError("Chat unavailable — the `messages` table is missing (see supabase/migrations).");
+        setLoaded(true);
+        return;
+      }
+      setError(null);
+      setMessages((data as ChatMessage[]).reverse());
+      setLoaded(true);
+    });
 
     const channel = sb
-      .channel(`chat:${roomSlug}`)
+      .channel(`chat:${scope === "room" ? roomSlug : "all"}:${instanceId}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "messages",
-          filter: `room_slug=eq.${roomSlug}`,
+          ...(scope === "room" ? { filter: `room_slug=eq.${roomSlug}` } : {}),
         },
         ({ new: row }) => setMessages((prev) => append(prev, row as ChatMessage)),
       )
@@ -78,12 +99,12 @@ export function useChat(roomSlug: string): ChatState {
       cancelled = true;
       sb.removeChannel(channel);
     };
-  }, [sb, roomSlug]);
+  }, [sb, roomSlug, scope, enabled, instanceId]);
 
   const send = useCallback(
     async (body: string) => {
       const text = body.trim().slice(0, MAX_BODY);
-      if (!sb || !session || !text) return;
+      if (!sb || !session || !text) return false;
       const { data, error } = await sb
         .from("messages")
         .insert({
@@ -94,16 +115,18 @@ export function useChat(roomSlug: string): ChatState {
         .select()
         .single();
       if (error) {
+        console.warn("messages insert (see supabase/migrations)", error);
         setError(
           error.message === "rate_limit"
             ? "You're sending messages too fast — wait a moment."
             : "Failed to send the message.",
         );
-        return;
+        return false;
       }
       setError(null);
       // Własna wiadomość pojawia się od razu; echo z Realtime odfiltruje się po id.
       setMessages((prev) => append(prev, data as ChatMessage));
+      return true;
     },
     [sb, session, roomSlug],
   );
@@ -127,6 +150,7 @@ export function useChat(roomSlug: string): ChatState {
     available: sb !== null,
     canSend: session !== null,
     send,
+    loaded,
   };
 }
 

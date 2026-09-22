@@ -1,33 +1,29 @@
-import Link from "next/link";
-import { RoomStage } from "@/components/RoomStage";
+import { Suspense } from "react";
+import { type RoomZone, RoomStage } from "@/components/RoomStage";
 import { ROOMS } from "@/lib/rooms";
+
+/** Kwadraty pokoi w lobby: rząd na środku sceny (świat 1600×900), do wejścia trzymając E. */
+const ZONE_W = 220;
+const ZONE_H = 220;
+const ZONE_GAP = 60;
+const zonesStartX = (1600 - (ROOMS.length * ZONE_W + (ROOMS.length - 1) * ZONE_GAP)) / 2;
+const LOBBY_ZONES: RoomZone[] = ROOMS.map((r, i) => ({
+  slug: r.slug,
+  name: r.kind === "stopwatch" ? "Timer" : `${r.workMin}+${r.breakMin}`,
+  x: zonesStartX + i * (ZONE_W + ZONE_GAP),
+  y: 340,
+  w: ZONE_W,
+  h: ZONE_H,
+}));
 
 export default function Home() {
   return (
     <>
-    <RoomStage roomSlug="lobby" />
-    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center gap-8 p-8">
-      <div>
-        <h1 className="text-4xl font-bold">stagetime.io</h1>
-        <p className="mt-2 text-zinc-400">
-          One shared timer for everyone — accurate to the second. Pick a room.
-        </p>
-      </div>
-      <ul className="grid gap-3 sm:grid-cols-2">
-        {ROOMS.map((r) => (
-          <li key={r.slug}>
-            <Link
-              href={`/rooms/${r.slug}`}
-              className="block rounded-xl border border-zinc-800 p-5 hover:border-zinc-600"
-            >
-              <div className="text-2xl font-semibold">
-                {r.workMin} + {r.breakMin}
-              </div>
-              <div className="text-sm text-zinc-400">{r.name}</div>
-            </Link>
-          </li>
-        ))}
-      </ul>
+    <Suspense fallback={null}>
+      <RoomStage roomSlug="lobby" zones={LOBBY_ZONES} />
+    </Suspense>
+    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center gap-2 p-8 pt-16 text-center">
+      <h1 className="title-64 text-5xl sm:text-6xl">StudyQuest.Party</h1>
     </main>
     </>
   );

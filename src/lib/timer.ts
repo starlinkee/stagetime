@@ -1,11 +1,21 @@
 export type Phase = "work" | "break";
 
-export interface RoomConfig {
+export interface PomodoroRoomConfig {
   slug: string;
   name: string;
+  kind: "pomodoro";
   workMin: number;
   breakMin: number;
 }
+
+/** Pokój z prywatnym stoperem każdej osoby (bez wspólnych cykli pracy/przerwy). */
+export interface StopwatchRoomConfig {
+  slug: string;
+  name: string;
+  kind: "stopwatch";
+}
+
+export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig;
 
 export interface TimerState {
   phase: Phase;
@@ -28,7 +38,7 @@ export const EPOCH_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
  */
 export function getTimerState(
   nowMs: number,
-  room: Pick<RoomConfig, "workMin" | "breakMin">,
+  room: Pick<PomodoroRoomConfig, "workMin" | "breakMin">,
 ): TimerState {
   const work = room.workMin * MIN;
   const brk = room.breakMin * MIN;

@@ -1,9 +1,9 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { RoomChat } from "@/components/RoomChat";
+import { Suspense } from "react";
 import { RoomStage } from "@/components/RoomStage";
 import { RoomTimer } from "@/components/RoomTimer";
-import { getRoom, ROOMS } from "@/lib/rooms";
+import { TimerRoom } from "@/components/TimerRoom";
+import { EXIT_ZONE, getRoom, ROOMS } from "@/lib/rooms";
 
 export function generateStaticParams() {
   return ROOMS.map((r) => ({ slug: r.slug }));
@@ -17,12 +17,18 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
       <h1 className="text-2xl font-semibold">{room.name}</h1>
-      <RoomTimer room={room} />
-      <RoomStage roomSlug={room.slug} />
-      <RoomChat roomSlug={room.slug} />
-      <Link href="/" className="text-sm text-zinc-500 hover:text-zinc-300">
-        ← All rooms
-      </Link>
+      {room.kind === "stopwatch" ? (
+        <Suspense fallback={null}>
+          <TimerRoom roomSlug={room.slug} />
+        </Suspense>
+      ) : (
+        <>
+          <RoomTimer room={room} />
+          <Suspense fallback={null}>
+            <RoomStage roomSlug={room.slug} zones={[EXIT_ZONE]} spawnZoneSlug={EXIT_ZONE.slug} />
+          </Suspense>
+        </>
+      )}
     </main>
   );
 }

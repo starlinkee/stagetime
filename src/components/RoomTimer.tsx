@@ -1,5 +1,5 @@
 "use client";
-import { formatMs, getTimerState, type RoomConfig } from "@/lib/timer";
+import { formatMs, getTimerState, type PomodoroRoomConfig } from "@/lib/timer";
 import { useServerNow } from "@/lib/useServerClock";
 
 function Counter({
@@ -22,7 +22,7 @@ function Counter({
   );
 }
 
-export function RoomTimer({ room }: { room: RoomConfig }) {
+export function RoomTimer({ room }: { room: PomodoroRoomConfig }) {
   const now = useServerNow();
 
   if (now === null) return <p className="text-zinc-400">Syncing clock…</p>;

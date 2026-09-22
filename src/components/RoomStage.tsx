@@ -1,11 +1,20 @@
 "use client";
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { DIR_DOWN, type Dir, PixelPerson } from "@/components/PixelPerson";
+import { getAdminSettings } from "@/lib/adminSettings";
+import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { useAccountLock } from "@/lib/useAccountLock";
+import { MAX_BODY, useChat } from "@/lib/useChat";
 import { safeColor, useMyProfile } from "@/lib/useProfile";
 import { useSession } from "@/lib/useSession";
+
+/** Pisanie w polu/textarea/select nie może być przechwycone przez sterowanie postacią ani skrótem otwierającym czat. */
+function isTypingTarget(el: EventTarget | null) {
+  return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+}
 
 /** Stały świat gry (jednostki): każdy widzi tę samą planszę, okno tylko ją skaluje. */
 const WORLD_W = 1600;
@@ -19,12 +28,23 @@ const TAG_H = 18;
 /** Minimalny odstęp losowego miejsca startu w pokoju od krawędzi ekranu. */
 const SPAWN_MARGIN = 80;
 const NO_NAME = "[no-name]";
+/**
+ * Zmiana pokoju (router.push) odmontowuje i montuje RoomStage od nowa — jeśli gracz cały czas
+ * trzyma E, nowa instancja od razu widziałaby ją jako wciśniętą (dzięki auto-repeat klawiatury)
+ * i natychmiast zaczęłaby odliczać wejście/wyjście w nowym pokoju, dając efekt migania
+ * wchodzę-wychodzę. Ta zmienna żyje poza komponentem, więc przetrwa remount: E musi zostać
+ * realnie puszczone (keyup), zanim znowu policzy się jako wciśnięte.
+ */
+let eKeyLockedAcrossRooms = false;
 /** Najczęściej co ile ms wysyłamy własną pozycję. */
 const SEND_EVERY = 60;
 
 /** Hint o strzałkach: tyle ms w pełni widoczny, potem tyle ms zanikania. */
 const HINT_MS = 5000;
 const HINT_FADE_MS = 1000;
+
+/** Jak długo wisi dymek z wiadomością nad postacią, zanim zniknie sam. */
+const BUBBLE_MS = 6000;
 
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
 
@@ -77,6 +97,28 @@ const HIT_MS = 350;
 const SHARD_MS = 500;
 /** Hitbox postaci: prostokąt sylwetki powiększony o tyle px z każdej strony. */
 const HIT_PAD = 4;
+
+/**
+ * Kwadrat na scenie: przytrzymanie E przez ROOM_ENTER_MS stojąc w nim albo przenosi do innego
+ * pokoju ("nav", domyślne — jak dotąd), albo wywołuje `onZoneAction` z tym `slug` bez nawigacji
+ * ("action" — np. przyciski podłogowe stopera), i może się powtórzyć po puszczeniu E.
+ */
+export type RoomZone = {
+  slug: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  kind?: "nav" | "action";
+};
+/** Ile ms trzeba przytrzymać E stojąc w kwadracie, żeby go użyć — patrz roomEnterSec w src/lib/adminSettings.ts. */
+const roomEnterMs = () => getAdminSettings().roomEnterSec * 1000;
+
+/** Czy prostokąt postaci (px, py, PERSON_W×PERSON_H) nachodzi na kwadrat pokoju. */
+function inZone(px: number, py: number, z: RoomZone) {
+  return px < z.x + z.w && px + PERSON_W > z.x && py < z.y + z.h && py + PERSON_H > z.y;
+}
 
 /** Czy koło (kula) styka się z hitboxem postaci o lewym górnym rogu (px, py). */
 function hits(b: Ball, px: number, py: number) {
@@ -197,13 +239,50 @@ function NameTag({ name }: { name: string | null }) {
   );
 }
 
+/** Dymek nad postacią z jej ostatnią wiadomością — znika sam po BUBBLE_MS. */
+function ChatBubble({ text }: { text: string }) {
+  return (
+    <div className="absolute bottom-full left-1/2 mb-5 max-w-48 -translate-x-1/2 whitespace-pre-wrap break-words rounded-xl bg-white px-2.5 py-1.5 text-center text-xs text-zinc-900 shadow-lg after:absolute after:left-1/2 after:top-full after:-ml-1.5 after:border-4 after:border-transparent after:border-t-white">
+      {text}
+    </div>
+  );
+}
+
 /**
  * Cały ekran jest sceną: własną postacią (biała bez konta, w kolorze profilu po zalogowaniu)
  * chodzi się strzałkami, a postaci wszystkich osób z pokoju są widoczne dla każdego.
  * Przytrzymana spacja ładuje nad postacią kulę (do 3 s), puszczona wystrzeliwuje ją w stronę,
  * w którą patrzy postać.
  */
-export function RoomStage({ roomSlug }: { roomSlug: string }) {
+export function RoomStage({
+  roomSlug,
+  zones = [],
+  spawnZoneSlug,
+  onZoneAction,
+}: {
+  roomSlug: string;
+  zones?: RoomZone[];
+  /**
+   * Slug strefy z `zones`, w której zawsze — niezależnie od zapisanej w bazie pozycji — staje
+   * postać, np. strefa wyjścia, żeby wejście do pokoju kończyło się dokładnie przy wyjściu i dało
+   * się od razu wyjść, trzymając E w tym samym miejscu. Gdy nieustawiony, o strefę pyta się
+   * parametru `from` w URL (patrz `effectiveSpawnZoneSlug` niżej) — tak lobby, w którym stref jest
+   * wiele, wie, do której wrócić po wyjściu z konkretnego pokoju.
+   */
+  spawnZoneSlug?: string;
+  /**
+   * Wywoływane po przytrzymaniu E przez roomEnterMs() w strefie typu "action".
+   * `pressedAt` (Date.now()) to chwila NACIŚNIĘCIA E, nie potwierdzenia — wywołujący może
+   * liczyć skutek akcji od tego momentu, żeby czas trzymania nie wliczał się do wyniku.
+   */
+  onZoneAction?: (slug: string, pressedAt: number) => void;
+}) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // Brak spawnZoneSlug (np. lobby, gdzie stref jest wiele) — bierzemy strefę odpowiadającą
+  // pokojowi, z którego właśnie wyszliśmy (patrz ?from= w router.push niżej w tym pliku).
+  const fromSlug = searchParams.get("from");
+  const effectiveSpawnZoneSlug = spawnZoneSlug ?? (fromSlug && zones.some((z) => z.slug === fromSlug) ? fromSlug : undefined);
   const { ready, session } = useSession();
   const profile = useMyProfile();
   const color = session ? profile.color : "#ffffff";
@@ -246,6 +325,16 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
   const othersRef = useRef<Others>({});
   const colorRef = useRef(color);
   const userIdRef = useRef(userId);
+  // Kwadraty pokoi (tylko na scenie z listą pokoi) — ref, żeby pętla ruchu nie zależała od propsa.
+  const zonesRef = useRef(zones);
+  useEffect(() => {
+    zonesRef.current = zones;
+  }, [zones]);
+  // Callback dla stref "action" — ref, żeby pętla ruchu nie zależała od propsa.
+  const onZoneActionRef = useRef(onZoneAction);
+  useEffect(() => {
+    onZoneActionRef.current = onZoneAction;
+  }, [onZoneAction]);
 
   // Zalogowany zaczyna tam, gdzie zostawił postać; kanał pokoju czeka na tę pozycję,
   // żeby inni nie zobaczyli najpierw losowego miejsca.
@@ -256,7 +345,9 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     let cancelled = false;
     void fetchSpawn(userId, roomSlug).then((p) => {
       if (cancelled) return;
-      if (p) {
+      // Wejście/wyjście przez strefę ma zawsze lądować dokładnie w jej środku — zapisana
+      // pozycja z bazy liczy się tylko, gdy nie ma strefy startowej (np. bezpośredni URL).
+      if (p && !effectiveSpawnZoneSlug) {
         myPos.current = p;
         spawnRef.current = p;
       }
@@ -266,7 +357,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     return () => {
       cancelled = true;
     };
-  }, [ready, userId, roomSlug, wantKey]);
+  }, [ready, userId, roomSlug, wantKey, effectiveSpawnZoneSlug]);
   const spawned = ready && (!userId || !getSupabase() || loadedKey === wantKey);
 
   // Ruch własnej postaci, kule i wysyłanie pozycji.
@@ -292,14 +383,24 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     resize();
 
     const held = new Set<string>();
-    // Losowe miejsce z marginesem od krawędzi. Na malutkim ekranie margines
-    // maleje (max ¼ wolnego miejsca), a gdy miejsca brak — postać ląduje na środku.
-    const freeW = WORLD_W - PERSON_W;
-    const freeH = WORLD_H - PERSON_H - TAG_H;
-    const mx = Math.min(SPAWN_MARGIN, freeW / 4);
-    const my = Math.min(SPAWN_MARGIN, freeH / 4);
-    let x = mx + Math.random() * (freeW - 2 * mx);
-    let y = TAG_H + my + Math.random() * (freeH - 2 * my);
+    const spawnZone = effectiveSpawnZoneSlug ? zonesRef.current.find((z) => z.slug === effectiveSpawnZoneSlug) : undefined;
+    let x: number;
+    let y: number;
+    if (spawnZone) {
+      // Bez zapisanej pozycji postać staje na środku strefy wejścia/wyjścia — tak jakby właśnie
+      // przez nią weszła, i może od razu trzymać E, żeby tą samą drogą wyjść.
+      x = spawnZone.x + spawnZone.w / 2 - PERSON_W / 2;
+      y = spawnZone.y + spawnZone.h / 2 - PERSON_H / 2;
+    } else {
+      // Losowe miejsce z marginesem od krawędzi. Na malutkim ekranie margines
+      // maleje (max ¼ wolnego miejsca), a gdy miejsca brak — postać ląduje na środku.
+      const freeW = WORLD_W - PERSON_W;
+      const freeH = WORLD_H - PERSON_H - TAG_H;
+      const mx = Math.min(SPAWN_MARGIN, freeW / 4);
+      const my = Math.min(SPAWN_MARGIN, freeH / 4);
+      x = mx + Math.random() * (freeW - 2 * mx);
+      y = TAG_H + my + Math.random() * (freeH - 2 * my);
+    }
     // Spawn znany od razu, żeby pierwsze wysłanie / Presence nie niosło pozycji ze środka.
     myPos.current = { ...clampPos(x, y), d: DIR_DOWN };
     let last = performance.now();
@@ -310,6 +411,15 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     let walkingNow = false;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
+    // Wejście do pokoju: trzymając E w jego kwadracie przez ROOM_ENTER_MS, wchodzimy na jego stronę.
+    let eDown = false;
+    // Jeśli E zostało wciśnięte jeszcze w poprzednim pokoju, ignorujemy je, dopóki nie przyjdzie keyup.
+    let eLocked = eKeyLockedAcrossRooms;
+    let eHoldStart: number | null = null;
+    let eHoldSlug: string | null = null;
+    let entered = false;
+    // Strefa "action": po zadziałaniu trzeba puścić E (albo zejść ze strefy), żeby użyć jej znowu.
+    let eActionFired = false;
 
     // Zapis pozycji w bazie (tylko zalogowany, aktywna karta, po wczytaniu starej pozycji).
     let saved = { x: NaN, y: NaN, d: -1 };
@@ -353,6 +463,30 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     const draw = (t: number) => {
       ctx.clearRect(0, 0, WORLD_W, WORLD_H);
       ctx.globalAlpha = 0.85;
+      // Kwadraty pokoi: podświetlone, gdy postać w nich stoi; pasek postępu podczas trzymania E.
+      for (const z of zonesRef.current) {
+        const active = z.slug === eHoldSlug && eHoldStart !== null;
+        ctx.lineWidth = active ? 3 : 1.5;
+        ctx.strokeStyle = active ? "#ffffff" : "rgba(255,255,255,0.4)";
+        ctx.fillStyle = active ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.05)";
+        ctx.beginPath();
+        ctx.roundRect(z.x, z.y, z.w, z.h, 10);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.font = "600 16px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2);
+        if (active && eHoldStart !== null) {
+          const p = Math.min(1, (t - eHoldStart) / roomEnterMs());
+          const barW = z.w - 16;
+          ctx.fillStyle = "rgba(255,255,255,0.25)";
+          ctx.fillRect(z.x + 8, z.y + z.h - 14, barW, 6);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(z.x + 8, z.y + z.h - 14, barW * p, 6);
+        }
+      }
       // W pełni naładowana kula pulsuje.
       const pulse = (p: number) => (p >= 1 ? 1 + 0.06 * Math.sin(t / 70) : 1);
       if (chargeStart !== null) {
@@ -462,6 +596,33 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       const shake = hitAge < HIT_MS ? Math.sin(hitAge / 18) * 5 * (1 - hitAge / HIT_MS) : 0;
       person.style.transform = `translate(${x + shake}px, ${y}px)`;
       myPos.current = { x, y, d: dir };
+      // Wejście do pokoju: E trzeba trzymać nieprzerwanie, stojąc w jego kwadracie.
+      const zone = on ? zonesRef.current.find((z) => inZone(x, y, z)) : undefined;
+      if (!eDown || !zone) {
+        eHoldStart = null;
+        eHoldSlug = null;
+        eActionFired = false;
+      } else if (zone.slug !== eHoldSlug) {
+        eHoldSlug = zone.slug;
+        eHoldStart = t;
+        eActionFired = false;
+      } else if (eHoldStart !== null && t - eHoldStart >= roomEnterMs()) {
+        if (zone.kind === "action") {
+          if (!eActionFired) {
+            eActionFired = true;
+            // Data zdarzenia to chwila NACIŚNIĘCIA E (początek trzymania), nie chwila potwierdzenia
+            // po roomEnterMs() — inaczej np. pauza doliczałaby czas spędzony na trzymaniu przycisku.
+            onZoneActionRef.current?.(zone.slug, Date.now() - (t - eHoldStart));
+          }
+        } else if (!entered) {
+          entered = true;
+          eKeyLockedAcrossRooms = true;
+          const target = zone.slug === "lobby" ? "/" : `/rooms/${zone.slug}`;
+          // ?from= mówi drugiej stronie, z którego pokoju przyszliśmy — lobby ma wiele stref
+          // wejścia/wyjścia i inaczej nie wiedziałoby, w której z nich dokładnie wylądować.
+          router.push(`${target}?from=${encodeURIComponent(roomSlug)}`);
+        }
+      }
       // Ostatnią pozycję po zatrzymaniu też wysyłamy (dirty zostaje do skutecznego wysłania).
       if (dirty && t - lastSent >= SEND_EVERY) {
         send();
@@ -496,18 +657,19 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       raf = requestAnimationFrame(tick);
     };
 
-    // Pisanie na czacie nie może ruszać postacią.
-    const typing = (el: EventTarget | null) =>
-      el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
-
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!activeRef.current || document.documentElement.dataset.stale || typing(e.target) || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (!activeRef.current || document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey)
+        return;
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
         if (!e.repeat && chargeStart === null) {
           chargeStart = performance.now();
           emit("charge", { on: true });
         }
+        return;
+      }
+      if (e.code === "KeyE") {
+        if (!eLocked) eDown = true;
         return;
       }
       if (!ARROWS.has(e.key)) return;
@@ -520,11 +682,24 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
         release();
         return;
       }
+      if (e.code === "KeyE") {
+        eLocked = false;
+        eKeyLockedAcrossRooms = false;
+        eDown = false;
+        eHoldStart = null;
+        eHoldSlug = null;
+        eActionFired = false;
+        return;
+      }
       held.delete(e.key);
     };
     const onBlur = () => {
       held.clear();
       cancelCharge();
+      eDown = false;
+      eHoldStart = null;
+      eHoldSlug = null;
+      eActionFired = false;
       persist(); // przełączenie na inne okno — tam ma zacząć się od tego miejsca
     };
 
@@ -546,7 +721,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("resize", resize);
     };
-  }, [roomSlug]);
+  }, [roomSlug, router, effectiveSpawnZoneSlug]);
 
   // Kanał pokoju: Presence mówi, kto jest i jak wygląda, Broadcast niesie pozycje i kule.
   useEffect(() => {
@@ -708,6 +883,107 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
     };
   }, []);
 
+  // Czat: Enter otwiera pole (domyślnie widok "room"), Tab przełącza na "all", Enter znowu wysyła.
+  // Wysyłanie zawsze trafia do roomSlug — tam stoi postać — dymek nad nią widzą tylko inni w tym pokoju.
+  const chat = useChat(roomSlug);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatScope, setChatScope] = useState<"room" | "all">("room");
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatSending, setChatSending] = useState(false);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+  const chatAll = useChat(roomSlug, { scope: "all", enabled: chatOpen && chatScope === "all" });
+  const chatPreview = chatScope === "room" ? chat.messages : chatAll.messages;
+  const chatListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = chatListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chatPreview]);
+
+  // Dymki: tylko dla naprawdę nowych wiadomości (nie dla historii wczytanej przy montowaniu).
+  const [bubbles, setBubbles] = useState<Record<string, { text: string; id: string }>>({});
+  const bubbleTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const seenIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    // Historia dociera asynchronicznie: dopóki się nie wczyta, nie ustalamy punktu odniesienia,
+    // bo inaczej cała wczytana historia wygląda jak "nowe" wiadomości (dymki nad wszystkimi po
+    // wejściu do pokoju, w którym już się było).
+    if (!chat.loaded) return;
+    const ids = new Set(chat.messages.map((m) => m.id));
+    const seen = seenIdsRef.current;
+    seenIdsRef.current = ids;
+    if (!seen) return;
+    for (const m of chat.messages) {
+      if (seen.has(m.id)) continue;
+      const k = m.user_id === userIdRef.current ? "me" : Object.entries(othersRef.current).find(([, o]) => o.user === m.user_id)?.[0];
+      if (!k) continue;
+      setBubbles((b) => ({ ...b, [k]: { text: m.body, id: m.id } }));
+      clearTimeout(bubbleTimers.current[k]);
+      bubbleTimers.current[k] = setTimeout(() => {
+        setBubbles((b) => {
+          const rest = { ...b };
+          delete rest[k];
+          return rest;
+        });
+      }, BUBBLE_MS);
+    }
+  }, [chat.messages, chat.loaded]);
+  useEffect(() => {
+    const timers = bubbleTimers.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
+
+  // Enter otwiera czat (poza polami tekstowymi) — dopóki jest otwarty, pole samo obsługuje swoje klawisze.
+  useEffect(() => {
+    if (chatOpen || !chat.available || !chat.canSend) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        setChatOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [chatOpen, chat.available, chat.canSend]);
+
+  useEffect(() => {
+    if (chatOpen) chatInputRef.current?.focus();
+  }, [chatOpen]);
+
+  const onChatKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      setChatScope((s) => (s === "room" ? "all" : "room"));
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setChatOpen(false);
+      setChatDraft("");
+    }
+  };
+
+  const onChatSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = chatDraft.trim();
+    if (!text || chatSending) {
+      setChatOpen(false);
+      setChatDraft("");
+      return;
+    }
+    setChatSending(true);
+    const ok = await chat.send(text);
+    setChatSending(false);
+    // Zamykamy tylko po udanym wysłaniu — przy błędzie (np. rate limit) tekst i panel zostają,
+    // żeby było widać komunikat błędu i dało się spróbować jeszcze raz.
+    if (ok) {
+      setChatDraft("");
+      setChatOpen(false);
+    } else {
+      chatInputRef.current?.focus();
+    }
+  };
+
   // Warstwa na cały ekran, pod treścią strony: postacie są „za” tekstem i czatem, lekko przygaszone.
   return (
     <>
@@ -717,6 +993,9 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
         className={`pointer-events-none fixed left-1/2 top-6 z-10 -translate-x-1/2 rounded-full transition-opacity duration-1000 ${hint === "fade" ? "opacity-0" : "opacity-100"} bg-zinc-900/80 px-4 py-2 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100/90 dark:text-zinc-900`}
       >
         Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge, release to shoot
+        {zones.some((z) => (z.kind ?? "nav") === "nav") && " · walk into a room and hold E to enter"}
+        {zones.some((z) => z.kind === "action") && " · stand on a button and hold E to use it"}
+        {chat.available && chat.canSend && " · Enter opens chat, Tab switches room/all"}
       </div>
     )}
     {superseded && (
@@ -748,6 +1027,7 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
             className="absolute left-0 top-0 opacity-70 transition-transform duration-100 ease-linear"
             style={{ transform: `translate(${o.x}px, ${o.y}px)` }}
           >
+            {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
             <NameTag name={o.nick} />
             <PixelPerson color={o.color} label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={walkers[k]} />
           </div>
@@ -756,12 +1036,71 @@ export function RoomStage({ roomSlug }: { roomSlug: string }) {
           ref={personRef}
           className={`absolute left-0 top-0 opacity-70 will-change-transform ${superseded ? "invisible" : ""}`}
         >
+          {bubbles.me && <ChatBubble text={bubbles.me.text} />}
           <NameTag name={nick} />
           <PixelPerson color={color} label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myDir} walking={myWalking} />
         </div>
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
       </div>
     </div>
+    {chatOpen && (
+      <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex justify-center px-4">
+        <div className="pointer-events-auto flex w-full max-w-xl items-end gap-2">
+          <div className="flex shrink-0 flex-col gap-1 rounded-xl bg-zinc-900/90 p-1 text-xs shadow-lg backdrop-blur dark:bg-zinc-100/90">
+            <button
+              type="button"
+              onClick={() => setChatScope("room")}
+              className={`rounded-lg px-2 py-1.5 ${chatScope === "room" ? "bg-zinc-700 text-zinc-100 dark:bg-zinc-300 dark:text-zinc-900" : "text-zinc-400 hover:text-zinc-200 dark:text-zinc-600 dark:hover:text-zinc-800"}`}
+            >
+              Room
+            </button>
+            <button
+              type="button"
+              onClick={() => setChatScope("all")}
+              className={`rounded-lg px-2 py-1.5 ${chatScope === "all" ? "bg-zinc-700 text-zinc-100 dark:bg-zinc-300 dark:text-zinc-900" : "text-zinc-400 hover:text-zinc-200 dark:text-zinc-600 dark:hover:text-zinc-800"}`}
+            >
+              All
+            </button>
+          </div>
+          <div className="flex flex-1 flex-col gap-2">
+            <div
+              ref={chatListRef}
+              className="flex h-64 flex-col gap-1.5 overflow-y-auto rounded-xl bg-zinc-900/85 p-3 text-sm shadow-lg backdrop-blur"
+            >
+              {chatPreview.length === 0 ? (
+                <p className="m-auto text-xs text-zinc-500">No messages yet.</p>
+              ) : (
+                chatPreview.map((m) => (
+                  <p key={m.id} className="break-words text-zinc-200">
+                    {chatScope === "all" && (
+                      <span className="mr-1 rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-400">{roomLabel(m.room_slug)}</span>
+                    )}
+                    <span className="font-medium text-sky-300">{m.author}: </span>
+                    {m.body}
+                  </p>
+                ))
+              )}
+            </div>
+            {chat.error && <p className="text-xs text-rose-400">{chat.error}</p>}
+            <form
+              onSubmit={(e) => void onChatSubmit(e)}
+              className="flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/90 px-4 py-2 shadow-lg backdrop-blur dark:bg-zinc-100/90"
+            >
+              <input
+                ref={chatInputRef}
+                value={chatDraft}
+                onChange={(e) => setChatDraft(e.target.value)}
+                onKeyDown={onChatKeyDown}
+                maxLength={MAX_BODY}
+                disabled={chatSending}
+                placeholder="Message… Tab: room/all · Enter: send · Esc: close"
+                className="flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500 dark:text-zinc-900"
+              />
+            </form>
+          </div>
+        </div>
+      </div>
+    )}
     </>
   );
 }
