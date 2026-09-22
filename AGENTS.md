@@ -9,9 +9,16 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 <!-- END:nextjs-agent-rules -->
 
 
-<!-- poniższe na razie ignore dopóki nie usune tego taga-->
+## ⚠️ PLAN NA PRZYSZŁOŚĆ — jeszcze nie zaimplementowane
 
-# Architektura Projektu: Multiplayer 2D Game (TypeScript)
+Sekcja poniżej ("Architektura Projektu: Multiplayer 2D Game") to **koncept docelowej architektury dla walki**, nie opis obecnego stanu repo. Dzisiejszy kod (`src/`) to Next.js + Supabase — pokoje coworkingowe z timerem Pomodoro, presence i pozycjami graczy, bez żadnego silnika walki, AI potworów, FSM ani podziału na `/client` `/server` `/shared` (nie ma monorepo, nie ma Colyseus). Walka jest **następnym krokiem**, jeszcze nie rozpoczętym.
+
+Dopóki ta sekcja nie zostanie zrealizowana:
+- Nie zakładaj istnienia `/client`, `/server`, `/shared` ani żadnych plików z nich — sprawdź realną strukturę w `src/`.
+- Traktuj poniższe zasady jako wymagania na *przyszłą* implementację walki, gdy ta faktycznie ruszy — nie stosuj ich do dzisiejszego kodu.
+- Gdy walka zacznie być budowana, ta sekcja opisuje obowiązujący podział ról (serwer autorytatywny, klient = tylko prezentacja).
+
+# Architektura Projektu: Multiplayer 2D Game (TypeScript) — koncept, do wdrożenia w przyszłości
 
 ## Kontekst Systemowy
 Projekt to gra wieloosobowa 2D działająca w czasie rzeczywistym. Gra opiera się na architekturze autorytatywnego serwera (Authoritative Server). Repozytorium jest zorganizowane jako Monorepo (npm/pnpm workspaces) i dzieli się na trzy główne pakiety: `/client`, `/server` oraz `/shared`.
@@ -39,5 +46,3 @@ Projekt to gra wieloosobowa 2D działająca w czasie rzeczywistym. Gra opiera si
 1. Generując nową mechanikę, zachowanie AI lub atak, ZAWSZE rozpocznij od definicji typów w `/shared`.
 2. Następnie zaimplementuj matematykę, FSM i logikę po stronie `/server`.
 3. Na końcu zmodyfikuj kod w `/client` wyłącznie w celu wizualnej reprezentacji zmian, które nastąpiły na serwerze (np. dodaj kod odtwarzający konkretną klatkę ze Sprite Sheet, gdy serwer wyśle sygnał ataku).
-
-<!-- END: poniższe na razie ignore dopóki nie usune tego taga-->
