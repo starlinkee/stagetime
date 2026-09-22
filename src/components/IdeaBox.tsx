@@ -137,7 +137,7 @@ export function IdeaBox() {
           onClick={() => setOpen((o) => !o)}
           className="rounded-full bg-zinc-800/90 px-3 py-2 text-xs font-medium text-zinc-200 shadow-lg ring-1 ring-zinc-600 hover:bg-zinc-700"
         >
-          💡 Idea
+          💡 Report idea
         </button>
     </div>
   );

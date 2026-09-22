@@ -13,8 +13,8 @@ export type StudyXpUpdate = { xp: number; study_seconds: number; coins: number }
  * (see supabase/migrations/0010_xp.sql, 0014_timer_xp_rate.sql and 0015_coins.sql), which measures elapsed time
  * itself from the gap between heartbeats — this hook only has to keep sending them, it can't
  * inflate XP by reporting a bigger gap than actually happened. Paused while the tab is hidden,
- * so a backgrounded tab doesn't keep earning XP. No-op in the lobby (not a study room) or when
- * signed out.
+ * so a backgrounded tab doesn't keep earning XP. No-op in the lobby or Shop (not study rooms) or
+ * when signed out.
  *
  * `running` (default true) gates accrual — used by the Timer Room to only credit XP while the
  * stopwatch is started (see src/components/TimerRoom.tsx and RoomStage's `xpRunning` prop).
@@ -22,6 +22,8 @@ export type StudyXpUpdate = { xp: number; study_seconds: number; coins: number }
  * flips, so pausing stops the clock (and doesn't leave a stale gap to credit on resume) without
  * waiting for the next 60s tick.
  */
+const NON_STUDY_ROOMS = new Set(["lobby", "shop"]);
+
 export function useStudyXp(roomSlug: string, running = true, onUpdate?: (u: StudyXpUpdate) => void) {
   const { session } = useSession();
   const userId = session?.user.id ?? null;
@@ -32,7 +34,7 @@ export function useStudyXp(roomSlug: string, running = true, onUpdate?: (u: Stud
 
   useEffect(() => {
     const sb = getSupabase();
-    if (!sb || !userId || roomSlug === "lobby") return;
+    if (!sb || !userId || NON_STUDY_ROOMS.has(roomSlug)) return;
     let cancelled = false;
 
     const beat = () => {

@@ -60,6 +60,13 @@ export type MyProfile = {
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
+  /**
+   * Kupuje zmianę koloru w Shopie (patrz src/components/ShopRoom.tsx i
+   * supabase/migrations/0019_shop_color_purchase.sql) — jedno wywołanie RPC atomowo sprawdza
+   * saldo, odejmuje coiny i zapisuje kolor w jednej transakcji, więc awaria przeglądarki w
+   * dowolnym momencie przed odpowiedzią nigdy nie zdejmuje coinów bez zapisania koloru (i odwrotnie).
+   */
+  purchaseColor: (color: string) => Promise<{ ok: true } | { ok: false; error: string }>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -99,9 +106,9 @@ export function useMyProfile(): MyProfile {
           userId,
           nickname: data?.nickname ?? fallback ?? "User",
           color: safeColor(data?.color),
-          xp: data?.xp ?? 0,
+          xp: Number(data?.xp ?? 0),
           ballsShot: data?.balls_shot ?? 0,
-          coins: data?.coins ?? 0,
+          coins: Number(data?.coins ?? 0),
         });
       });
     return () => {
@@ -128,15 +135,15 @@ export function useMyProfile(): MyProfile {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "profiles", filter: `id=eq.${userId}` },
         ({ new: row }) => {
-          const p = row as { nickname?: string; color?: string; xp?: number; balls_shot?: number; coins?: number };
+          const p = row as { nickname?: string; color?: string; xp?: number | string; balls_shot?: number; coins?: number | string };
           if (!p.nickname) return;
           setLoaded({
             userId,
             nickname: p.nickname,
             color: safeColor(p.color),
-            xp: p.xp ?? 0,
+            xp: Number(p.xp ?? 0),
             ballsShot: p.balls_shot ?? 0,
-            coins: p.coins ?? 0,
+            coins: Number(p.coins ?? 0),
           });
         },
       )
@@ -190,6 +197,43 @@ export function useMyProfile(): MyProfile {
     [sb, userId, currentNickname, currentXp, currentBallsShot, currentCoins],
   );
 
+  const purchaseColor = useCallback(
+    async (color: string) => {
+      if (!COLOR_RE.test(color)) return { ok: false as const, error: "Invalid color." };
+      if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      // Jedno RPC: sprawdza saldo, odejmuje coiny i zapisuje kolor w jednej transakcji po stronie
+      // bazy (patrz supabase/migrations/0019_shop_color_purchase.sql) — do chwili odpowiedzi nic
+      // się nie dzieje, więc awaria karty w trakcie nigdy nie zdejmuje coinów bez zmiany koloru.
+      const { data, error } = await sb.rpc("purchase_color_change", { p_color: color });
+      if (error) {
+        console.error("purchase_color_change", error);
+        const message =
+          error.message === "insufficient_coins"
+            ? "Not enough copper coins."
+            : `Purchase failed: ${saveHint(error)}`;
+        return { ok: false as const, error: message };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as { color?: string; coins?: number | string } | null;
+      const newColor = safeColor(row?.color ?? color);
+      const newCoins = Number(row?.coins ?? currentCoins);
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: newColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            coins: newCoins,
+          },
+        }),
+      );
+      return { ok: true as const };
+    },
+    [sb, userId, currentNickname, currentXp, currentBallsShot, currentCoins],
+  );
+
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
   const offline = !sb || !userId;
   const mine = loaded?.userId === userId ? loaded : null;
@@ -204,6 +248,7 @@ export function useMyProfile(): MyProfile {
     coins: mine?.coins ?? 0,
     error,
     save,
+    purchaseColor,
   };
 }
 
@@ -231,6 +276,7 @@ export function useProfiles(userIds: string[]): Profiles {
     sb.from("profiles")
       .select("id, nickname, color, xp, balls_shot")
       .in("id", missing)
+      // xp is numeric(12,1) — PostgREST may serialize it as a string, so toMap() below parses it.
       .then(({ data, error }) => {
         if (cancelled || error || !data) return;
         setProfiles((prev) => ({ ...prev, ...toMap(data) }));
@@ -252,7 +298,7 @@ export function useProfiles(userIds: string[]): Profiles {
             id?: string;
             nickname?: string;
             color?: string;
-            xp?: number;
+            xp?: number | string;
             balls_shot?: number;
           };
           if (!profile?.id || !profile.nickname) return;
@@ -260,7 +306,7 @@ export function useProfiles(userIds: string[]): Profiles {
           setProfiles((prev) =>
             // Interesują nas tylko osoby widoczne na stronie (czat, obecni).
             fetched.current.has(id)
-              ? { ...prev, [id]: { nickname, color: safeColor(color), xp: xp ?? 0, ballsShot: balls_shot ?? 0 } }
+              ? { ...prev, [id]: { nickname, color: safeColor(color), xp: Number(xp ?? 0), ballsShot: balls_shot ?? 0 } }
               : prev,
           );
         },
@@ -285,12 +331,12 @@ function saveHint(error: { code?: string; message: string }): string {
 }
 
 function toMap(
-  rows: { id: string; nickname: string; color: string; xp: number; balls_shot: number }[],
+  rows: { id: string; nickname: string; color: string; xp: number | string; balls_shot: number }[],
 ): Profiles {
   return Object.fromEntries(
     rows.map((r) => [
       r.id,
-      { nickname: r.nickname, color: safeColor(r.color), xp: r.xp ?? 0, ballsShot: r.balls_shot ?? 0 },
+      { nickname: r.nickname, color: safeColor(r.color), xp: Number(r.xp ?? 0), ballsShot: r.balls_shot ?? 0 },
     ]),
   );
 }

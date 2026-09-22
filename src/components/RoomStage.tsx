@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { LevelBadge } from "@/components/LevelBadge";
 import { DIR_DOWN, type Dir, PixelPerson } from "@/components/PixelPerson";
 import { getAdminSettings } from "@/lib/adminSettings";
+import { setHowToPlay } from "@/lib/howToPlay";
 import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { formatMs, getTimerState } from "@/lib/timer";
@@ -49,10 +50,6 @@ const SPAWN_FROM_KEY = "stagetime:spawnFrom";
 let eKeyLockedAcrossRooms = false;
 /** Najczęściej co ile ms wysyłamy własną pozycję. */
 const SEND_EVERY = 60;
-
-/** Hint o strzałkach: tyle ms w pełni widoczny, potem tyle ms zanikania. */
-const HINT_MS = 5000;
-const HINT_FADE_MS = 1000;
 
 /** Jak długo wisi dymek z wiadomością nad postacią, zanim zniknie sam. */
 const BUBBLE_MS = 6000;
@@ -126,6 +123,10 @@ export type RoomZone = {
   phase?: { workMin: number; breakMin: number; offsetMs?: number };
   /** Kolor obrysu/wypełnienia kwadratu w lobby, odróżniający typ i wariant pokoju. */
   color?: string;
+  /** Wejście tylko dla zalogowanych (np. Shop) — bez konta kwadrat pokazuje kłódkę zamiast numeru/nazwy. */
+  requiresAuth?: boolean;
+  /** Pokój nie daje XP ani coinów za obecność (np. Shop) — pod numerem nie pokazujemy nagrody. */
+  noReward?: boolean;
 };
 /** Ile ms trzeba przytrzymać E stojąc w kwadracie, żeby go użyć — patrz roomEnterSec w src/lib/adminSettings.ts. */
 const roomEnterMs = () => getAdminSettings().roomEnterSec * 1000;
@@ -373,6 +374,12 @@ export function RoomStage({
   const othersRef = useRef<Others>({});
   const colorRef = useRef(color);
   const userIdRef = useRef(userId);
+  // Bieżąca sesja (access token) do nagłówka Authorization przy wejściu do pokoi wymagających
+  // logowania (np. Shop) — ref, żeby fetch w pętli ruchu (efekt montowany raz) widział świeży token.
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
   // Kwadraty pokoi (tylko na scenie z listą pokoi) — ref, żeby pętla ruchu nie zależała od propsa.
   const zonesRef = useRef(zones);
   useEffect(() => {
@@ -540,11 +547,13 @@ export function RoomStage({
         ctx.fill();
         ctx.stroke();
         const phaseState = z.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, z.phase) : null;
+        // Strefa wymagająca konta (np. Shop) bez zalogowania — zamknięta niezależnie od fazy.
+        const authLocked = Boolean(z.requiresAuth) && !userIdRef.current;
         ctx.fillStyle = "rgba(255,255,255,0.85)";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        if (phaseState?.phase === "work") {
-          // Zablokowane (praca w toku, nie da się teraz wejść) — kłódka zamiast numeru pokoju.
+        if (authLocked || phaseState?.phase === "work") {
+          // Zablokowane (praca w toku albo trzeba się zalogować) — kłódka zamiast numeru pokoju.
           ctx.font = "20px sans-serif";
           ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
         } else {
@@ -557,11 +566,15 @@ export function RoomStage({
         // w pokoju, ale tylko gdy ktoś tam jest.
         const occupants = occupancyRef.current?.[z.slug];
         const isExitHere = roomSlug !== "lobby" && z.slug === "lobby";
+        // Pokój zamknięty (trwa faza work): pokazujemy tylko kłódkę i czerwone odliczanie pod
+        // kwadratem (patrz niżej, phaseState) — żadnych innych informacji (nagroda, liczba osób,
+        // teksty przy wejściu w strefę).
+        const workClosed = phaseState?.phase === "work";
         // Nagroda XP tego pokoju i długość faz: pod numerem/kłódką, zawsze widoczna (nie tylko
         // stojąc na kwadracie) — dla pomodoro to praca+przerwa w minutach i nagroda za całą sesję
         // pracy, dla stopwatch/timer stała stawka za ciągłą obecność (patrz STUDY_SECONDS_PER_XP
         // w src/lib/xp.ts).
-        if ((z.kind ?? "nav") === "nav" && !isExitHere) {
+        if ((z.kind ?? "nav") === "nav" && !isExitHere && !z.noReward && !workClosed) {
           ctx.fillStyle = "rgba(255,255,255,0.7)";
           ctx.font = "600 10px sans-serif";
           ctx.fillText(z.phase ? `${z.phase.workMin}+${z.phase.breakMin} min` : "no timer", z.x + z.w / 2, z.y + z.h / 2 + 10);
@@ -575,21 +588,21 @@ export function RoomStage({
             z.y + z.h / 2 + 22,
           );
         }
-        if (inZone(x, y, z) && (z.kind ?? "nav") === "nav") {
+        if (inZone(x, y, z) && (z.kind ?? "nav") === "nav" && !workClosed) {
           if (isExitHere) {
             ctx.fillStyle = "#22c55e";
             ctx.font = "700 12px sans-serif";
             ctx.fillText("E to exit room", z.x + z.w / 2, z.y + z.h / 2 + 38);
-          } else if (phaseState?.phase === "work") {
+          } else if (authLocked) {
             ctx.fillStyle = "rgba(255,255,255,0.75)";
             ctx.font = "700 12px sans-serif";
-            ctx.fillText("Room is closed", z.x + z.w / 2, z.y + z.h / 2 + 38);
+            ctx.fillText("Sign in required", z.x + z.w / 2, z.y + z.h / 2 + 38);
           } else {
             ctx.fillStyle = "#22c55e";
             ctx.font = "700 12px sans-serif";
             ctx.fillText("E to enter room", z.x + z.w / 2, z.y + z.h / 2 + 38);
           }
-        } else if (occupants) {
+        } else if (occupants && !workClosed) {
           ctx.fillStyle = "rgba(255,255,255,0.75)";
           ctx.font = "500 12px sans-serif";
           ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 38);
@@ -751,7 +764,12 @@ export function RoomStage({
         eActionFired = false;
         exitWarned = false;
       } else if (eHoldStart === null) {
-        eHoldStart = t;
+        // Strefa "action" już zadziałała podczas tego samego, nieprzerwanego trzymania E — pasek
+        // nie ma się ładować drugi raz; trzeba puścić E (patrz onKeyUp, kasuje eActionFired) i
+        // przytrzymać je od nowa.
+        if (!(zone.kind === "action" && eActionFired)) {
+          eHoldStart = t;
+        }
       } else if (t - eHoldStart >= roomEnterMs()) {
         if (zone.kind === "action") {
           if (!eActionFired) {
@@ -766,7 +784,12 @@ export function RoomStage({
           const isExit = zone.slug === "lobby";
           const zonePhase =
             zone.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, zone.phase).phase : null;
-          if (isExit && zonePhase === "work" && !exitWarned) {
+          if (!isExit && zone.requiresAuth && !userIdRef.current) {
+            // Strefa zamknięta bez konta (np. Shop) — nie ma sensu nawet pytać serwera o bilet.
+            if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
+            setEntryError(`You must be signed in to enter ${zone.name}.`);
+            entryErrorTimer.current = setTimeout(() => setEntryError(null), 4000);
+          } else if (isExit && zonePhase === "work" && !exitWarned) {
             // Pierwsze przytrzymanie E podczas fazy work: tylko ostrzeżenie, bez wyjścia —
             // trzeba puścić E i przytrzymać je jeszcze raz, żeby naprawdę wyjść.
             exitWarned = true;
@@ -787,10 +810,16 @@ export function RoomStage({
               router.push("/");
             } else {
               // Wejście do pokoju wymaga biletu wydanego tylko za to przytrzymanie E — samo
-              // wklejenie /rooms/<slug> w pasku adresu nic nie da (patrz proxy.ts).
+              // wklejenie /rooms/<slug> w pasku adresu nic nie da (patrz proxy.ts). Token sesji
+              // (gdy jest) leci jako Bearer, żeby serwer mógł potwierdzić konto dla stref typu
+              // Shop (patrz requiresAuth) — dla zwykłych pokoi serwer go po prostu ignoruje.
+              const accessToken = sessionRef.current?.access_token;
               void fetch("/api/rooms/enter", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+                },
                 body: JSON.stringify({ slug: zone.slug }),
               })
               .then(async (res) => {
@@ -800,15 +829,21 @@ export function RoomStage({
                 }
                 const data: unknown = await res.json().catch(() => null);
                 const code = data && typeof data === "object" && "error" in data ? (data as { error: unknown }).error : null;
-                throw new Error(code === "work-in-progress" ? "work-in-progress" : "entry ticket request failed");
+                throw new Error(
+                  code === "work-in-progress" ? "work-in-progress" : code === "auth-required" ? "auth-required" : "entry ticket request failed",
+                );
               })
               .catch((err: unknown) => {
                 // Serwer odmówił biletu — zostajemy tu, E można spróbować przytrzymać ponownie.
                 entered = false;
                 eKeyLockedAcrossRooms = false;
-                if (err instanceof Error && err.message === "work-in-progress") {
+                if (err instanceof Error && (err.message === "work-in-progress" || err.message === "auth-required")) {
                   if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
-                  setEntryError("You can only enter during the break — a work session is in progress.");
+                  setEntryError(
+                    err.message === "work-in-progress"
+                      ? "You can only enter during the break — a work session is in progress."
+                      : `You must be signed in to enter ${zone.name}.`,
+                  );
                   entryErrorTimer.current = setTimeout(() => setEntryError(null), 4000);
                 }
               });
@@ -1067,16 +1102,6 @@ export function RoomStage({
     if (channel?.state === "joined" && activeRef.current) void channel.track({ ...metaRef.current, ...myPos.current });
   }, [color, nick, profile.xp, userId]);
 
-  // Hint dla wszystkich (też bez konta): widoczny HINT_MS, potem HINT_FADE_MS zanikania.
-  const [hint, setHint] = useState<"show" | "fade" | "done">("show");
-  useEffect(() => {
-    const fade = setTimeout(() => setHint("fade"), HINT_MS);
-    const done = setTimeout(() => setHint("done"), HINT_MS + HINT_FADE_MS);
-    return () => {
-      clearTimeout(fade);
-      clearTimeout(done);
-    };
-  }, []);
   useEffect(() => () => {
     if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
   }, []);
@@ -1096,6 +1121,17 @@ export function RoomStage({
     const el = chatListRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [chatPreview]);
+
+  // Publikujemy sterowanie tego pokoju do przycisku "How to play" w headerze (poza drzewem RoomStage) —
+  // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
+  useEffect(() => {
+    let text = "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge, release to shoot";
+    if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
+    if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
+    if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
+    setHowToPlay(text);
+    return () => setHowToPlay(null);
+  }, [zones, chat.available, chat.canSend]);
 
   // Dymki: tylko dla naprawdę nowych wiadomości (nie dla historii wczytanej przy montowaniu).
   const [bubbles, setBubbles] = useState<Record<string, { text: string; id: string }>>({});
@@ -1150,6 +1186,20 @@ export function RoomStage({
     if (chatOpen) chatInputRef.current?.focus();
   }, [chatOpen]);
 
+  // Esc zamyka czat nawet gdy pole straciło focus (np. po kliknięciu poza czatem).
+  useEffect(() => {
+    if (!chatOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setChatOpen(false);
+        setChatDraft("");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [chatOpen]);
+
   const onChatKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Tab") {
       e.preventDefault();
@@ -1185,17 +1235,6 @@ export function RoomStage({
   // Warstwa na cały ekran, pod treścią strony: postacie są „za” tekstem i czatem, lekko przygaszone.
   return (
     <>
-    {hint !== "done" && (
-      <div
-        role="status"
-        className={`pointer-events-none fixed bottom-6 left-1/2 z-10 -translate-x-1/2 rounded-full transition-opacity duration-1000 ${hint === "fade" ? "opacity-0" : "opacity-100"} bg-zinc-900/80 px-4 py-2 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100/90 dark:text-zinc-900`}
-      >
-        Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge, release to shoot
-        {zones.some((z) => (z.kind ?? "nav") === "nav") && " · walk into a room and hold E to enter"}
-        {zones.some((z) => z.kind === "action") && " · stand on a button and hold E to use it"}
-        {chat.available && chat.canSend && " · Enter opens chat, Tab switches room/all"}
-      </div>
-    )}
     {entryError && (
       <div
         role="alert"

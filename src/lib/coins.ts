@@ -10,3 +10,10 @@ export const STUDY_SECONDS_PER_COIN = 60;
 export function coinsForMinutes(minutes: number): number {
   return Math.round((minutes * 60) / STUDY_SECONDS_PER_COIN);
 }
+
+/**
+ * Price of a character color change in the Shop (src/components/ShopRoom.tsx) — must match the
+ * `v_cost` constant in supabase/migrations/0019_shop_color_purchase.sql, which is the one that
+ * actually charges the player; this copy is only for displaying the price client-side.
+ */
+export const COLOR_CHANGE_COST = 100;

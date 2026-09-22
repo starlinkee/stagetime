@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
-import { CoinBadge } from "@/components/CoinBadge";
+import { CoinBadge, CoinIcon } from "@/components/CoinBadge";
 import { LevelBadge } from "@/components/LevelBadge";
 import { PixelPerson } from "@/components/PixelPerson";
 import { COLOR_CHOICES, useMyProfile } from "@/lib/useProfile";
@@ -145,8 +145,11 @@ function ProfileForm({
         <span className="font-semibold text-zinc-200">{ballsShot}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
-        <span className="text-zinc-400">Coins</span>
-        <span className="font-semibold text-orange-300">🪙{coins}</span>
+        <span className="text-zinc-400">Copper coins</span>
+        <span className="flex items-center gap-1 font-semibold text-orange-300">
+          <CoinIcon className="h-3 w-3" />
+          {coins.toFixed(1)}
+        </span>
       </div>
       {error && <p className="text-xs text-rose-400">{error}</p>}
     </div>

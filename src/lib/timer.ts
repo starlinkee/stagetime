@@ -24,7 +24,15 @@ export interface StopwatchRoomConfig {
   color?: string;
 }
 
-export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig;
+/** Sklep: nie zarabia się tu XP/coinów, można je za to wydać (patrz src/components/ShopRoom.tsx). */
+export interface ShopRoomConfig {
+  slug: string;
+  name: string;
+  kind: "shop";
+  color?: string;
+}
+
+export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig | ShopRoomConfig;
 
 export interface TimerState {
   phase: Phase;

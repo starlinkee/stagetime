@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Fredoka, Geist, Geist_Mono } from "next/font/google";
 import { AdminPanel } from "@/components/AdminPanel";
 import { AuthButton } from "@/components/AuthButton";
+import { HowToPlayButton } from "@/components/HowToPlayButton";
 import { AllIdeasLink, IdeaBox } from "@/components/IdeaBox";
 import { PresenceBar } from "@/components/PresenceBar";
 import { VersionWatcher } from "@/components/VersionWatcher";
@@ -44,6 +45,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <PresenceBar />
           </div>
           <div className="flex flex-1 items-center justify-end gap-2">
+            <HowToPlayButton />
             <IdeaBox />
             <AuthButton />
           </div>

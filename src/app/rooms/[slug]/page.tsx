@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { RoomStage } from "@/components/RoomStage";
 import { RoomTimer } from "@/components/RoomTimer";
+import { ShopRoom } from "@/components/ShopRoom";
 import { TimerRoom } from "@/components/TimerRoom";
 import { coinsForMinutes } from "@/lib/coins";
 import { EXIT_ZONE, getRoom, ROOMS } from "@/lib/rooms";
@@ -29,21 +30,27 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
       {/* Długość faz i nagroda XP tego pokoju, widoczne cały czas po wejściu — patrz też etykieta
           pod kwadratem pokoju w lobby (RoomStage) i ostrzeżenie przed utratą XP przy wyjściu
           w trakcie pracy. */}
-      <p className="-mt-6 flex flex-col items-center gap-0.5 text-sm">
-        {room.kind === "pomodoro" && (
-          <span className="text-zinc-400">
-            {room.workMin} min work + {room.breakMin} min break
+      {room.kind !== "shop" && (
+        <p className="-mt-6 flex flex-col items-center gap-0.5 text-sm">
+          {room.kind === "pomodoro" && (
+            <span className="text-zinc-400">
+              {room.workMin} min work + {room.breakMin} min break
+            </span>
+          )}
+          <span className="font-semibold text-amber-400">
+            {room.kind === "pomodoro"
+              ? `+${xpForMinutes(room.workMin)} XP and +${coinsForMinutes(room.workMin)} coins for completing this work session`
+              : "+0.1 XP every 5 minutes and +0.1 coins every minute while the stopwatch is running"}
           </span>
-        )}
-        <span className="font-semibold text-amber-400">
-          {room.kind === "pomodoro"
-            ? `+${xpForMinutes(room.workMin)} XP and +${coinsForMinutes(room.workMin)} coins for completing this work session`
-            : "+0.1 XP every 5 minutes and +0.1 coins every minute while the stopwatch is running"}
-        </span>
-      </p>
+        </p>
+      )}
       {room.kind === "stopwatch" ? (
         <Suspense fallback={null}>
           <TimerRoom roomSlug={room.slug} />
+        </Suspense>
+      ) : room.kind === "shop" ? (
+        <Suspense fallback={null}>
+          <ShopRoom roomSlug={room.slug} />
         </Suspense>
       ) : (
         <>

@@ -17,6 +17,7 @@ const gridStartY = 220;
 
 const pomodoroRooms = ROOMS.filter((r) => r.kind === "pomodoro");
 const stopwatchRooms = ROOMS.filter((r) => r.kind === "stopwatch");
+const shopRooms = ROOMS.filter((r) => r.kind === "shop");
 
 // Grupowanie po typie (slug bez numeru wariantu na końcu, np. "25-5-1" -> "25-5"), w kolejności
 // pierwszego wystąpienia, żeby każdy typ trafił do jednego wiersza.
@@ -48,14 +49,27 @@ const TIMER_ZONE_Y = gridStartY + pomodoroGroups.size * (ZONE_H + ROW_GAP) + 10;
 const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
   slug: r.slug,
   name: "Timer",
-  x: 1600 / 2 - 110,
+  x: 1600 / 2 - 110 - 150,
   y: TIMER_ZONE_Y,
   w: 220,
   h: 140,
   color: r.color,
 }));
+// Sklep stoi tuż obok Timer Room, żeby oba pokoje-narzędzia (bez wspólnych cykli) siedziały razem
+// w jednym rzędzie, osobno od kratki pomodoro powyżej.
+const shopZones: RoomZone[] = shopRooms.map((r) => ({
+  slug: r.slug,
+  name: "Shop",
+  x: 1600 / 2 + 150 - 110,
+  y: TIMER_ZONE_Y,
+  w: 220,
+  h: 140,
+  color: r.color,
+  requiresAuth: true,
+  noReward: true,
+}));
 
-const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones];
+const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones, ...shopZones];
 
 const ROOM_SLUGS = ROOMS.map((r) => r.slug);
 

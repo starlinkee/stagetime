@@ -70,6 +70,7 @@ export const ROOMS: RoomConfig[] = [
   ...pomodoroVariants("20-5", "Short Focus 20+5", 20, 5, "#c4b5fd", "#7c3aed"),
   ...pomodoroVariants("50-10", "Hour Block 50+10", 50, 10, "#fdba74", "#c2410c"),
   { slug: "timer", name: "Timer Room", kind: "stopwatch" },
+  { slug: "shop", name: "Shop", kind: "shop", color: "#eab308" },
 ];
 
 export const getRoom = (slug: string) => ROOMS.find((r) => r.slug === slug);
