@@ -13,7 +13,9 @@ import { MAX_BODY, useChat } from "@/lib/useChat";
 import { safeColor, useMyProfile } from "@/lib/useProfile";
 import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
+import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
+import { xpForMinutes } from "@/lib/xp";
 
 /** Kolor etykiety fazy pod kwadratem pokoju: praca na czerwono (nie da się teraz wejść), przerwa na zielono. */
 const PHASE_COLOR = { work: "#ef4444", break: "#22c55e" } as const;
@@ -276,11 +278,18 @@ export function RoomStage({
   occupancy,
   spawnZoneSlug,
   onZoneAction,
+  xpRunning = true,
 }: {
   roomSlug: string;
   zones?: RoomZone[];
   /** Ile osób jest naprawdę w każdym pokoju (patrz useRoomOccupancy) — etykieta pod numerem/kłódką. */
   occupancy?: Record<string, number>;
+  /**
+   * Czy naliczać XP w tej chwili (patrz useStudyXp) — domyślnie zawsze. Timer Room ustawia to
+   * na `running` stopera: XP (0.1/5min) leci tylko, gdy stoper jest wystartowany, patrz
+   * src/components/TimerRoom.tsx.
+   */
+  xpRunning?: boolean;
   /**
    * Slug strefy z `zones`, w której zawsze — niezależnie od zapisanej w bazie pozycji — staje
    * postać, np. strefa wyjścia, żeby wejście do pokoju kończyło się dokładnie przy wyjściu i dało
@@ -321,8 +330,9 @@ export function RoomStage({
   const nick = session ? profile.nickname : null;
   const userId = session?.user.id ?? null;
   // Credits XP for time spent in this room (no-op in the lobby or signed out) — see
-  // supabase/migrations/0010_xp.sql. Own XP then updates live via useMyProfile's Realtime sub.
-  useStudyXp(roomSlug);
+  // supabase/migrations/0010_xp.sql and 0014_timer_xp_rate.sql. `xpRunning` gates accrual (used
+  // by the Timer Room, see prop doc above). Own XP then updates live via useMyProfile's Realtime sub.
+  useStudyXp(roomSlug, xpRunning);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -464,6 +474,10 @@ export function RoomStage({
     let entered = false;
     // Strefa "action": po zadziałaniu trzeba puścić E (albo zejść ze strefy), żeby użyć jej znowu.
     let eActionFired = false;
+    // Wyjście podczas fazy work: pierwsze przytrzymanie E tylko ostrzega (traci się XP z sesji),
+    // dopiero drugie (po puszczeniu i ponownym przytrzymaniu, stojąc cały czas w tej samej strefie)
+    // faktycznie wyprowadza z pokoju. Nie kasuje się przy samym puszczeniu E — patrz reset niżej.
+    let exitWarned = false;
 
     // Zapis pozycji w bazie (tylko zalogowany, aktywna karta, po wczytaniu starej pozycji).
     let saved = { x: NaN, y: NaN, d: -1 };
@@ -497,6 +511,14 @@ export function RoomStage({
       if (!activeRef.current) return;
       launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
       emit("fire", { ...myPos.current, p });
+      // Every real shot by a signed-in user bumps their all-time count (shown in
+      // src/components/ProfileMenu.tsx), server-side via supabase/migrations/0012_balls_shot.sql.
+      if (userIdRef.current)
+        void getSupabase()
+          ?.rpc("increment_balls_shot")
+          .then(({ error }) => {
+            if (error) console.error("increment_balls_shot", error);
+          });
     };
     const cancelCharge = () => {
       if (chargeStart === null) return;
@@ -524,21 +546,53 @@ export function RoomStage({
         if (phaseState?.phase === "work") {
           // Zablokowane (praca w toku, nie da się teraz wejść) — kłódka zamiast numeru pokoju.
           ctx.font = "20px sans-serif";
-          ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2);
+          ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
         } else {
           ctx.font = "600 16px sans-serif";
-          ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2);
+          ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2 - 6);
         }
-        // Prawdziwa liczba osób w tym pokoju (nie kto stoi na kwadracie w lobby) — pod numerem/kłódką.
+        // Pod numerem/kłódką: stojąc na wyjściu (kwadrat "lobby" na scenie samego pokoju) — zielony
+        // "E to exit room"; stojąc na wejściu — zielony "E to enter room" (albo "Room is closed",
+        // gdy trwa faza work i wejście jest zablokowane); w innym wypadku prawdziwa liczba osób
+        // w pokoju, ale tylko gdy ktoś tam jest.
         const occupants = occupancyRef.current?.[z.slug];
-        if (occupants !== undefined) {
-          ctx.fillStyle = "rgba(255,255,255,0.75)";
-          ctx.font = "500 12px sans-serif";
+        const isExitHere = roomSlug !== "lobby" && z.slug === "lobby";
+        // Nagroda XP tego pokoju i długość faz: pod numerem/kłódką, zawsze widoczna (nie tylko
+        // stojąc na kwadracie) — dla pomodoro to praca+przerwa w minutach i nagroda za całą sesję
+        // pracy, dla stopwatch/timer stała stawka za ciągłą obecność (patrz STUDY_SECONDS_PER_XP
+        // w src/lib/xp.ts).
+        if ((z.kind ?? "nav") === "nav" && !isExitHere) {
+          ctx.fillStyle = "rgba(255,255,255,0.7)";
+          ctx.font = "600 10px sans-serif";
+          ctx.fillText(z.phase ? `${z.phase.workMin}+${z.phase.breakMin} min` : "no timer", z.x + z.w / 2, z.y + z.h / 2 + 10);
+          ctx.fillStyle = "#fbbf24";
+          ctx.font = "700 10px sans-serif";
           ctx.fillText(
-            occupants === 0 ? "Room is empty" : `${occupants} player${occupants === 1 ? "" : "s"} inside`,
+            z.phase
+              ? `+${xpForMinutes(z.phase.workMin)} XP · +${coinsForMinutes(z.phase.workMin)} coins/session`
+              : "+0.1 XP/5min · +0.1 coins/min while running",
             z.x + z.w / 2,
             z.y + z.h / 2 + 22,
           );
+        }
+        if (inZone(x, y, z) && (z.kind ?? "nav") === "nav") {
+          if (isExitHere) {
+            ctx.fillStyle = "#22c55e";
+            ctx.font = "700 12px sans-serif";
+            ctx.fillText("E to exit room", z.x + z.w / 2, z.y + z.h / 2 + 38);
+          } else if (phaseState?.phase === "work") {
+            ctx.fillStyle = "rgba(255,255,255,0.75)";
+            ctx.font = "700 12px sans-serif";
+            ctx.fillText("Room is closed", z.x + z.w / 2, z.y + z.h / 2 + 38);
+          } else {
+            ctx.fillStyle = "#22c55e";
+            ctx.font = "700 12px sans-serif";
+            ctx.fillText("E to enter room", z.x + z.w / 2, z.y + z.h / 2 + 38);
+          }
+        } else if (occupants) {
+          ctx.fillStyle = "rgba(255,255,255,0.75)";
+          ctx.font = "500 12px sans-serif";
+          ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 38);
         }
         if (active && eHoldStart !== null) {
           const p = Math.min(1, (t - eHoldStart) / roomEnterMs());
@@ -680,39 +734,65 @@ export function RoomStage({
       myPos.current = { x, y, d: dir };
       // Wejście do pokoju: E trzeba trzymać nieprzerwanie, stojąc w jego kwadracie.
       const zone = on ? zonesRef.current.find((z) => inZone(x, y, z)) : undefined;
-      if (!eDown || !zone) {
+      if (!zone) {
         eHoldStart = null;
         eHoldSlug = null;
+        eActionFired = false;
+        exitWarned = false;
+      } else if (!eDown) {
+        // E puszczone, ale wciąż w tej samej strefie — licznik trzymania startuje od nowa przy
+        // kolejnym wciśnięciu, ale exitWarned zostaje, żeby drugie przytrzymanie liczyło się jako
+        // potwierdzenie wyjścia, a nie kolejne ostrzeżenie.
+        eHoldStart = null;
         eActionFired = false;
       } else if (zone.slug !== eHoldSlug) {
         eHoldSlug = zone.slug;
         eHoldStart = t;
         eActionFired = false;
-      } else if (eHoldStart !== null && t - eHoldStart >= roomEnterMs()) {
+        exitWarned = false;
+      } else if (eHoldStart === null) {
+        eHoldStart = t;
+      } else if (t - eHoldStart >= roomEnterMs()) {
         if (zone.kind === "action") {
           if (!eActionFired) {
             eActionFired = true;
             // Data zdarzenia to chwila NACIŚNIĘCIA E (początek trzymania), nie chwila potwierdzenia
             // po roomEnterMs() — inaczej np. pauza doliczałaby czas spędzony na trzymaniu przycisku.
             onZoneActionRef.current?.(zone.slug, Date.now() - (t - eHoldStart));
+            // Bez tego pasek zostawałby wypełniony w 100% aż do puszczenia E zamiast wrócić do 0.
+            eHoldStart = null;
           }
         } else if (!entered) {
-          entered = true;
-          eKeyLockedAcrossRooms = true;
-          // sessionStorage (nie URL) mówi drugiej stronie, z którego pokoju przyszliśmy — lobby
-          // ma wiele stref wejścia/wyjścia i inaczej nie wiedziałoby, w której z nich dokładnie
-          // wylądować. Zapisujemy tuż przed nawigacją, docelowa strona odczytuje to raz i czyści.
-          window.sessionStorage.setItem(SPAWN_FROM_KEY, roomSlug);
-          if (zone.slug === "lobby") {
-            router.push("/");
+          const isExit = zone.slug === "lobby";
+          const zonePhase =
+            zone.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, zone.phase).phase : null;
+          if (isExit && zonePhase === "work" && !exitWarned) {
+            // Pierwsze przytrzymanie E podczas fazy work: tylko ostrzeżenie, bez wyjścia —
+            // trzeba puścić E i przytrzymać je jeszcze raz, żeby naprawdę wyjść.
+            exitWarned = true;
+            if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
+            // zone.phase is guaranteed here: zonePhase can only be "work" when zone.phase exists.
+            setEntryError(
+              `Leaving now forfeits the +${xpForMinutes(zone.phase!.workMin)} XP and +${coinsForMinutes(zone.phase!.workMin)} coins for this work session — hold E again to confirm.`,
+            );
+            entryErrorTimer.current = setTimeout(() => setEntryError(null), 4000);
           } else {
-            // Wejście do pokoju wymaga biletu wydanego tylko za to przytrzymanie E — samo
-            // wklejenie /rooms/<slug> w pasku adresu nic nie da (patrz proxy.ts).
-            void fetch("/api/rooms/enter", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ slug: zone.slug }),
-            })
+            entered = true;
+            eKeyLockedAcrossRooms = true;
+            // sessionStorage (nie URL) mówi drugiej stronie, z którego pokoju przyszliśmy — lobby
+            // ma wiele stref wejścia/wyjścia i inaczej nie wiedziałoby, w której z nich dokładnie
+            // wylądować. Zapisujemy tuż przed nawigacją, docelowa strona odczytuje to raz i czyści.
+            window.sessionStorage.setItem(SPAWN_FROM_KEY, roomSlug);
+            if (isExit) {
+              router.push("/");
+            } else {
+              // Wejście do pokoju wymaga biletu wydanego tylko za to przytrzymanie E — samo
+              // wklejenie /rooms/<slug> w pasku adresu nic nie da (patrz proxy.ts).
+              void fetch("/api/rooms/enter", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ slug: zone.slug }),
+              })
               .then(async (res) => {
                 if (res.ok) {
                   router.push(`/rooms/${zone.slug}`);
@@ -732,6 +812,7 @@ export function RoomStage({
                   entryErrorTimer.current = setTimeout(() => setEntryError(null), 4000);
                 }
               });
+            }
           }
         }
       }
@@ -798,8 +879,10 @@ export function RoomStage({
         eLocked = false;
         eKeyLockedAcrossRooms = false;
         eDown = false;
+        // eHoldSlug i exitWarned NIE resetują się tu — o nich decyduje tick() na podstawie tego, w
+        // jakiej strefie faktycznie stoi postać, żeby drugie przytrzymanie E (bez zejścia ze strefy)
+        // liczyło się jako potwierdzenie wyjścia podczas fazy work, a nie nowa próba od zera.
         eHoldStart = null;
-        eHoldSlug = null;
         eActionFired = false;
         return;
       }

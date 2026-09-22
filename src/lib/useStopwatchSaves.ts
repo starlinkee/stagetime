@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getSupabase } from "./supabase";
 import { useSession } from "./useSession";
 
-export type StopwatchSave = { id: string; elapsed_ms: number; created_at: string };
+export type StopwatchSave = { id: string; elapsed_ms: number; created_at: string; note: string | null };
 
 /** Ile ostatnich zapisów wczytujemy przy wejściu do pokoju. */
 const HISTORY_LIMIT = 50;
@@ -13,6 +13,8 @@ export type StopwatchSavesState = {
   saves: StopwatchSave[];
   /** Dopisuje czas na listę — do bazy dla zalogowanych, tylko w tej karcie bez konta. */
   save: (elapsedMs: number) => Promise<void>;
+  /** Ustawia notatkę zapisanego czasu — do bazy dla zalogowanych, tylko w tej karcie bez konta. */
+  setNote: (id: string, note: string) => Promise<void>;
   /** false, gdy zapisy nie przetrwają odświeżenia strony (brak konta albo Supabase). */
   persistent: boolean;
 };
@@ -30,7 +32,7 @@ export function useStopwatchSaves(roomSlug: string): StopwatchSavesState {
     if (!sb || !userId) return;
     let cancelled = false;
     sb.from("stopwatch_saves")
-      .select("id, elapsed_ms, created_at")
+      .select("id, elapsed_ms, created_at, note")
       .eq("room", roomSlug)
       .order("created_at", { ascending: false })
       .limit(HISTORY_LIMIT)
@@ -53,7 +55,7 @@ export function useStopwatchSaves(roomSlug: string): StopwatchSavesState {
           room: roomSlug,
           userId: userId ?? "",
           items: [
-            { id: crypto.randomUUID(), elapsed_ms: ms, created_at: new Date().toISOString() },
+            { id: crypto.randomUUID(), elapsed_ms: ms, created_at: new Date().toISOString(), note: null },
             ...(prev && prev.room === roomSlug && prev.userId === (userId ?? "") ? prev.items : []),
           ],
         }));
@@ -62,7 +64,7 @@ export function useStopwatchSaves(roomSlug: string): StopwatchSavesState {
       const { data, error } = await sb
         .from("stopwatch_saves")
         .insert({ room: roomSlug, user_id: userId, elapsed_ms: ms })
-        .select("id, elapsed_ms, created_at")
+        .select("id, elapsed_ms, created_at, note")
         .single();
       if (error) {
         console.warn("stopwatch_saves insert (see supabase/migrations/0005)", error);
@@ -77,5 +79,26 @@ export function useStopwatchSaves(roomSlug: string): StopwatchSavesState {
     [sb, userId, roomSlug],
   );
 
-  return { saves: current, save, persistent: sb !== null && userId !== null };
+  const setNote = useCallback(
+    async (id: string, note: string) => {
+      const trimmed = note.trim();
+      if (!sb || !userId) {
+        setLoaded((prev) =>
+          prev ? { ...prev, items: prev.items.map((s) => (s.id === id ? { ...s, note: trimmed || null } : s)) } : prev,
+        );
+        return;
+      }
+      const { error } = await sb.from("stopwatch_saves").update({ note: trimmed || null }).eq("id", id);
+      if (error) {
+        console.warn("stopwatch_saves note update (see supabase/migrations/0013)", error);
+        return;
+      }
+      setLoaded((prev) =>
+        prev ? { ...prev, items: prev.items.map((s) => (s.id === id ? { ...s, note: trimmed || null } : s)) } : prev,
+      );
+    },
+    [sb, userId],
+  );
+
+  return { saves: current, save, setNote, persistent: sb !== null && userId !== null };
 }
