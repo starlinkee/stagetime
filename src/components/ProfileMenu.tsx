@@ -3,17 +3,17 @@ import { useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { CoinBadge, CoinIcon } from "@/components/CoinBadge";
 import { LevelBadge } from "@/components/LevelBadge";
-import { PixelPerson } from "@/components/PixelPerson";
-import { COLOR_CHOICES, useMyProfile } from "@/lib/useProfile";
+import { useMyProfile } from "@/lib/useProfile";
 import { displayName, signOut } from "@/lib/useSession";
 import { levelFromXp } from "@/lib/xp";
 
 /** Nazwa w nagłówku: klik otwiera panel ze zmianą nicku i wylogowaniem. */
 export function ProfileMenu({ session }: { session: Session }) {
-  const { ready, nickname, color, xp, ballsShot, coins, error, save } = useMyProfile();
+  const { ready, nickname, xp, ballsShot, fistSwings, coins, error } = useMyProfile();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const shown = nickname ?? displayName(session);
+  const { intoLevel, forNextLevel } = levelFromXp(xp);
 
   // Klik poza panelem i Escape zamykają menu.
   useEffect(() => {
@@ -41,6 +41,11 @@ export function ProfileMenu({ session }: { session: Session }) {
         className="flex items-center gap-1.5 rounded-lg bg-[#5865F2] px-3 py-1.5 text-white hover:bg-[#4752c4]"
       >
         {ready && <LevelBadge xp={xp} />}
+        {ready && (
+          <span className="text-[10px] leading-none text-zinc-300">
+            {intoLevel.toFixed(1)}/{forNextLevel} XP
+          </span>
+        )}
         {ready && <CoinBadge coins={coins} />}
         {shown}
       </button>
@@ -54,12 +59,11 @@ export function ProfileMenu({ session }: { session: Session }) {
           {ready ? (
             <ProfileForm
               nickname={shown}
-              currentColor={color}
               xp={xp}
               ballsShot={ballsShot}
+              fistSwings={fistSwings}
               coins={coins}
               error={error}
-              save={save}
             />
           ) : (
             <p className="text-zinc-500">Loading…</p>
@@ -78,29 +82,20 @@ export function ProfileMenu({ session }: { session: Session }) {
 
 function ProfileForm({
   nickname,
-  currentColor,
   xp,
   ballsShot,
+  fistSwings,
   coins,
   error,
-  save,
 }: {
   nickname: string;
-  currentColor: string;
   xp: number;
   ballsShot: number;
+  fistSwings: number;
   coins: number;
   error: string | null;
-  save: (color: string) => Promise<boolean>;
 }) {
-  const [color, setColor] = useState(currentColor);
   const { level, intoLevel, forNextLevel } = levelFromXp(xp);
-
-  // Zmiana koloru zapisuje się od razu; przy błędzie wracamy do zapisanego koloru.
-  async function pick(c: string) {
-    setColor(c);
-    if (!(await save(c))) setColor(currentColor);
-  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -116,33 +111,19 @@ function ProfileForm({
             style={{ width: `${Math.min(100, (intoLevel / forNextLevel) * 100)}%` }}
           />
           <span className="absolute inset-0 flex items-center justify-center text-[9px] font-medium text-zinc-100">
-            {intoLevel}/{forNextLevel} XP
+            {intoLevel.toFixed(1)}/{forNextLevel} XP
           </span>
         </div>
       </div>
       <span className="text-xs text-zinc-600">5 minutes in a study room = 1 XP · 1 minute = 1 copper coin.</span>
-      <span className="mt-1 text-zinc-400">Character color</span>
-      <div className="flex items-end gap-3">
-        <PixelPerson color={color} size={4} />
-        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Character color">
-          {COLOR_CHOICES.map((c) => (
-            <button
-              key={c}
-              type="button"
-              role="radio"
-              aria-checked={c === color}
-              aria-label={c}
-              onClick={() => pick(c)}
-              style={{ backgroundColor: c }}
-              className={`h-6 w-6 rounded-md border-2 ${c === color ? "border-white" : "border-transparent"}`}
-            />
-          ))}
-        </div>
-      </div>
       <span className="mt-1 text-zinc-400">Stats</span>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
         <span className="text-zinc-400">Balls</span>
         <span className="font-semibold text-zinc-200">{ballsShot}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Fist swings</span>
+        <span className="font-semibold text-zinc-200">{fistSwings}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
         <span className="text-zinc-400">Copper coins</span>

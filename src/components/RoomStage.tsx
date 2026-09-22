@@ -2,6 +2,7 @@
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { DungeonBackground } from "@/components/DungeonBackground";
 import { LevelBadge } from "@/components/LevelBadge";
 import { DIR_DOWN, type Dir, PixelPerson } from "@/components/PixelPerson";
 import { getAdminSettings } from "@/lib/adminSettings";
@@ -26,11 +27,19 @@ function isTypingTarget(el: EventTarget | null) {
   return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 }
 
-/** Stały świat gry (jednostki): każdy widzi tę samą planszę, okno tylko ją skaluje. */
-const WORLD_W = 1600;
-const WORLD_H = 900;
-/** Prędkość w jednostkach świata na sekundę. */
-const SPEED = 220;
+/** Ekran startowy (jednostki): rozmiar okna kamery — tyle widać naraz, niezależnie od rozmiaru mapy. */
+const SCREEN_W = 1600;
+const SCREEN_H = 900;
+/**
+ * Cała mapa: w lobby 2× szersza i 2× wyższa niż ekran (4 ekrany łącznie, 4× powierzchnia) — reszta
+ * poza startowym ekranem jest pusta, chodząc od startu w stronę krawędzi kamera ją odsłania, dopóki
+ * nie trafi na koniec mapy (patrz applyCamera niżej). Pojedynczy pokój jest 4× mniejszy (mapa =
+ * ekran, jak dawniej) — nie ma tam po co odkrywać pustki dookoła.
+ */
+const worldW = (isLobby: boolean) => (isLobby ? SCREEN_W * 2 : SCREEN_W);
+const worldH = (isLobby: boolean) => (isLobby ? SCREEN_H * 2 : SCREEN_H);
+/** Prędkość gracza w jednostkach świata na sekundę — domyślna albo nadpisana z panelu admina, patrz playerSpeed w src/lib/adminSettings.ts. */
+const playerSpeed = () => getAdminSettings().playerSpeed;
 const PERSON_W = 32;
 const PERSON_H = 48;
 /** Miejsce nad postacią na podpis — postać nie wchodzi wyżej, żeby podpis się nie ucinał. */
@@ -54,6 +63,12 @@ const SEND_EVERY = 60;
 /** Jak długo wisi dymek z wiadomością nad postacią, zanim zniknie sam. */
 const BUBBLE_MS = 6000;
 
+/**
+ * Jak długo wisi popup "+1 🪙 · +XP" nad postacią po co-minutowym tick-u nagrody, zanim go
+ * usuniemy ze stanu (musi być >= czasu animacji pp-reward w globals.css, żeby fade dograł do końca).
+ */
+const REWARD_MS = 1500;
+
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
 
 /** Wektory ośmiu kierunków (kolejność jak w Dir: E, SE, S, SW, W, NW, N, NE). */
@@ -76,10 +91,39 @@ const DIR_OF: Dir[][] = [
 
 /** Tyle trzyma się spacja do pełnego naładowania kuli. */
 const CHARGE_MS = 3000;
+/**
+ * Przewrót (roll): krótki, szybki skok w kierunku w który patrzy postać (jak kula z launch() —
+ * ten sam wektor z DIRS), o tyle szybszy niż zwykły chód. ROLL_MS musi się zgadzać z czasem
+ * animacji .pp-roll w globals.css.
+ */
+const ROLL_SPEED_MULT = 2.5;
+const ROLL_MS = 240;
+/** Ile ms po zakończeniu przewrotu trzeba odczekać, zanim C znów go uruchomi. */
+const ROLL_COOLDOWN_MS = 260;
+/**
+ * Unik (dash, V): krótki teleport w kierunku w który patrzy postać — dalej niż przewrót, ale bez
+ * pokonywania drogi po drodze. Postać znika (jakby za chmurą) w połowie DASH_MS i w tej samej
+ * chwili ląduje w docelowym miejscu, po czym się z powrotem pojawia. Czas musi się zgadzać
+ * z animacją .pp-dash w globals.css.
+ */
+const DASH_DISTANCE_MULT = 1.8;
+const DASH_MS = 220;
+const DASH_TELEPORT_AT_MS = DASH_MS / 2;
+/** Cooldown unik-u jest 4× dłuższy niż cooldown przewrotu. */
+const DASH_COOLDOWN_MS = ROLL_COOLDOWN_MS * 4;
 const ORB_R_MIN = 5;
 const ORB_R_MAX = 30;
 /** Prędkość lotu kuli w px na sekundę. */
 const BALL_SPEED = 520;
+/**
+ * Atak wręcz (Fist swings, klawisz 1): krótki zasięg, bez ładowania — uderza od razu po Space,
+ * zamiast lecieć jak kula. Hitbox pojawia się tuż przed postacią i znika po STRIKE_MS.
+ */
+const STRIKE_REACH = 22;
+const STRIKE_R = 20;
+const STRIKE_MS = 150;
+/** Cooldown między atakami wręcz, żeby nie dało się spamować Space bez ograniczeń. */
+const STRIKE_COOLDOWN_MS = 260;
 
 type Ball = {
   x: number;
@@ -89,6 +133,9 @@ type Ball = {
   r: number;
   color: string;
   owner: string;
+  /** Atak wręcz zamiast rzuconej kuli: stoi w miejscu i znika po `until` zamiast po opuszczeniu sceny. */
+  melee?: boolean;
+  until?: number;
 };
 type Shard = {
   x: number;
@@ -136,6 +183,13 @@ function inZone(px: number, py: number, z: RoomZone) {
   return px < z.x + z.w && px + PERSON_W > z.x && py < z.y + z.h && py + PERSON_H > z.y;
 }
 
+/**
+ * `zones` z propsów opisują układ we współrzędnych ekranu startowego (SCREEN_W×SCREEN_H) —
+ * osoby definiujące pokój (np. TimerRoom.tsx) nie muszą wiedzieć nic o rozmiarze całej mapy. Tu
+ * dodajemy ox/oy (0 w pokoju, gdzie mapa = ekran), żeby ten układ wylądował na środku mapy.
+ */
+const toWorldZone = (z: RoomZone, ox: number, oy: number): RoomZone => ({ ...z, x: z.x + ox, y: z.y + oy });
+
 /** Czy koło (kula) styka się z hitboxem postaci o lewym górnym rogu (px, py). */
 function hits(b: Ball, px: number, py: number) {
   const nx = Math.max(px - HIT_PAD, Math.min(b.x, px + PERSON_W + HIT_PAD));
@@ -156,8 +210,8 @@ type Meta = {
   y?: number;
   d?: unknown;
 };
-/** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek. */
-type Pos = { x: number; y: number; d: Dir };
+/** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek i czy trwa przewrót (roll) / unik (dash). */
+type Pos = { x: number; y: number; d: Dir; r?: boolean; dash?: boolean };
 type Others = Record<string, Meta & Pos>;
 
 const orbRadius = (p: number) => ORB_R_MIN + (ORB_R_MAX - ORB_R_MIN) * p;
@@ -168,9 +222,9 @@ const asDir = (d: unknown): Dir =>
   Number.isInteger(d) && (d as number) >= 0 && (d as number) <= 7 ? (d as Dir) : DIR_DOWN;
 
 /** Ogranicza pozycję (np. z sieci) do planszy. */
-const clampPos = (x: number, y: number) => ({
-  x: Math.min(WORLD_W - PERSON_W, Math.max(0, x)),
-  y: Math.min(WORLD_H - PERSON_H, Math.max(TAG_H, y)),
+const clampPos = (x: number, y: number, isLobby: boolean) => ({
+  x: Math.min(worldW(isLobby) - PERSON_W, Math.max(0, x)),
+  y: Math.min(worldH(isLobby) - PERSON_H, Math.max(TAG_H, y)),
 });
 
 /** Jak często (ms) zapisujemy pozycję w bazie, o ile się zmieniła. */
@@ -191,7 +245,7 @@ async function fetchSpawn(userId: string, room: string): Promise<Pos | null> {
     return null;
   }
   if (!data || !Number.isFinite(data.x) || !Number.isFinite(data.y)) return null;
-  return { ...clampPos(data.x, data.y), d: asDir(data.d) };
+  return { ...clampPos(data.x, data.y, room === "lobby"), d: asDir(data.d) };
 }
 
 async function savePosition(userId: string, room: string, p: Pos) {
@@ -223,6 +277,23 @@ function launch(balls: Ball[], x: number, y: number, d: Dir, p: number, color: s
     r,
     color,
     owner,
+  });
+}
+
+/** Wypuszcza krótkozasięgowy hitbox ataku wręcz tuż przed postacią stojącą w (x, y), patrzącą w d. */
+function strike(balls: Ball[], x: number, y: number, d: Dir, color: string, owner: string) {
+  const [ux, uy] = DIRS[d];
+  const n = Math.hypot(ux, uy) || 1;
+  balls.push({
+    x: x + PERSON_W / 2 + (ux / n) * STRIKE_REACH,
+    y: y + PERSON_H / 2 + (uy / n) * STRIKE_REACH,
+    vx: 0,
+    vy: 0,
+    r: STRIKE_R,
+    color,
+    owner,
+    melee: true,
+    until: performance.now() + STRIKE_MS,
   });
 }
 
@@ -258,6 +329,24 @@ function NameTag({ name, xp }: { name: string | null; xp?: number }) {
   );
 }
 
+/**
+ * Popup "+1 🪙 · +0.2 XP" nad postacią po co-minutowym tick-u nagrody (patrz useStudyXp) — sam
+ * znika po odegraniu animacji pp-reward (globals.css). `id` w key wymusza restart animacji, gdy
+ * kolejny tick trafi zanim poprzedni popup zdąży zniknąć.
+ */
+function RewardPopup({ coins, xp, id }: { coins: number; xp: number; id: number }) {
+  const parts = [coins > 0 && `+${coins} 🪙`, xp > 0 && `+${xp} XP`].filter(Boolean);
+  if (parts.length === 0) return null;
+  return (
+    <span
+      key={id}
+      className="pp-reward absolute bottom-full left-1/2 mb-5 whitespace-nowrap text-xs font-bold text-amber-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
+    >
+      {parts.join(" · ")}
+    </span>
+  );
+}
+
 /** Dymek nad postacią z jej ostatnią wiadomością — znika sam po BUBBLE_MS. */
 function ChatBubble({ text }: { text: string }) {
   return (
@@ -280,6 +369,7 @@ export function RoomStage({
   spawnZoneSlug,
   onZoneAction,
   xpRunning = true,
+  phase,
 }: {
   roomSlug: string;
   zones?: RoomZone[];
@@ -291,6 +381,14 @@ export function RoomStage({
    * src/components/TimerRoom.tsx.
    */
   xpRunning?: boolean;
+  /**
+   * Faza TEGO pokoju (work/break) — gdy podana (pokój typu "pomodoro"), XP i coiny naliczają się
+   * wyłącznie w fazie "work": przerwa (i czas oczekiwania przed startem pracy) nie daje nic.
+   * useStudyXp resetuje zegar heartbeatu przy każdej zmianie tego gate'u (patrz `running` w
+   * src/lib/useStudyXp.ts), więc po starcie pracy odliczanie realnie zaczyna się od zera, a nie
+   * dolicza czas spędzony na przerwie.
+   */
+  phase?: { workMin: number; breakMin: number; offsetMs?: number };
   /**
    * Slug strefy z `zones`, w której zawsze — niezależnie od zapisanej w bazie pozycji — staje
    * postać, np. strefa wyjścia, żeby wejście do pokoju kończyło się dokładnie przy wyjściu i dało
@@ -307,6 +405,13 @@ export function RoomStage({
   onZoneAction?: (slug: string, pressedAt: number) => void;
 }) {
   const router = useRouter();
+  // Tylko lobby dostaje powiększoną (4× powierzchni) mapę z kamerą — pojedynczy pokój ma mapę
+  // wielkości ekranu, jak dawniej (patrz worldW/worldH powyżej).
+  const isLobby = roomSlug === "lobby";
+  const WORLD_W = worldW(isLobby);
+  const WORLD_H = worldH(isLobby);
+  const CONTENT_OX = (WORLD_W - SCREEN_W) / 2;
+  const CONTENT_OY = (WORLD_H - SCREEN_H) / 2;
   // Brak spawnZoneSlug (np. lobby, gdzie stref jest wiele) — bierzemy strefę odpowiadającą
   // pokojowi, z którego właśnie wyszliśmy (zapisaną w sessionStorage, patrz router.push niżej
   // w tym pliku). Czytamy i od razu czyścimy, żeby URL nigdy nie niósł tej informacji i żeby
@@ -330,10 +435,16 @@ export function RoomStage({
   const color = session ? profile.color : "#ffffff";
   const nick = session ? profile.nickname : null;
   const userId = session?.user.id ?? null;
+  // Whether THIS room is currently in its "work" phase — null when the room has no pomodoro
+  // phase (stopwatch/shop) or before the server clock is synced, in which case it doesn't gate
+  // anything (see xpAccruing below).
+  const roomPhase = phase && serverNow !== null ? getTimerState(serverNow, phase).phase : null;
   // Credits XP for time spent in this room (no-op in the lobby or signed out) — see
   // supabase/migrations/0010_xp.sql and 0014_timer_xp_rate.sql. `xpRunning` gates accrual (used
-  // by the Timer Room, see prop doc above). Own XP then updates live via useMyProfile's Realtime sub.
-  useStudyXp(roomSlug, xpRunning);
+  // by the Timer Room, see prop doc above); for pomodoro rooms it's further gated to the "work"
+  // phase only — no XP/coins while waiting for work to start or during the break. Own XP then
+  // updates live via useMyProfile's Realtime sub.
+  const xpAccruing = xpRunning && (roomPhase === null || roomPhase === "work");
 
   const stageRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -345,6 +456,53 @@ export function RoomStage({
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
   const metaRef = useRef<Meta>({ at: 0, color, nick, xp: profile.xp, user: userId });
+  // Popupy "+1 🪙 · +XP" nad postaciami po co-minutowym tick-u nagrody (patrz useStudyXp niżej) —
+  // `id` rośnie przy każdym tick-u, żeby RewardPopup dostał nowy key i animacja pp-reward wystartowała
+  // od nowa, nawet gdy poprzedni popup tej samej osoby jeszcze wisi.
+  const [rewards, setRewards] = useState<Record<string, { coins: number; xp: number; id: number }>>({});
+  const rewardTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const rewardIdRef = useRef(0);
+  const triggerReward = (k: string, coins: number, xp: number) => {
+    if (coins <= 0 && xp <= 0) return;
+    rewardIdRef.current += 1;
+    setRewards((r) => ({ ...r, [k]: { coins, xp, id: rewardIdRef.current } }));
+    clearTimeout(rewardTimers.current[k]);
+    rewardTimers.current[k] = setTimeout(() => {
+      setRewards((r) => {
+        const rest = { ...r };
+        delete rest[k];
+        return rest;
+      });
+    }, REWARD_MS);
+  };
+  useEffect(() => {
+    const timers = rewardTimers.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
+  // Poprzednie totale z heartbeatu (useStudyXp) — do wyliczenia delty przy kolejnym tick-u; null
+  // dopóki nie przyszedł pierwszy (p_reset) heartbeat, który tylko synchronizuje zegar.
+  const prevStudyRef = useRef<{ xp: number; coins: number } | null>(null);
+  // Pokój bez `phase` (Timer Room, patrz src/components/TimerRoom.tsx) ma indywidualny stoper —
+  // tick nagrody widzi tylko właściciel, nie jest rozgłaszany do innych w pokoju.
+  const isSharedTick = phase !== undefined;
+  useStudyXp(roomSlug, xpAccruing, (u, credited) => {
+    const prev = prevStudyRef.current;
+    prevStudyRef.current = { xp: u.xp, coins: u.coins };
+    if (!credited || !prev) return;
+    const dCoins = Math.max(0, Math.round((u.coins - prev.coins) * 100) / 100);
+    const dXp = Math.max(0, Math.round((u.xp - prev.xp) * 100) / 100);
+    if (dCoins <= 0 && dXp <= 0) return;
+    triggerReward("me", dCoins, dXp);
+    if (isSharedTick) {
+      channelRef.current?.send({
+        type: "broadcast",
+        event: "reward",
+        payload: { k: keyRef.current, coins: dCoins, xp: dXp },
+      });
+    }
+  });
   // Czy ta karta steruje postacią; false, gdy nowsza karta tego konta (w dowolnym pokoju) przejęła konto.
   const activeRef = useRef(true);
   const { superseded, reclaim } = useAccountLock(userId);
@@ -357,11 +515,13 @@ export function RoomStage({
   const [entryError, setEntryError] = useState<string | null>(null);
   const entryErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const myPos = useRef<Pos>({
-    ...clampPos(WORLD_W / 2, WORLD_H / 2),
+    ...clampPos(WORLD_W / 2, WORLD_H / 2, isLobby),
     d: DIR_DOWN,
   });
   const [myDir, setMyDir] = useState<Dir>(DIR_DOWN);
   const [myWalking, setMyWalking] = useState(false);
+  const [myRolling, setMyRolling] = useState(false);
+  const [myDashing, setMyDashing] = useState(false);
   // Kto z innych właśnie się porusza (do animacji chodu) i timery wygaszania.
   const [walkers, setWalkers] = useState<Record<string, boolean>>({});
   const walkTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -381,10 +541,10 @@ export function RoomStage({
     sessionRef.current = session;
   }, [session]);
   // Kwadraty pokoi (tylko na scenie z listą pokoi) — ref, żeby pętla ruchu nie zależała od propsa.
-  const zonesRef = useRef(zones);
+  const zonesRef = useRef(zones.map((z) => toWorldZone(z, CONTENT_OX, CONTENT_OY)));
   useEffect(() => {
-    zonesRef.current = zones;
-  }, [zones]);
+    zonesRef.current = zones.map((z) => toWorldZone(z, CONTENT_OX, CONTENT_OY));
+  }, [zones, CONTENT_OX, CONTENT_OY]);
   // Prawdziwa liczba osób w każdym pokoju (z useRoomOccupancy) — ref, żeby pętla rysowania
   // (rAF, poza reactem) widziała najświeższą wartość bez przebudowy efektu.
   const occupancyRef = useRef(occupancy);
@@ -430,19 +590,6 @@ export function RoomStage({
     const ctx = canvas?.getContext("2d");
     if (!stage || !world || !person || !canvas || !ctx) return;
 
-    // Dopasowanie planszy do okna: jedna skala, plansza wyśrodkowana (pasy po bokach).
-    const resize = () => {
-      const scale = Math.min(stage.clientWidth / WORLD_W, stage.clientHeight / WORLD_H);
-      const ox = (stage.clientWidth - WORLD_W * scale) / 2;
-      const oy = (stage.clientHeight - WORLD_H * scale) / 2;
-      world.style.transform = `translate(${ox}px, ${oy}px) scale(${scale})`;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.round(WORLD_W * scale * dpr);
-      canvas.height = Math.round(WORLD_H * scale * dpr);
-      ctx.setTransform(canvas.width / WORLD_W, 0, 0, canvas.height / WORLD_H, 0, 0);
-    };
-    resize();
-
     const held = new Set<string>();
     const spawnZone = effectiveSpawnZoneSlug ? zonesRef.current.find((z) => z.slug === effectiveSpawnZoneSlug) : undefined;
     let x: number;
@@ -453,25 +600,72 @@ export function RoomStage({
       x = spawnZone.x + spawnZone.w / 2 - PERSON_W / 2;
       y = spawnZone.y + spawnZone.h / 2 - PERSON_H / 2;
     } else {
-      // Losowe miejsce z marginesem od krawędzi. Na malutkim ekranie margines
-      // maleje (max ¼ wolnego miejsca), a gdy miejsca brak — postać ląduje na środku.
-      const freeW = WORLD_W - PERSON_W;
-      const freeH = WORLD_H - PERSON_H - TAG_H;
+      // Losowe miejsce z marginesem od krawędzi ekranu startowego (środek mapy, patrz CONTENT_OX/OY).
+      // Na malutkim ekranie margines maleje (max ¼ wolnego miejsca), a gdy miejsca brak — postać ląduje na środku.
+      const freeW = SCREEN_W - PERSON_W;
+      const freeH = SCREEN_H - PERSON_H - TAG_H;
       const mx = Math.min(SPAWN_MARGIN, freeW / 4);
       const my = Math.min(SPAWN_MARGIN, freeH / 4);
-      x = mx + Math.random() * (freeW - 2 * mx);
-      y = TAG_H + my + Math.random() * (freeH - 2 * my);
+      x = CONTENT_OX + mx + Math.random() * (freeW - 2 * mx);
+      y = CONTENT_OY + TAG_H + my + Math.random() * (freeH - 2 * my);
     }
     // Spawn znany od razu, żeby pierwsze wysłanie / Presence nie niosło pozycji ze środka.
-    myPos.current = { ...clampPos(x, y), d: DIR_DOWN };
+    myPos.current = { ...clampPos(x, y, isLobby), d: DIR_DOWN };
+
+    // Kamera: okno SCREEN_W×SCREEN_H wyśrodkowane w oknie przeglądarki (pasy po bokach, jak dawniej
+    // cała plansza), przesuwające pod sobą całą (większą) mapę tak, żeby środek postaci zawsze
+    // wypadał na środku ekranu — dopóki nie natrafi na krawędź mapy: wtedy kamera się zatrzymuje
+    // i dalszy ruch w tę stronę już tylko przesuwa postać w kadrze, aż do samego brzegu mapy.
+    let scale = 1;
+    let baseOx = 0;
+    let baseOy = 0;
+    const clampCamera = (center: number, screenSize: number, worldSize: number) =>
+      Math.min(worldSize - screenSize, Math.max(0, center - screenSize / 2));
+    const applyCamera = () => {
+      const camX = clampCamera(x + PERSON_W / 2, SCREEN_W, WORLD_W);
+      const camY = clampCamera(y + PERSON_H / 2, SCREEN_H, WORLD_H);
+      world.style.transform = `translate(${baseOx - camX * scale}px, ${baseOy - camY * scale}px) scale(${scale})`;
+    };
+    // Dopasowanie okna kamery (nie całej mapy) do rozmiaru okna przeglądarki; canvas nadal
+    // pokrywa całą mapę w jednostkach świata (rysujemy w nich zawsze, kamera tylko przesuwa widok).
+    const resize = () => {
+      scale = Math.min(stage.clientWidth / SCREEN_W, stage.clientHeight / SCREEN_H);
+      baseOx = (stage.clientWidth - SCREEN_W * scale) / 2;
+      baseOy = (stage.clientHeight - SCREEN_H * scale) / 2;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(WORLD_W * scale * dpr);
+      canvas.height = Math.round(WORLD_H * scale * dpr);
+      ctx.setTransform(canvas.width / WORLD_W, 0, 0, canvas.height / WORLD_H, 0, 0);
+      applyCamera();
+    };
+    resize();
     let last = performance.now();
     let lastSent = 0;
     let dirty = false;
     let raf = 0;
     let dir: Dir = DIR_DOWN;
     let walkingNow = false;
+    let rollingNow = false;
+    /** Znormalizowany wektor przewrotu (kierunek w chwili wciśnięcia C) i chwile (performance.now) jego końca / końca cooldownu. */
+    let rollDx = 0;
+    let rollDy = 0;
+    let rollUntil = 0;
+    let rollCooldownUntil = 0;
+    let dashingNow = false;
+    /** Cel teleportu unik-u, chwila (performance.now) w której ma nastąpić skok pozycji, koniec
+     * animacji unik-u i koniec jego cooldownu. dashTeleported pilnuje, żeby skok wykonał się raz. */
+    let dashTargetX = 0;
+    let dashTargetY = 0;
+    let dashTeleportAt = 0;
+    let dashUntil = 0;
+    let dashCooldownUntil = 0;
+    let dashTeleported = false;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
+    /** Wybrany atak: 1 = wręcz (Fist swings, krótki zasięg), 2 = kula (domyślny, jak dotąd). */
+    let attackMode: 1 | 2 = 2;
+    /** Koniec cooldownu ataku wręcz (performance.now), żeby Space nie spamowało uderzeń. */
+    let strikeCooldownUntil = 0;
     // Wejście do pokoju: trzymając E w jego kwadracie przez ROOM_ENTER_MS, wchodzimy na jego stronę.
     let eDown = false;
     // Jeśli E zostało wciśnięte jeszcze w poprzednim pokoju, ignorujemy je, dopóki nie przyjdzie keyup.
@@ -539,6 +733,14 @@ export function RoomStage({
       // Kwadraty pokoi: podświetlone, gdy postać w nich stoi; pasek postępu podczas trzymania E.
       for (const z of zonesRef.current) {
         const active = z.slug === eHoldSlug && eHoldStart !== null;
+        const phaseState = z.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, z.phase) : null;
+        // Strefa wymagająca konta (np. Shop) bez zalogowania — zamknięta niezależnie od fazy.
+        const authLocked = Boolean(z.requiresAuth) && !userIdRef.current;
+        const workClosedPre = phaseState?.phase === "work";
+        // Pokój zamknięty (praca w toku albo wymaga konta) ledwo widoczny, żeby wzrok od razu
+        // szedł na jedyny otwarty (aktualnie dostępny) pokój — patrz reset globalAlpha po pętli.
+        const closed = (authLocked || workClosedPre) && !active;
+        ctx.globalAlpha = closed ? 0.18 : 0.85;
         ctx.lineWidth = active ? 3 : 1.5;
         ctx.strokeStyle = active ? "#ffffff" : (z.color ?? "rgba(255,255,255,0.4)");
         ctx.fillStyle = active ? "rgba(255,255,255,0.12)" : (z.color ? `${z.color}26` : "rgba(255,255,255,0.05)");
@@ -546,9 +748,6 @@ export function RoomStage({
         ctx.roundRect(z.x, z.y, z.w, z.h, 10);
         ctx.fill();
         ctx.stroke();
-        const phaseState = z.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, z.phase) : null;
-        // Strefa wymagająca konta (np. Shop) bez zalogowania — zamknięta niezależnie od fazy.
-        const authLocked = Boolean(z.requiresAuth) && !userIdRef.current;
         ctx.fillStyle = "rgba(255,255,255,0.85)";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -623,7 +822,7 @@ export function RoomStage({
           ctx.fillStyle = phaseColor;
           ctx.font = "700 14px sans-serif";
           ctx.fillText(
-            `${state.phase === "work" ? "WORK" : "BREAK"} · ${formatMs(state.remainingMs)}`,
+            `${state.phase === "work" ? "WORK" : "STARTS IN"} · ${formatMs(state.remainingMs)}`,
             z.x + z.w / 2,
             z.y + z.h + 20,
           );
@@ -636,6 +835,7 @@ export function RoomStage({
           ctx.fillRect(z.x + 8, barY, barW * progress, 6);
         }
       }
+      ctx.globalAlpha = 0.85;
       // W pełni naładowana kula pulsuje.
       const pulse = (p: number) => (p >= 1 ? 1 + 0.06 * Math.sin(t / 70) : 1);
       if (chargeStart !== null) {
@@ -650,7 +850,15 @@ export function RoomStage({
         const { r, cx, cy } = orbAt(pos.x, pos.y, p);
         drawOrb(ctx, cx, cy, r * pulse(p), othersRef.current[k]?.color ?? "#ffffff", p);
       }
-      for (const b of ballsRef.current) drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6);
+      for (const b of ballsRef.current) {
+        if (b.melee) {
+          // Zamach pięścią: krótki, gasnący błysk zamiast pływającej kuli.
+          const life = b.until !== undefined ? Math.max(0, (b.until - t) / STRIKE_MS) : 1;
+          drawOrb(ctx, b.x, b.y, b.r * (0.6 + 0.4 * life), b.color, 0.9 * life);
+        } else {
+          drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6);
+        }
+      }
       // Błysk uderzenia na trafionych postaciach.
       const flash = (px: number, py: number, at: number | undefined) => {
         if (at === undefined || t - at > HIT_MS) return;
@@ -717,14 +925,44 @@ export function RoomStage({
         setMyDir(spawn.d);
       }
       const on = activeRef.current;
-      const dx = on ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0) : 0;
-      const dy = on ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0) : 0;
-      const moving = Boolean(dx || dy);
+      const dashing = on && t < dashUntil;
+      if (dashing !== dashingNow) {
+        dashingNow = dashing;
+        setMyDashing(dashing);
+      }
+      // W połowie animacji unik-u postać znika w starym miejscu i w tej samej klatce ląduje w celu —
+      // dashTeleported pilnuje, żeby skok wykonał się dokładnie raz na jeden unik.
+      if (dashing && !dashTeleported && t >= dashTeleportAt) {
+        dashTeleported = true;
+        x = dashTargetX;
+        y = dashTargetY;
+        dirty = true;
+      }
+      const rolling = !dashing && on && t < rollUntil;
+      if (rolling !== rollingNow) {
+        rollingNow = rolling;
+        setMyRolling(rolling);
+      }
+      const dx = dashing
+        ? 0
+        : rolling
+          ? rollDx
+          : on
+            ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0)
+            : 0;
+      const dy = dashing
+        ? 0
+        : rolling
+          ? rollDy
+          : on
+            ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0)
+            : 0;
+      const moving = !rolling && !dashing && Boolean(dx || dy);
       if (moving !== walkingNow) {
         walkingNow = moving;
         setMyWalking(moving);
       }
-      if (dx || dy) {
+      if (!rolling && !dashing && (dx || dy)) {
         const nd = DIR_OF[dy + 1][dx + 1];
         if (nd !== dir) {
           dir = nd;
@@ -732,19 +970,22 @@ export function RoomStage({
           dirty = true;
         }
       }
-      const norm = dx && dy ? Math.SQRT1_2 : 1;
+      const norm = !rolling && dx && dy ? Math.SQRT1_2 : 1;
+      const speed = playerSpeed() * (rolling ? ROLL_SPEED_MULT : 1);
       const maxX = WORLD_W - PERSON_W;
       const maxY = WORLD_H - PERSON_H;
-      const nx = Math.max(0, Math.min(maxX, x + dx * SPEED * dt * norm));
-      const ny = Math.max(TAG_H, Math.min(maxY, y + dy * SPEED * dt * norm));
+      const nx = Math.max(0, Math.min(maxX, x + dx * speed * dt * norm));
+      const ny = Math.max(TAG_H, Math.min(maxY, y + dy * speed * dt * norm));
       if (nx !== x || ny !== y) dirty = true;
       x = nx;
       y = ny;
+      // Kamera podąża za postacią co klatkę (nie tylko przy zmianie rozmiaru okna).
+      applyCamera();
       // Własna postać drży po trafieniu.
       const hitAge = t - (hitRef.current.me ?? -Infinity);
       const shake = hitAge < HIT_MS ? Math.sin(hitAge / 18) * 5 * (1 - hitAge / HIT_MS) : 0;
       person.style.transform = `translate(${x + shake}px, ${y}px)`;
-      myPos.current = { x, y, d: dir };
+      myPos.current = { x, y, d: dir, r: rolling, dash: dashing };
       // Wejście do pokoju: E trzeba trzymać nieprzerwanie, stojąc w jego kwadracie.
       const zone = on ? zonesRef.current.find((z) => inZone(x, y, z)) : undefined;
       if (!zone) {
@@ -799,6 +1040,9 @@ export function RoomStage({
               `Leaving now forfeits the +${xpForMinutes(zone.phase!.workMin)} XP and +${coinsForMinutes(zone.phase!.workMin)} coins for this work session — hold E again to confirm.`,
             );
             entryErrorTimer.current = setTimeout(() => setEntryError(null), 4000);
+            // Bez tego kolejna klatka (E wciąż wciśnięte) natychmiast trafiłaby w gałąź "else"
+            // niżej i wyszła naprawdę — trzeba wymusić puszczenie i ponowne przytrzymanie E.
+            eHoldStart = null;
           } else {
             entered = true;
             eKeyLockedAcrossRooms = true;
@@ -857,10 +1101,14 @@ export function RoomStage({
         lastSent = t;
         dirty = false;
       }
-      // Kule w locie (własne i cudze) znikają po opuszczeniu sceny.
+      // Kule w locie (własne i cudze) znikają po opuszczeniu sceny; hitboxy ataku wręcz stoją
+      // w miejscu i znikają po `until`, niezależnie od tego czy kogoś trafiły.
       ballsRef.current = ballsRef.current.filter((b) => {
-        b.x += b.vx * dt;
-        b.y += b.vy * dt;
+        if (b.until !== undefined && t > b.until) return false;
+        if (!b.melee) {
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
+        }
         // Pierwsza trafiona osoba (nie strzelec) zatrzymuje kulę: kula się rozpada, postać dostaje.
         let target: string | null = null;
         if (b.owner !== (keyRef.current || "me") && hits(b, x, y)) target = "me";
@@ -879,6 +1127,7 @@ export function RoomStage({
           burst(b, t);
           return false;
         }
+        if (b.melee) return true;
         return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
       });
       draw(t);
@@ -888,8 +1137,35 @@ export function RoomStage({
     const onKeyDown = (e: KeyboardEvent) => {
       if (!activeRef.current || document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey)
         return;
+      if (e.code === "Digit1") {
+        attackMode = 1;
+        return;
+      }
+      if (e.code === "Digit2") {
+        attackMode = 2;
+        return;
+      }
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
+        if (attackMode === 1) {
+          if (!e.repeat) {
+            const now = performance.now();
+            if (now >= strikeCooldownUntil) {
+              strikeCooldownUntil = now + STRIKE_COOLDOWN_MS;
+              strike(ballsRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+              emit("strike", { ...myPos.current });
+              // Every real swing by a signed-in user bumps their all-time count (shown in
+              // src/components/ProfileMenu.tsx), server-side via supabase/migrations/0023_fist_swings.sql.
+              if (userIdRef.current)
+                void getSupabase()
+                  ?.rpc("increment_fist_swings")
+                  .then(({ error }) => {
+                    if (error) console.error("increment_fist_swings", error);
+                  });
+            }
+          }
+          return;
+        }
         if (!e.repeat && chargeStart === null) {
           chargeStart = performance.now();
           emit("charge", { on: true });
@@ -898,6 +1174,39 @@ export function RoomStage({
       }
       if (e.code === "KeyE") {
         if (!eLocked) eDown = true;
+        return;
+      }
+      if (e.code === "KeyC") {
+        if (!e.repeat) {
+          const now = performance.now();
+          if (now >= rollCooldownUntil && now >= dashUntil) {
+            const [ux, uy] = DIRS[dir];
+            const n = Math.hypot(ux, uy) || 1;
+            rollDx = ux / n;
+            rollDy = uy / n;
+            rollUntil = now + ROLL_MS;
+            rollCooldownUntil = rollUntil + ROLL_COOLDOWN_MS;
+          }
+        }
+        return;
+      }
+      if (e.code === "KeyV") {
+        if (!e.repeat) {
+          const now = performance.now();
+          if (now >= dashCooldownUntil && now >= rollUntil) {
+            const [ux, uy] = DIRS[dir];
+            const n = Math.hypot(ux, uy) || 1;
+            const dashDistance = playerSpeed() * ROLL_SPEED_MULT * (ROLL_MS / 1000) * DASH_DISTANCE_MULT;
+            const maxX = WORLD_W - PERSON_W;
+            const maxY = WORLD_H - PERSON_H;
+            dashTargetX = Math.max(0, Math.min(maxX, x + (ux / n) * dashDistance));
+            dashTargetY = Math.max(TAG_H, Math.min(maxY, y + (uy / n) * dashDistance));
+            dashTeleportAt = now + DASH_TELEPORT_AT_MS;
+            dashUntil = now + DASH_MS;
+            dashCooldownUntil = dashUntil + DASH_COOLDOWN_MS;
+            dashTeleported = false;
+          }
+        }
         return;
       }
       if (!ARROWS.has(e.key)) return;
@@ -926,6 +1235,8 @@ export function RoomStage({
     const onBlur = () => {
       held.clear();
       cancelCharge();
+      rollUntil = 0;
+      dashUntil = 0;
       eDown = false;
       eHoldStart = null;
       eHoldSlug = null;
@@ -973,15 +1284,17 @@ export function RoomStage({
 
     channel
       .on("broadcast", { event: "pos" }, ({ payload }) => {
-        const { k, x, y, d } = payload as {
+        const { k, x, y, d, r, dash } = payload as {
           k: string;
           x: number;
           y: number;
           d: unknown;
+          r?: boolean;
+          dash?: boolean;
         };
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y)) return;
         const prev = posRef.current[k];
-        posRef.current[k] = { ...clampPos(x, y), d: asDir(d) };
+        posRef.current[k] = { ...clampPos(x, y, isLobby), d: asDir(d), r: Boolean(r), dash: Boolean(dash) };
         if (!prev || prev.x !== posRef.current[k].x || prev.y !== posRef.current[k].y) {
           setWalkers((w) => (w[k] ? w : { ...w, [k]: true }));
           clearTimeout(walkTimers.current[k]);
@@ -1005,9 +1318,21 @@ export function RoomStage({
         };
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(p)) return;
         delete chargingRef.current[k];
-        const px = clampPos(x, y);
+        const px = clampPos(x, y, isLobby);
         const c = othersRef.current[k]?.color ?? "#ffffff";
         launch(ballsRef.current, px.x, px.y, asDir(d), clamp01(p), c, k);
+      })
+      .on("broadcast", { event: "strike" }, ({ payload }) => {
+        const { k, x, y, d } = payload as { k: string; x: number; y: number; d: unknown };
+        if (k === key || !Number.isFinite(x) || !Number.isFinite(y)) return;
+        const px = clampPos(x, y, isLobby);
+        const c = othersRef.current[k]?.color ?? "#ffffff";
+        strike(ballsRef.current, px.x, px.y, asDir(d), c, k);
+      })
+      .on("broadcast", { event: "reward" }, ({ payload }) => {
+        const { k, coins, xp } = payload as { k: string; coins: number; xp: number };
+        if (k === key || !Number.isFinite(coins) || !Number.isFinite(xp)) return;
+        triggerReward(k, coins, xp);
       })
       .on("presence", { event: "sync" }, () => {
         const next: Others = {};
@@ -1030,7 +1355,7 @@ export function RoomStage({
           // Pozycja z broadcastu jest świeższa; bez niej bierzemy tę z Presence (dołączenie).
           if (!posRef.current[k]) {
             if (!Number.isFinite(latest.x) || !Number.isFinite(latest.y)) continue;
-            posRef.current[k] = { ...clampPos(latest.x!, latest.y!), d: asDir(latest.d) };
+            posRef.current[k] = { ...clampPos(latest.x!, latest.y!, isLobby), d: asDir(latest.d) };
           }
           next[k] = {
             ...latest,
@@ -1125,7 +1450,8 @@ export function RoomStage({
   // Publikujemy sterowanie tego pokoju do przycisku "How to play" w headerze (poza drzewem RoomStage) —
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
-    let text = "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge, release to shoot";
+    let text =
+      "Use the arrow keys ← ↑ ↓ → to move around · press 1 for Fist swings (short-range, tap Space to hit) or 2 for the ball (hold Space to charge, release to shoot) · tap C to roll in the direction you're facing (faster than walking) · tap V to dash further away in a puff of cloud (longer cooldown)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
@@ -1266,15 +1592,25 @@ export function RoomStage({
         className="absolute left-0 top-0 origin-top-left outline outline-1 outline-zinc-400/30"
         style={{ width: WORLD_W, height: WORLD_H }}
       >
+        {isLobby && <DungeonBackground width={WORLD_W} height={WORLD_H} />}
         {Object.entries(others).map(([k, o]) => (
           <div
             key={k}
-            className="absolute left-0 top-0 opacity-70 transition-transform duration-100 ease-linear"
+            className={`absolute left-0 top-0 opacity-70 ease-linear ${o.dash ? "" : "transition-transform duration-100"}`}
             style={{ transform: `translate(${o.x}px, ${o.y}px)` }}
           >
             {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
+            {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
             <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
-            <PixelPerson color={o.color} label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={walkers[k]} />
+            <PixelPerson
+              color={o.color}
+              label={o.nick ?? NO_NAME}
+              size={PERSON_W / 8}
+              dir={o.d}
+              walking={walkers[k] && !o.r && !o.dash}
+              rolling={o.r}
+              dashing={o.dash}
+            />
           </div>
         ))}
         <div
@@ -1282,8 +1618,17 @@ export function RoomStage({
           className={`absolute left-0 top-0 opacity-70 will-change-transform ${superseded ? "invisible" : ""}`}
         >
           {bubbles.me && <ChatBubble text={bubbles.me.text} />}
+          {rewards.me && <RewardPopup coins={rewards.me.coins} xp={rewards.me.xp} id={rewards.me.id} />}
           <NameTag name={nick} xp={session ? profile.xp : undefined} />
-          <PixelPerson color={color} label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myDir} walking={myWalking} />
+          <PixelPerson
+            color={color}
+            label={nick ?? NO_NAME}
+            size={PERSON_W / 8}
+            dir={myDir}
+            walking={myWalking}
+            rolling={myRolling}
+            dashing={myDashing}
+          />
         </div>
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
       </div>

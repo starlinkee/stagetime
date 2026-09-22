@@ -19,7 +19,11 @@ export function HowToPlayButton() {
               Close
             </button>
           </div>
-          <p className="text-zinc-300">{text}</p>
+          <ul className="list-disc space-y-1 pl-4 text-zinc-300">
+            {text.split("·").map((point) => point.trim()).filter(Boolean).map((point) => (
+              <li key={point}>{point}</li>
+            ))}
+          </ul>
         </div>
       )}
       <button

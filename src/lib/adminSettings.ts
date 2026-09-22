@@ -10,10 +10,13 @@ import { useSyncExternalStore } from "react";
 export type AdminSettings = {
   /** Ile sekund trzeba przytrzymać E stojąc w kwadracie pokoju, żeby go otworzyć. */
   roomEnterSec: number;
+  /** Prędkość postaci gracza w jednostkach świata na sekundę (patrz SPEED w RoomStage.tsx). */
+  playerSpeed: number;
 };
 
 export const DEFAULT_ADMIN_SETTINGS: AdminSettings = {
   roomEnterSec: 0.75,
+  playerSpeed: 220,
 };
 
 /** Opisuje jedno ustawienie do automatycznego wyrenderowania w panelu admina. */
@@ -29,6 +32,7 @@ export type AdminSettingDef = {
 /** Dodanie tu nowej pozycji automatycznie pokazuje ją w panelu admina. */
 export const ADMIN_SETTINGS_SCHEMA: AdminSettingDef[] = [
   { key: "roomEnterSec", label: "Czas otwarcia pokoju (przytrzymanie E)", min: 0, step: 0.05, suffix: "s" },
+  { key: "playerSpeed", label: "Prędkość gracza", min: 0, step: 10, suffix: " px/s" },
 ];
 
 const STORAGE_KEY = "stagetime:admin-settings";

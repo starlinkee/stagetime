@@ -37,7 +37,7 @@ export function safeColor(color: string | null | undefined): string {
 const saved = new EventTarget();
 
 /** Publiczna część profilu. */
-export type Profile = { nickname: string; color: string; xp: number; ballsShot: number };
+export type Profile = { nickname: string; color: string; xp: number; ballsShot: number; fistSwings: number };
 
 /** Mapa `user_id → profil`. */
 export type Profiles = Record<string, Profile>;
@@ -55,6 +55,8 @@ export type MyProfile = {
   level: LevelInfo;
   /** Total balls fired (Space release), ever — 0 until loaded or signed out. */
   ballsShot: number;
+  /** Total fist swings thrown (Space with attack 1 selected), ever — 0 until loaded or signed out. */
+  fistSwings: number;
   /** Copper coin balance (see src/lib/coins.ts) — 0 until loaded or signed out. Private: not shown for other players. */
   coins: number;
   error: string | null;
@@ -95,7 +97,7 @@ export function useMyProfile(): MyProfile {
     if (!sb || !userId) return;
     let cancelled = false;
     sb.from("profiles")
-      .select("nickname, color, xp, balls_shot, coins")
+      .select("nickname, color, xp, balls_shot, fist_swings, coins")
       .eq("id", userId)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -108,6 +110,7 @@ export function useMyProfile(): MyProfile {
           color: safeColor(data?.color),
           xp: Number(data?.xp ?? 0),
           ballsShot: data?.balls_shot ?? 0,
+          fistSwings: data?.fist_swings ?? 0,
           coins: Number(data?.coins ?? 0),
         });
       });
@@ -135,7 +138,14 @@ export function useMyProfile(): MyProfile {
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "profiles", filter: `id=eq.${userId}` },
         ({ new: row }) => {
-          const p = row as { nickname?: string; color?: string; xp?: number | string; balls_shot?: number; coins?: number | string };
+          const p = row as {
+            nickname?: string;
+            color?: string;
+            xp?: number | string;
+            balls_shot?: number;
+            fist_swings?: number;
+            coins?: number | string;
+          };
           if (!p.nickname) return;
           setLoaded({
             userId,
@@ -143,6 +153,7 @@ export function useMyProfile(): MyProfile {
             color: safeColor(p.color),
             xp: Number(p.xp ?? 0),
             ballsShot: p.balls_shot ?? 0,
+            fistSwings: p.fist_swings ?? 0,
             coins: Number(p.coins ?? 0),
           });
         },
@@ -156,6 +167,7 @@ export function useMyProfile(): MyProfile {
   const currentNickname = (loaded?.userId === userId ? loaded.nickname : fallback) ?? "User";
   const currentXp = loaded?.userId === userId ? loaded.xp : 0;
   const currentBallsShot = loaded?.userId === userId ? loaded.ballsShot : 0;
+  const currentFistSwings = loaded?.userId === userId ? loaded.fistSwings : 0;
   const currentCoins = loaded?.userId === userId ? loaded.coins : 0;
 
   const save = useCallback(
@@ -189,12 +201,20 @@ export function useMyProfile(): MyProfile {
       // Dotyczy też tej instancji (listener powyżej), więc osobny setLoaded nie jest potrzebny.
       saved.dispatchEvent(
         new CustomEvent("saved", {
-          detail: { userId, nickname: currentNickname, color, xp: currentXp, ballsShot: currentBallsShot, coins: currentCoins },
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            coins: currentCoins,
+          },
         }),
       );
       return true;
     },
-    [sb, userId, currentNickname, currentXp, currentBallsShot, currentCoins],
+    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentCoins],
   );
 
   const purchaseColor = useCallback(
@@ -225,13 +245,14 @@ export function useMyProfile(): MyProfile {
             color: newColor,
             xp: currentXp,
             ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
             coins: newCoins,
           },
         }),
       );
       return { ok: true as const };
     },
-    [sb, userId, currentNickname, currentXp, currentBallsShot, currentCoins],
+    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentCoins],
   );
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
@@ -245,6 +266,7 @@ export function useMyProfile(): MyProfile {
     xp,
     level: levelFromXp(xp),
     ballsShot: mine?.ballsShot ?? 0,
+    fistSwings: mine?.fistSwings ?? 0,
     coins: mine?.coins ?? 0,
     error,
     save,
@@ -274,7 +296,7 @@ export function useProfiles(userIds: string[]): Profiles {
     for (const id of missing) fetched.current.add(id);
     let cancelled = false;
     sb.from("profiles")
-      .select("id, nickname, color, xp, balls_shot")
+      .select("id, nickname, color, xp, balls_shot, fist_swings")
       .in("id", missing)
       // xp is numeric(12,1) — PostgREST may serialize it as a string, so toMap() below parses it.
       .then(({ data, error }) => {
@@ -300,13 +322,23 @@ export function useProfiles(userIds: string[]): Profiles {
             color?: string;
             xp?: number | string;
             balls_shot?: number;
+            fist_swings?: number;
           };
           if (!profile?.id || !profile.nickname) return;
-          const { id, nickname, color, xp, balls_shot } = profile;
+          const { id, nickname, color, xp, balls_shot, fist_swings } = profile;
           setProfiles((prev) =>
             // Interesują nas tylko osoby widoczne na stronie (czat, obecni).
             fetched.current.has(id)
-              ? { ...prev, [id]: { nickname, color: safeColor(color), xp: Number(xp ?? 0), ballsShot: balls_shot ?? 0 } }
+              ? {
+                  ...prev,
+                  [id]: {
+                    nickname,
+                    color: safeColor(color),
+                    xp: Number(xp ?? 0),
+                    ballsShot: balls_shot ?? 0,
+                    fistSwings: fist_swings ?? 0,
+                  },
+                }
               : prev,
           );
         },
@@ -331,12 +363,25 @@ function saveHint(error: { code?: string; message: string }): string {
 }
 
 function toMap(
-  rows: { id: string; nickname: string; color: string; xp: number | string; balls_shot: number }[],
+  rows: {
+    id: string;
+    nickname: string;
+    color: string;
+    xp: number | string;
+    balls_shot: number;
+    fist_swings: number;
+  }[],
 ): Profiles {
   return Object.fromEntries(
     rows.map((r) => [
       r.id,
-      { nickname: r.nickname, color: safeColor(r.color), xp: Number(r.xp ?? 0), ballsShot: r.balls_shot ?? 0 },
+      {
+        nickname: r.nickname,
+        color: safeColor(r.color),
+        xp: Number(r.xp ?? 0),
+        ballsShot: r.balls_shot ?? 0,
+        fistSwings: r.fist_swings ?? 0,
+      },
     ]),
   );
 }

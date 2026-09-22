@@ -26,24 +26,27 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
-      <h1 className="text-2xl font-semibold">{room.name}</h1>
-      {/* Długość faz i nagroda XP tego pokoju, widoczne cały czas po wejściu — patrz też etykieta
-          pod kwadratem pokoju w lobby (RoomStage) i ostrzeżenie przed utratą XP przy wyjściu
-          w trakcie pracy. */}
-      {room.kind !== "shop" && (
-        <p className="-mt-6 flex flex-col items-center gap-0.5 text-sm">
-          {room.kind === "pomodoro" && (
-            <span className="text-zinc-400">
-              {room.workMin} min work + {room.breakMin} min break
+      {/* Nazwa pokoju i nagroda XP: przypięte na stałe u góry ekranu (nie w wyśrodkowanym flow),
+          żeby nie nakładały się na postać, którą kamera w RoomStage trzyma na środku ekranu —
+          patrz też etykieta pod kwadratem pokoju w lobby (RoomStage) i ostrzeżenie przed utratą
+          XP przy wyjściu w trakcie pracy. */}
+      <div className="pointer-events-none fixed left-1/2 top-20 z-10 flex -translate-x-1/2 flex-col items-center gap-0.5 text-center">
+        <h1 className="text-2xl font-semibold">{room.name}</h1>
+        {room.kind !== "shop" && (
+          <p className="flex flex-col items-center gap-0.5 text-sm">
+            {room.kind === "pomodoro" && (
+              <span className="text-zinc-400">
+                {room.workMin} min work + {room.breakMin} min break
+              </span>
+            )}
+            <span className="font-semibold text-amber-400">
+              {room.kind === "pomodoro"
+                ? `+${xpForMinutes(room.workMin)} XP and +${coinsForMinutes(room.workMin)} coins for completing this work session`
+                : "+0.1 XP every 5 minutes and +0.1 coins every minute while the stopwatch is running"}
             </span>
-          )}
-          <span className="font-semibold text-amber-400">
-            {room.kind === "pomodoro"
-              ? `+${xpForMinutes(room.workMin)} XP and +${coinsForMinutes(room.workMin)} coins for completing this work session`
-              : "+0.1 XP every 5 minutes and +0.1 coins every minute while the stopwatch is running"}
-          </span>
-        </p>
-      )}
+          </p>
+        )}
+      </div>
       {room.kind === "stopwatch" ? (
         <Suspense fallback={null}>
           <TimerRoom roomSlug={room.slug} />
@@ -56,7 +59,12 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
         <>
           <RoomTimer room={room} />
           <Suspense fallback={null}>
-            <RoomStage roomSlug={room.slug} zones={[exitZone]} spawnZoneSlug={EXIT_ZONE.slug} />
+            <RoomStage
+            roomSlug={room.slug}
+            zones={[exitZone]}
+            spawnZoneSlug={EXIT_ZONE.slug}
+            phase={room.kind === "pomodoro" ? { workMin: room.workMin, breakMin: room.breakMin, offsetMs: room.offsetMs } : undefined}
+          />
           </Suspense>
         </>
       )}

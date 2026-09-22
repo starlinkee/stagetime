@@ -25,7 +25,7 @@ export function xpForLevel(level: number): number {
 
 export type LevelInfo = {
   level: number;
-  /** XP earned within the current level. */
+  /** XP earned within the current level — fractional (0.1 steps), not floored. */
   intoLevel: number;
   /** XP needed to reach the next level. */
   forNextLevel: number;
@@ -34,7 +34,7 @@ export type LevelInfo = {
 /** Level (starting at 1) implied by a total XP amount. */
 export function levelFromXp(xp: number): LevelInfo {
   let level = 1;
-  let remaining = Math.max(0, Math.floor(xp));
+  let remaining = Math.max(0, xp);
   for (;;) {
     const need = xpForLevel(level);
     if (remaining < need) return { level, intoLevel: remaining, forNextLevel: need };

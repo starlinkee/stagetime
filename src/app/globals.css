@@ -30,6 +30,47 @@ body {
 .pp-f2 { animation-name: pp-f2; }
 .pp-f3 { animation-name: pp-f3; }
 
+/* Przewrót (roll): osobny wariant na każdy z 8 kierunków ruchu.
+   --roll-rot: docelowy obrót (360deg w prawo, -360deg w lewo, 0deg gdy ruch czysto pionowy).
+   --roll-squash: 0–1, dodatkowe spłaszczenie w połowie animacji (fikołek w przód/w tył przy ruchu pionowym/ukośnym).
+   Czas musi się zgadzać z ROLL_MS w RoomStage.tsx. */
+@keyframes pp-roll {
+  0% { transform: rotate(0deg) scaleY(1); }
+  50% { transform: rotate(calc(var(--roll-rot, 360deg) / 2)) scaleY(calc(1 - var(--roll-squash, 0) * 0.45)); }
+  100% { transform: rotate(var(--roll-rot, 360deg)) scaleY(1); }
+}
+.pp-roll { transform-box: fill-box; transform-origin: center; animation: pp-roll 240ms linear; }
+
+/* Unik (dash): sylwetka znika jak za chmurą (rozmycie + rozjaśnienie) dokładnie w połowie animacji —
+   to właśnie wtedy RoomStage.tsx wykonuje skok pozycji (teleport, bez pokonywania drogi między punktami).
+   Czas musi się zgadzać z DASH_MS w RoomStage.tsx. */
+@keyframes pp-dash {
+  0%, 100% { opacity: 1; filter: blur(0) brightness(1); transform: scale(1); }
+  38% { opacity: 0; filter: blur(3px) brightness(1.6); transform: scale(1.35); }
+  62% { opacity: 0; filter: blur(3px) brightness(1.6); transform: scale(0.7); }
+}
+.pp-dash { transform-box: fill-box; transform-origin: center; animation: pp-dash 220ms ease-in-out; }
+
+/* Chmurka przy uniku: pojawia się tylko przy znikaniu postaci (pierwsza połowa pp-dash) i gaśnie,
+   zanim postać pojawi się z powrotem w nowym miejscu — przy pojawieniu chmurki już nie ma. */
+@keyframes pp-dash-cloud {
+  0% { opacity: 0; transform: scale(0.5); }
+  30% { opacity: 1; transform: scale(1.1); }
+  50% { opacity: 1; transform: scale(1.25); }
+  62%, 100% { opacity: 0; transform: scale(1.5); }
+}
+.pp-dash-cloud { transform-box: fill-box; transform-origin: center; animation: pp-dash-cloud 220ms ease-in-out; }
+
+/* Popup "+1 coin / +xp" nad postacią po co-minutowym tick-u nagrody (patrz REWARD_MS w
+   RoomStage.tsx): pojawia się, chwilę wisi, po czym płynnie znika unosząc się lekko w górę. */
+@keyframes pp-reward {
+  0% { opacity: 0; transform: translate(-50%, 4px); }
+  15% { opacity: 1; transform: translate(-50%, 0); }
+  70% { opacity: 1; transform: translate(-50%, -6px); }
+  100% { opacity: 0; transform: translate(-50%, -16px); }
+}
+.pp-reward { animation: pp-reward 1.4s ease-out forwards; }
+
 /* Napis w klimacie logo Super Mario 64: bombiaste litery, żółto-czerwony gradient, niebieska obwódka i 3D wytłoczenie. */
 .title-64 {
   font-family: var(--font-fredoka), var(--font-sans), sans-serif;
