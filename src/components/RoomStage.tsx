@@ -273,11 +273,14 @@ function ChatBubble({ text }: { text: string }) {
 export function RoomStage({
   roomSlug,
   zones = [],
+  occupancy,
   spawnZoneSlug,
   onZoneAction,
 }: {
   roomSlug: string;
   zones?: RoomZone[];
+  /** Ile osób jest naprawdę w każdym pokoju (patrz useRoomOccupancy) — etykieta pod numerem/kłódką. */
+  occupancy?: Record<string, number>;
   /**
    * Slug strefy z `zones`, w której zawsze — niezależnie od zapisanej w bazie pozycji — staje
    * postać, np. strefa wyjścia, żeby wejście do pokoju kończyło się dokładnie przy wyjściu i dało
@@ -365,6 +368,12 @@ export function RoomStage({
   useEffect(() => {
     zonesRef.current = zones;
   }, [zones]);
+  // Prawdziwa liczba osób w każdym pokoju (z useRoomOccupancy) — ref, żeby pętla rysowania
+  // (rAF, poza reactem) widziała najświeższą wartość bez przebudowy efektu.
+  const occupancyRef = useRef(occupancy);
+  useEffect(() => {
+    occupancyRef.current = occupancy;
+  }, [occupancy]);
   // Callback dla stref "action" — ref, żeby pętla ruchu nie zależała od propsa.
   const onZoneActionRef = useRef(onZoneAction);
   useEffect(() => {
@@ -520,16 +529,16 @@ export function RoomStage({
           ctx.font = "600 16px sans-serif";
           ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2);
         }
-        // Ile osób stoi teraz w kwadracie — pod numerem/kłódką, tylko gdy ktoś tam jest.
-        let occupants = inZone(x, y, z) ? 1 : 0;
-        for (const [k, o] of Object.entries(othersRef.current)) {
-          const p = posRef.current[k] ?? o;
-          if (inZone(p.x, p.y, z)) occupants++;
-        }
-        if (occupants > 0) {
+        // Prawdziwa liczba osób w tym pokoju (nie kto stoi na kwadracie w lobby) — pod numerem/kłódką.
+        const occupants = occupancyRef.current?.[z.slug];
+        if (occupants !== undefined) {
           ctx.fillStyle = "rgba(255,255,255,0.75)";
           ctx.font = "500 12px sans-serif";
-          ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 22);
+          ctx.fillText(
+            occupants === 0 ? "Room is empty" : `${occupants} player${occupants === 1 ? "" : "s"} inside`,
+            z.x + z.w / 2,
+            z.y + z.h / 2 + 22,
+          );
         }
         if (active && eHoldStart !== null) {
           const p = Math.min(1, (t - eHoldStart) / roomEnterMs());

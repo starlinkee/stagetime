@@ -1,6 +1,8 @@
+"use client";
 import { Suspense } from "react";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
 import { ROOMS } from "@/lib/rooms";
+import { useRoomOccupancy } from "@/lib/useRoomOccupancy";
 
 /**
  * Kwadraty pokoi w lobby: jeden wiersz na typ pomodoro (25+5, 20+5, 50+10, patrz pomodoroVariants
@@ -55,11 +57,14 @@ const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
 
 const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones];
 
+const ROOM_SLUGS = ROOMS.map((r) => r.slug);
+
 export default function Home() {
+  const occupancy = useRoomOccupancy(ROOM_SLUGS);
   return (
     <>
     <Suspense fallback={null}>
-      <RoomStage roomSlug="lobby" zones={LOBBY_ZONES} />
+      <RoomStage roomSlug="lobby" zones={LOBBY_ZONES} occupancy={occupancy} />
     </Suspense>
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center gap-2 p-8 pt-16 text-center">
       <h1 className="title-64 text-5xl sm:text-6xl">StudyQuest.Party</h1>
