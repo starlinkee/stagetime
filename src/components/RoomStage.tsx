@@ -520,6 +520,17 @@ export function RoomStage({
           ctx.font = "600 16px sans-serif";
           ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2);
         }
+        // Ile osób stoi teraz w kwadracie — pod numerem/kłódką, tylko gdy ktoś tam jest.
+        let occupants = inZone(x, y, z) ? 1 : 0;
+        for (const [k, o] of Object.entries(othersRef.current)) {
+          const p = posRef.current[k] ?? o;
+          if (inZone(p.x, p.y, z)) occupants++;
+        }
+        if (occupants > 0) {
+          ctx.fillStyle = "rgba(255,255,255,0.75)";
+          ctx.font = "500 12px sans-serif";
+          ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 22);
+        }
         if (active && eHoldStart !== null) {
           const p = Math.min(1, (t - eHoldStart) / roomEnterMs());
           const barW = z.w - 16;
