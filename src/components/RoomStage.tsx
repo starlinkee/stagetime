@@ -18,6 +18,7 @@ import { useSession } from "@/lib/useSession";
 import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
 import { xpForMinutes } from "@/lib/xp";
+import type { ClientMessage, ServerMessage } from "../../realtime-server/shared/types";
 
 /** Kolor etykiety fazy pod kwadratem pokoju: praca na czerwono (nie da się teraz wejść), przerwa na zielono. */
 const PHASE_COLOR = { work: "#ef4444", break: "#22c55e" } as const;
@@ -59,6 +60,13 @@ const SPAWN_FROM_KEY = "stagetime:spawnFrom";
 let eKeyLockedAcrossRooms = false;
 /** Najczęściej co ile ms wysyłamy własną pozycję. */
 const SEND_EVERY = 60;
+
+/**
+ * Serwer walidujący ruch (realtime-server/, patrz docs/stateful_server_plan.md) — ustawiony
+ * tylko na tej gałęzi/deployu podglądowym. Bez tej zmiennej zachowanie jest identyczne jak
+ * wcześniej: cały kod z nią związany w tym pliku jest wtedy pomijany.
+ */
+const REALTIME_SERVER_URL = process.env.NEXT_PUBLIC_REALTIME_SERVER_URL || null;
 
 /** Jak długo wisi dymek z wiadomością nad postacią, zanim zniknie sam. */
 const BUBBLE_MS = 6000;
@@ -452,7 +460,10 @@ export function RoomStage({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const [others, setOthers] = useState<Others>({});
-  // Klucz tej karty w kanale; pozycje innych trzymamy osobno od Presence.
+  // Klucz tej karty w kanale; pozycje innych trzymamy osobno od Presence. Stały przez cały
+  // czas życia komponentu (nie per-efekt), żeby ten sam klucz mógł posłużyć zarówno kanałowi
+  // Supabase, jak i (na gałęzi podglądowej) serwerowi ruchu — patrz REALTIME_SERVER_URL.
+  const [netKey] = useState(() => crypto.randomUUID());
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
   const metaRef = useRef<Meta>({ at: 0, color, nick, xp: profile.xp, user: userId });
@@ -695,6 +706,56 @@ export function RoomStage({
       if (document.visibilityState === "hidden") persist();
     };
 
+    // Serwer ruchu (realtime-server/) — tylko na gałęzi podglądowej, patrz REALTIME_SERVER_URL.
+    // Serwer jest źródłem prawdy o własnej pozycji: co event "state" nadpisujemy nią lokalne
+    // przewidywanie (patrz reconciliation w tick() niżej) — dzięki temu sfałszowana lokalnie
+    // pozycja wraca na miejsce w ciągu jednego rozgłoszenia serwera (patrz BROADCAST_MS).
+    const ws = REALTIME_SERVER_URL ? new WebSocket(REALTIME_SERVER_URL) : null;
+    // Ostatnia znana pozycja z serwera dla nas — czeka tu na najbliższą klatkę tick().
+    let serverMe: { x: number; y: number; d: number } | null = null;
+    if (ws) {
+      ws.addEventListener("open", () => {
+        const join: ClientMessage = {
+          type: "join",
+          id: netKey,
+          roomSlug,
+          userId: userIdRef.current,
+          nick: metaRef.current.nick,
+          color: colorRef.current,
+        };
+        ws.send(JSON.stringify(join));
+      });
+      ws.addEventListener("message", (ev) => {
+        let msg: ServerMessage;
+        try {
+          msg = JSON.parse(ev.data as string);
+        } catch {
+          return;
+        }
+        if (msg.type !== "state") return;
+        for (const p of msg.players) {
+          if (p.id === netKey) {
+            serverMe = { x: p.x, y: p.y, d: p.d };
+            continue;
+          }
+          // Mirrors the Supabase "pos" broadcast handler below (same posRef/setOthers/setWalkers
+          // pattern) — posRef alone wouldn't trigger a re-render, `others` state has to change too.
+          const prevPos = posRef.current[p.id];
+          const nextPos = { ...clampPos(p.x, p.y, isLobby), d: asDir(p.d) };
+          posRef.current[p.id] = nextPos;
+          if (!prevPos || prevPos.x !== nextPos.x || prevPos.y !== nextPos.y) {
+            setWalkers((w) => (w[p.id] ? w : { ...w, [p.id]: true }));
+            clearTimeout(walkTimers.current[p.id]);
+            walkTimers.current[p.id] = setTimeout(() => setWalkers((w) => ({ ...w, [p.id]: false })), 300);
+          }
+          setOthers((prevOthers) =>
+            prevOthers[p.id] ? { ...prevOthers, [p.id]: { ...prevOthers[p.id], ...nextPos } } : prevOthers,
+          );
+        }
+      });
+    }
+    let lastInputSent = 0;
+
     const emit = (event: string, payload: object = {}) => {
       if (!activeRef.current) return;
       channelRef.current?.send({
@@ -924,6 +985,19 @@ export function RoomStage({
         dir = spawn.d;
         setMyDir(spawn.d);
       }
+      // Korekta z serwera ruchu (patrz WS wyżej) — pomijana w trakcie przewrotu/uniku, żeby ich
+      // krótka, czysto lokalna animacja nie została ucięta w pół; zaraz po niej i tak wróci do
+      // pozycji z serwera przy najbliższym rozgłoszeniu (patrz BROADCAST_MS w realtime-server/).
+      if (serverMe && !rollingNow && !dashingNow) {
+        x = serverMe.x;
+        y = serverMe.y;
+        const newDir = asDir(serverMe.d);
+        if (newDir !== dir) {
+          dir = newDir;
+          setMyDir(newDir);
+        }
+        serverMe = null;
+      }
       const on = activeRef.current;
       const dashing = on && t < dashUntil;
       if (dashing !== dashingNow) {
@@ -957,6 +1031,17 @@ export function RoomStage({
           : on
             ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0)
             : 0;
+      // Surowa intencja ruchu (bez przewrotu/uniku — serwer ich jeszcze nie zna, patrz
+      // docs/stateful_server_plan.md) wysyłana do serwera ruchu. Niezależnie od `dirty`
+      // (które dotyczy pozycji, nie intencji) — inaczej puszczenie strzałki nigdy by się nie
+      // wysłało, gdyby akurat ostatnia klatka ruchu nie zmieniła pozycji.
+      if (ws && ws.readyState === WebSocket.OPEN && t - lastInputSent >= SEND_EVERY) {
+        const rawDx = on ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0) : 0;
+        const rawDy = on ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0) : 0;
+        const input: ClientMessage = { type: "input", dx: rawDx as -1 | 0 | 1, dy: rawDy as -1 | 0 | 1 };
+        ws.send(JSON.stringify(input));
+        lastInputSent = t;
+      }
       const moving = !rolling && !dashing && Boolean(dx || dy);
       if (moving !== walkingNow) {
         walkingNow = moving;
@@ -1254,6 +1339,7 @@ export function RoomStage({
     return () => {
       persist();
       clearInterval(saveTimer);
+      ws?.close();
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", persist);
       cancelAnimationFrame(raf);
@@ -1262,13 +1348,13 @@ export function RoomStage({
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("resize", resize);
     };
-  }, [roomSlug, router, effectiveSpawnZoneSlug]);
+  }, [roomSlug, router, effectiveSpawnZoneSlug, netKey]);
 
   // Kanał pokoju: Presence mówi, kto jest i jak wygląda, Broadcast niesie pozycje i kule.
   useEffect(() => {
     const sb = getSupabase();
     if (!sb || !ready || !spawned) return;
-    const key = crypto.randomUUID();
+    const key = netKey;
     keyRef.current = key;
     const channel = sb.channel(`world3:${roomSlug}`, {
       config: { presence: { key } },
@@ -1385,7 +1471,7 @@ export function RoomStage({
       setOthers({});
       sb.removeChannel(channel);
     };
-  }, [roomSlug, ready, spawned]);
+  }, [roomSlug, ready, spawned, netKey]);
 
   // „Play here” w wypartej karcie: bierzemy postać z miejsca, gdzie zostawiła ją druga karta,
   // i przejmujemy konto z powrotem (tamta karta zostaje wyparta).

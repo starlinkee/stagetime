@@ -95,6 +95,9 @@ wss.on("connection", (ws) => {
     }
     if (msg.type === "join") {
       leaveRoom(conn);
+      // Client supplies its own stable per-tab id (the same key it uses for Supabase Presence)
+      // so the client can match "me" vs "others" across both systems without a translation step.
+      if (typeof msg.id === "string" && msg.id) conn.id = msg.id;
       conn.roomSlug = typeof msg.roomSlug === "string" && msg.roomSlug ? msg.roomSlug : "lobby";
       conn.isLobby = conn.roomSlug === "lobby";
       conn.userId = typeof msg.userId === "string" ? msg.userId : null;

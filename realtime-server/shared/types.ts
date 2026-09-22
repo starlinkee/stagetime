@@ -16,7 +16,7 @@ export interface PlayerState {
  * entire point of this server existing (see docs/stateful_server_plan.md).
  */
 export type ClientMessage =
-  | { type: "join"; roomSlug: string; userId: string | null; nick: string | null; color: string }
+  | { type: "join"; id: string; roomSlug: string; userId: string | null; nick: string | null; color: string }
   | { type: "input"; dx: -1 | 0 | 1; dy: -1 | 0 | 1 };
 
 export type ServerMessage =
