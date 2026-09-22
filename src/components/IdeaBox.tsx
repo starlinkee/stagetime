@@ -8,8 +8,26 @@ import { useSession } from "@/lib/useSession";
 /** Only this account sees the link to the ideas list (see supabase/migrations/0008). */
 const ADMIN_NICK = "v_everything";
 
+/** Header link to /ideas, visible only to ADMIN_NICK. */
+export function AllIdeasLink() {
+  const { session } = useSession();
+  const profile = useMyProfile();
+  const nick = session ? profile.nickname : null;
+
+  if (nick !== ADMIN_NICK) return null;
+
+  return (
+    <Link
+      href="/ideas"
+      className="rounded-full bg-zinc-800/90 px-3 py-2 text-xs font-medium text-zinc-200 shadow-lg ring-1 ring-zinc-600 hover:bg-zinc-700"
+    >
+      📋 All ideas
+    </Link>
+  );
+}
+
 /**
- * Bottom-right button + idea form: body + signature, the database adds date/time.
+ * Header button + idea form: body + signature, the database adds date/time.
  * Visible to everyone (even without an account) — this is an anonymous player idea box.
  * Signed-in players get their signature filled in automatically from their Discord nickname.
  */
@@ -51,18 +69,9 @@ export function IdeaBox() {
   };
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex items-end gap-2">
-      {nick === ADMIN_NICK && (
-        <Link
-          href="/ideas"
-          className="rounded-full bg-zinc-800/90 px-3 py-2 text-xs font-medium text-zinc-200 shadow-lg ring-1 ring-zinc-600 hover:bg-zinc-700"
-        >
-          📋 All ideas
-        </Link>
-      )}
-      <div className="flex flex-col items-end">
-        {open && (
-          <div className="mb-2 w-80 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
+    <div className="relative">
+      {open && (
+        <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
             <div className="mb-3 flex items-center justify-between">
               <span className="font-semibold">Ideas</span>
               <button type="button" onClick={close} className="text-xs text-zinc-400 hover:text-zinc-200">
@@ -130,7 +139,6 @@ export function IdeaBox() {
         >
           💡 Idea
         </button>
-      </div>
     </div>
   );
 }

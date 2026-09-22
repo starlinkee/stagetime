@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Fredoka, Geist, Geist_Mono } from "next/font/google";
 import { AdminPanel } from "@/components/AdminPanel";
 import { AuthButton } from "@/components/AuthButton";
-import { IdeaBox } from "@/components/IdeaBox";
+import { AllIdeasLink, IdeaBox } from "@/components/IdeaBox";
 import { PresenceBar } from "@/components/PresenceBar";
 import { VersionWatcher } from "@/components/VersionWatcher";
 import "./globals.css";
@@ -35,14 +35,21 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} ${fredoka.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <header className="flex h-14 items-center justify-end px-6">
-          <AuthButton />
+        <header className="sticky top-0 z-20 flex h-14 items-center border-b border-zinc-800/60 bg-zinc-950/90 px-6 backdrop-blur">
+          <div className="flex flex-1 items-center gap-2">
+            <AdminPanel />
+            <AllIdeasLink />
+          </div>
+          <div className="flex justify-center">
+            <PresenceBar />
+          </div>
+          <div className="flex flex-1 items-center justify-end gap-2">
+            <IdeaBox />
+            <AuthButton />
+          </div>
         </header>
         {children}
-        <PresenceBar />
         <VersionWatcher />
-        <AdminPanel />
-        <IdeaBox />
       </body>
     </html>
   );

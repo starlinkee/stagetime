@@ -1,13 +1,15 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
+import { LevelBadge } from "@/components/LevelBadge";
 import { PixelPerson } from "@/components/PixelPerson";
 import { COLOR_CHOICES, useMyProfile } from "@/lib/useProfile";
 import { displayName, signOut } from "@/lib/useSession";
+import { levelFromXp } from "@/lib/xp";
 
 /** Nazwa w nagłówku: klik otwiera panel ze zmianą nicku i wylogowaniem. */
 export function ProfileMenu({ session }: { session: Session }) {
-  const { ready, nickname, color, error, save } = useMyProfile();
+  const { ready, nickname, color, xp, error, save } = useMyProfile();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const shown = nickname ?? displayName(session);
@@ -35,8 +37,9 @@ export function ProfileMenu({ session }: { session: Session }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        className="rounded-lg bg-[#5865F2] px-3 py-1.5 text-white hover:bg-[#4752c4]"
+        className="flex items-center gap-1.5 rounded-lg bg-[#5865F2] px-3 py-1.5 text-white hover:bg-[#4752c4]"
       >
+        {ready && <LevelBadge xp={xp} />}
         {shown}
       </button>
 
@@ -47,7 +50,7 @@ export function ProfileMenu({ session }: { session: Session }) {
           className="absolute right-0 z-10 mt-2 w-72 rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-xl"
         >
           {ready ? (
-            <ProfileForm nickname={shown} currentColor={color} error={error} save={save} />
+            <ProfileForm nickname={shown} currentColor={color} xp={xp} error={error} save={save} />
           ) : (
             <p className="text-zinc-500">Loading…</p>
           )}
@@ -66,15 +69,18 @@ export function ProfileMenu({ session }: { session: Session }) {
 function ProfileForm({
   nickname,
   currentColor,
+  xp,
   error,
   save,
 }: {
   nickname: string;
   currentColor: string;
+  xp: number;
   error: string | null;
   save: (color: string) => Promise<boolean>;
 }) {
   const [color, setColor] = useState(currentColor);
+  const { level, intoLevel, forNextLevel } = levelFromXp(xp);
 
   // Zmiana koloru zapisuje się od razu; przy błędzie wracamy do zapisanego koloru.
   async function pick(c: string) {
@@ -85,8 +91,14 @@ function ProfileForm({
   return (
     <div className="flex flex-col gap-2">
       <span className="text-zinc-400">Nickname</span>
-      <span className="text-zinc-200">{nickname}</span>
+      <span className="flex items-center gap-1.5 text-zinc-200">
+        <LevelBadge xp={xp} />
+        {nickname}
+      </span>
       <span className="text-xs text-zinc-600">Taken from your Discord account at sign-up.</span>
+      <span className="text-xs text-zinc-600">
+        Level {level} · {intoLevel}/{forNextLevel} XP to level {level + 1} — 5 minutes in a study room = 1 XP.
+      </span>
       <span className="mt-1 text-zinc-400">Character color</span>
       <div className="flex items-end gap-3">
         <PixelPerson color={color} size={4} />

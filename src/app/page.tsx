@@ -2,19 +2,58 @@ import { Suspense } from "react";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
 import { ROOMS } from "@/lib/rooms";
 
-/** Kwadraty pokoi w lobby: rząd na środku sceny (świat 1600×900), do wejścia trzymając E. */
-const ZONE_W = 220;
-const ZONE_H = 220;
-const ZONE_GAP = 60;
-const zonesStartX = (1600 - (ROOMS.length * ZONE_W + (ROOMS.length - 1) * ZONE_GAP)) / 2;
-const LOBBY_ZONES: RoomZone[] = ROOMS.map((r, i) => ({
+/**
+ * Kwadraty pokoi w lobby: jeden wiersz na typ pomodoro (25+5, 20+5, 50+10, patrz pomodoroVariants
+ * w lib/rooms.ts) — liczba kwadratów w wierszu odpowiada liczbie wariantów tego typu (różna dla
+ * każdego typu), plus osobny kwadrat pokoju-stopera pod spodem.
+ */
+const ZONE_W = 180;
+const ZONE_H = 100;
+const COL_GAP = 50;
+const ROW_GAP = 70;
+const gridStartY = 220;
+
+const pomodoroRooms = ROOMS.filter((r) => r.kind === "pomodoro");
+const stopwatchRooms = ROOMS.filter((r) => r.kind === "stopwatch");
+
+// Grupowanie po typie (slug bez numeru wariantu na końcu, np. "25-5-1" -> "25-5"), w kolejności
+// pierwszego wystąpienia, żeby każdy typ trafił do jednego wiersza.
+const pomodoroGroups = new Map<string, typeof pomodoroRooms>();
+for (const r of pomodoroRooms) {
+  const key = r.slug.replace(/-\d+$/, "");
+  const group = pomodoroGroups.get(key);
+  if (group) group.push(r);
+  else pomodoroGroups.set(key, [r]);
+}
+
+const pomodoroZones: RoomZone[] = [...pomodoroGroups.values()].flatMap((group, row) => {
+  const rowW = group.length * ZONE_W + (group.length - 1) * COL_GAP;
+  const rowStartX = (1600 - rowW) / 2;
+  return group.map((r, col) => ({
+    slug: r.slug,
+    // Slug ma postać "<workMin>-<breakMin>-<wariant>" — ostatni człon to numer wariantu na kwadracie.
+    name: r.slug.split("-").pop()!,
+    x: rowStartX + col * (ZONE_W + COL_GAP),
+    y: gridStartY + row * (ZONE_H + ROW_GAP),
+    w: ZONE_W,
+    h: ZONE_H,
+    color: r.color,
+    phase: { workMin: r.workMin, breakMin: r.breakMin, offsetMs: r.offsetMs },
+  }));
+});
+
+const TIMER_ZONE_Y = gridStartY + pomodoroGroups.size * (ZONE_H + ROW_GAP) + 10;
+const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
   slug: r.slug,
-  name: r.kind === "stopwatch" ? "Timer" : `${r.workMin}+${r.breakMin}`,
-  x: zonesStartX + i * (ZONE_W + ZONE_GAP),
-  y: 340,
-  w: ZONE_W,
-  h: ZONE_H,
+  name: "Timer",
+  x: 1600 / 2 - 110,
+  y: TIMER_ZONE_Y,
+  w: 220,
+  h: 140,
+  color: r.color,
 }));
+
+const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones];
 
 export default function Home() {
   return (

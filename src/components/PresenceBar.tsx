@@ -1,16 +1,14 @@
 "use client";
 import { GLOBAL_PRESENCE, usePresence } from "@/lib/usePresence";
 
-/** Ilu ludzi jest łącznie na stronie (obecność w pokoju jest przy czacie pokoju). */
+/** Ilu ludzi jest łącznie na stronie — wyświetlane w górnym pasku (patrz layout.tsx). */
 export function PresenceBar() {
   const global = usePresence(GLOBAL_PRESENCE);
   const total = global.signedIn + global.signedOut;
 
   return (
-    <footer className="px-6 py-4 text-center text-sm text-zinc-500">
-      <span>
-        {total} {total === 1 ? "user" : "users"} online now
-      </span>
-    </footer>
+    <span className="text-sm text-zinc-400">
+      {total} {total === 1 ? "user" : "users"} online now
+    </span>
   );
 }

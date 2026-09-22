@@ -6,6 +6,14 @@ export interface PomodoroRoomConfig {
   kind: "pomodoro";
   workMin: number;
   breakMin: number;
+  /** Kolor kwadratu pokoju w lobby (odcień wspólny dla wariantów tego samego typu). */
+  color?: string;
+  /**
+   * Przesunięcie fazy względem EPOCH_MS — warianty tego samego typu są rozłożone równomiernie
+   * w cyklu (liczba wariantów zależy od typu, patrz pomodoroVariants w lib/rooms.ts), tak żeby
+   * zawsze przynajmniej jeden był akurat na przerwie.
+   */
+  offsetMs?: number;
 }
 
 /** Pokój z prywatnym stoperem każdej osoby (bez wspólnych cykli pracy/przerwy). */
@@ -13,6 +21,7 @@ export interface StopwatchRoomConfig {
   slug: string;
   name: string;
   kind: "stopwatch";
+  color?: string;
 }
 
 export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig;
@@ -38,13 +47,13 @@ export const EPOCH_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
  */
 export function getTimerState(
   nowMs: number,
-  room: Pick<PomodoroRoomConfig, "workMin" | "breakMin">,
+  room: Pick<PomodoroRoomConfig, "workMin" | "breakMin" | "offsetMs">,
 ): TimerState {
   const work = room.workMin * MIN;
   const brk = room.breakMin * MIN;
   const cycleMs = work + brk;
 
-  const elapsed = nowMs - EPOCH_MS;
+  const elapsed = nowMs - EPOCH_MS + (room.offsetMs ?? 0);
   const idx = Math.floor(elapsed / cycleMs);
   const inCycle = elapsed - idx * cycleMs;
 

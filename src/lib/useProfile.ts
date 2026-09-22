@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { getSupabase } from "./supabase";
 import { displayName, useSession } from "./useSession";
+import type { LevelInfo } from "./xp";
+import { levelFromXp } from "./xp";
 
 /** Limity nicku — takie same jak CHECK w bazie. */
 export const MIN_NICKNAME = 2;
@@ -35,7 +37,7 @@ export function safeColor(color: string | null | undefined): string {
 const saved = new EventTarget();
 
 /** Publiczna część profilu. */
-export type Profile = { nickname: string; color: string };
+export type Profile = { nickname: string; color: string; xp: number };
 
 /** Mapa `user_id → profil`. */
 export type Profiles = Record<string, Profile>;
@@ -47,6 +49,10 @@ export type MyProfile = {
   nickname: string | null;
   /** Kolor postaci (domyślny, gdy nie wybrano). */
   color: string;
+  /** Total study XP (see src/lib/xp.ts) — 0 until loaded or signed out. */
+  xp: number;
+  /** Level derived from `xp`. */
+  level: LevelInfo;
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -64,6 +70,9 @@ export function validateNickname(nickname: string): string | null {
 export function useMyProfile(): MyProfile {
   const sb = getSupabase();
   const { ready: sessionReady, session } = useSession();
+  // Osobny kanał na instancję hooka — ProfileMenu i RoomStage wołają useMyProfile jednocześnie;
+  // bez tego druga instancja dostałaby już zasubskrybowany kanał pierwszej i .on() by wywalił.
+  const channelId = useId();
   const userId = session?.user.id ?? null;
   // Nazwa od dostawcy OAuth — zapasowa, dopóki (lub gdyby) w bazie nie było profilu.
   const fallback = session ? displayName(session).slice(0, MAX_NICKNAME) : null;
@@ -75,7 +84,7 @@ export function useMyProfile(): MyProfile {
     if (!sb || !userId) return;
     let cancelled = false;
     sb.from("profiles")
-      .select("nickname, color")
+      .select("nickname, color, xp")
       .eq("id", userId)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -86,6 +95,7 @@ export function useMyProfile(): MyProfile {
           userId,
           nickname: data?.nickname ?? fallback ?? "User",
           color: safeColor(data?.color),
+          xp: data?.xp ?? 0,
         });
       });
     return () => {
@@ -102,7 +112,29 @@ export function useMyProfile(): MyProfile {
     return () => saved.removeEventListener("saved", onSaved);
   }, [userId]);
 
+  // XP ticks up server-side (room_study_heartbeat, see supabase/migrations/0010_xp.sql) without
+  // this component doing anything — Realtime is what makes the level badge move on its own.
+  useEffect(() => {
+    if (!sb || !userId) return;
+    const channel = sb
+      .channel(`my-profile:${userId}:${channelId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "profiles", filter: `id=eq.${userId}` },
+        ({ new: row }) => {
+          const p = row as { nickname?: string; color?: string; xp?: number };
+          if (!p.nickname) return;
+          setLoaded({ userId, nickname: p.nickname, color: safeColor(p.color), xp: p.xp ?? 0 });
+        },
+      )
+      .subscribe();
+    return () => {
+      sb.removeChannel(channel);
+    };
+  }, [sb, userId, channelId]);
+
   const currentNickname = (loaded?.userId === userId ? loaded.nickname : fallback) ?? "User";
+  const currentXp = loaded?.userId === userId ? loaded.xp : 0;
 
   const save = useCallback(
     async (color: string) => {
@@ -134,20 +166,23 @@ export function useMyProfile(): MyProfile {
       setError(null);
       // Dotyczy też tej instancji (listener powyżej), więc osobny setLoaded nie jest potrzebny.
       saved.dispatchEvent(
-        new CustomEvent("saved", { detail: { userId, nickname: currentNickname, color } }),
+        new CustomEvent("saved", { detail: { userId, nickname: currentNickname, color, xp: currentXp } }),
       );
       return true;
     },
-    [sb, userId, currentNickname],
+    [sb, userId, currentNickname, currentXp],
   );
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
   const offline = !sb || !userId;
   const mine = loaded?.userId === userId ? loaded : null;
+  const xp = mine?.xp ?? 0;
   return {
     ready: sessionReady && (offline || mine !== null),
     nickname: mine?.nickname ?? fallback,
     color: mine?.color ?? DEFAULT_COLOR,
+    xp,
+    level: levelFromXp(xp),
     error,
     save,
   };
@@ -175,7 +210,7 @@ export function useProfiles(userIds: string[]): Profiles {
     for (const id of missing) fetched.current.add(id);
     let cancelled = false;
     sb.from("profiles")
-      .select("id, nickname, color")
+      .select("id, nickname, color, xp")
       .in("id", missing)
       .then(({ data, error }) => {
         if (cancelled || error || !data) return;
@@ -194,12 +229,14 @@ export function useProfiles(userIds: string[]): Profiles {
         "postgres_changes",
         { event: "*", schema: "public", table: "profiles" },
         ({ new: row }) => {
-          const profile = row as { id?: string; nickname?: string; color?: string };
+          const profile = row as { id?: string; nickname?: string; color?: string; xp?: number };
           if (!profile?.id || !profile.nickname) return;
-          const { id, nickname, color } = profile;
+          const { id, nickname, color, xp } = profile;
           setProfiles((prev) =>
             // Interesują nas tylko osoby widoczne na stronie (czat, obecni).
-            fetched.current.has(id) ? { ...prev, [id]: { nickname, color: safeColor(color) } } : prev,
+            fetched.current.has(id)
+              ? { ...prev, [id]: { nickname, color: safeColor(color), xp: xp ?? 0 } }
+              : prev,
           );
         },
       )
@@ -222,8 +259,8 @@ function saveHint(error: { code?: string; message: string }): string {
   return error.message;
 }
 
-function toMap(rows: { id: string; nickname: string; color: string }[]): Profiles {
+function toMap(rows: { id: string; nickname: string; color: string; xp: number }[]): Profiles {
   return Object.fromEntries(
-    rows.map((r) => [r.id, { nickname: r.nickname, color: safeColor(r.color) }]),
+    rows.map((r) => [r.id, { nickname: r.nickname, color: safeColor(r.color), xp: r.xp ?? 0 }]),
   );
 }

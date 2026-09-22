@@ -15,6 +15,8 @@ export type ChatMessage = {
   author: string;
   body: string;
   created_at: string;
+  /** Author's current study XP — undefined until their profile has loaded. */
+  authorXp?: number;
 };
 
 /** Ile ostatnich wiadomości wczytujemy przy wejściu do pokoju. */
@@ -133,14 +135,17 @@ export function useChat(
 
   const authors = useMemo(() => messages.map((m) => m.user_id), [messages]);
   const profiles = useProfiles(authors);
-  // Zmiana nicku działa wstecz: podmieniamy autora także w starych wiadomościach.
+  // Zmiana nicku działa wstecz: podmieniamy autora także w starych wiadomościach. XP jest zawsze
+  // aktualne (Realtime, see useProfiles), więc doklejamy je za każdym razem, gdy profil jest znany.
   const named = useMemo(
     () =>
-      messages.map((m) =>
-        profiles[m.user_id] && profiles[m.user_id].nickname !== m.author
-          ? { ...m, author: profiles[m.user_id].nickname }
-          : m,
-      ),
+      messages.map((m) => {
+        const p = profiles[m.user_id];
+        if (!p) return m;
+        return p.nickname === m.author && p.xp === m.authorXp
+          ? m
+          : { ...m, author: p.nickname, authorXp: p.xp };
+      }),
     [messages, profiles],
   );
 

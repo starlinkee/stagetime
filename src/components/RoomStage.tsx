@@ -1,15 +1,22 @@
 "use client";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { LevelBadge } from "@/components/LevelBadge";
 import { DIR_DOWN, type Dir, PixelPerson } from "@/components/PixelPerson";
 import { getAdminSettings } from "@/lib/adminSettings";
 import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
+import { formatMs, getTimerState } from "@/lib/timer";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat } from "@/lib/useChat";
 import { safeColor, useMyProfile } from "@/lib/useProfile";
+import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
+import { useStudyXp } from "@/lib/useStudyXp";
+
+/** Kolor etykiety fazy pod kwadratem pokoju: praca na czerwono (nie da się teraz wejść), przerwa na zielono. */
+const PHASE_COLOR = { work: "#ef4444", break: "#22c55e" } as const;
 
 /** Pisanie w polu/textarea/select nie może być przechwycone przez sterowanie postacią ani skrótem otwierającym czat. */
 function isTypingTarget(el: EventTarget | null) {
@@ -28,6 +35,8 @@ const TAG_H = 18;
 /** Minimalny odstęp losowego miejsca startu w pokoju od krawędzi ekranu. */
 const SPAWN_MARGIN = 80;
 const NO_NAME = "[no-name]";
+/** Klucz w sessionStorage strefy, z której gracz właśnie wyszedł — patrz `fromSlug` niżej. */
+const SPAWN_FROM_KEY = "stagetime:spawnFrom";
 /**
  * Zmiana pokoju (router.push) odmontowuje i montuje RoomStage od nowa — jeśli gracz cały czas
  * trzyma E, nowa instancja od razu widziałaby ją jako wciśniętą (dzięki auto-repeat klawiatury)
@@ -111,6 +120,10 @@ export type RoomZone = {
   w: number;
   h: number;
   kind?: "nav" | "action";
+  /** Pokój pomodoro — długości faz i przesunięcie do wyliczenia etykiety "Work"/"Break" pod kwadratem. */
+  phase?: { workMin: number; breakMin: number; offsetMs?: number };
+  /** Kolor obrysu/wypełnienia kwadratu w lobby, odróżniający typ i wariant pokoju. */
+  color?: string;
 };
 /** Ile ms trzeba przytrzymać E stojąc w kwadracie, żeby go użyć — patrz roomEnterSec w src/lib/adminSettings.ts. */
 const roomEnterMs = () => getAdminSettings().roomEnterSec * 1000;
@@ -132,6 +145,8 @@ type Meta = {
   at: number;
   color: string;
   nick: string | null;
+  /** Study XP (see src/lib/xp.ts) — shown as a level badge next to the name tag. */
+  xp?: number;
   /** Id zalogowanego użytkownika (null bez konta) — jedno konto to jedna postać. */
   user?: string | null;
   x?: number;
@@ -227,14 +242,15 @@ function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: numbe
   ctx.restore();
 }
 
-/** Podpis nad postacią: nick zalogowanej osoby albo [no-name]. */
-function NameTag({ name }: { name: string | null }) {
+/** Podpis nad postacią: poziom (zalogowana osoba) i nick albo [no-name]. */
+function NameTag({ name, xp }: { name: string | null; xp?: number }) {
   return (
     <span
-      className="absolute bottom-full left-1/2 mb-0.5 max-w-40 -translate-x-1/2 truncate whitespace-nowrap text-xs leading-4 text-zinc-700 dark:text-zinc-200"
+      className="absolute bottom-full left-1/2 mb-0.5 flex max-w-40 -translate-x-1/2 items-center gap-1 whitespace-nowrap text-xs leading-4 text-zinc-700 dark:text-zinc-200"
       style={{ height: TAG_H - 2 }}
     >
-      {name?.trim() || NO_NAME}
+      {xp !== undefined && <LevelBadge xp={xp} />}
+      <span className="truncate">{name?.trim() || NO_NAME}</span>
     </span>
   );
 }
@@ -278,16 +294,32 @@ export function RoomStage({
   onZoneAction?: (slug: string, pressedAt: number) => void;
 }) {
   const router = useRouter();
-  const searchParams = useSearchParams();
   // Brak spawnZoneSlug (np. lobby, gdzie stref jest wiele) — bierzemy strefę odpowiadającą
-  // pokojowi, z którego właśnie wyszliśmy (patrz ?from= w router.push niżej w tym pliku).
-  const fromSlug = searchParams.get("from");
+  // pokojowi, z którego właśnie wyszliśmy (zapisaną w sessionStorage, patrz router.push niżej
+  // w tym pliku). Czytamy i od razu czyścimy, żeby URL nigdy nie niósł tej informacji i żeby
+  // odświeżenie strony / wejście bezpośrednim linkiem nie podchwyciło starej wartości.
+  const [fromSlug] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const v = window.sessionStorage.getItem(SPAWN_FROM_KEY);
+    window.sessionStorage.removeItem(SPAWN_FROM_KEY);
+    return v;
+  });
   const effectiveSpawnZoneSlug = spawnZoneSlug ?? (fromSlug && zones.some((z) => z.slug === fromSlug) ? fromSlug : undefined);
   const { ready, session } = useSession();
+  // Czas serwera do etykiety fazy (work/break) pod kwadratami pokoi — ref, żeby pętla rysowania
+  // (rAF, poza reactem) widziała najświeższą wartość bez przebudowy efektu.
+  const serverNow = useServerNow();
+  const serverNowRef = useRef(serverNow);
+  useEffect(() => {
+    serverNowRef.current = serverNow;
+  }, [serverNow]);
   const profile = useMyProfile();
   const color = session ? profile.color : "#ffffff";
   const nick = session ? profile.nickname : null;
   const userId = session?.user.id ?? null;
+  // Credits XP for time spent in this room (no-op in the lobby or signed out) — see
+  // supabase/migrations/0010_xp.sql. Own XP then updates live via useMyProfile's Realtime sub.
+  useStudyXp(roomSlug);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -298,7 +330,7 @@ export function RoomStage({
   // Klucz tej karty w kanale; pozycje innych trzymamy osobno od Presence.
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
-  const metaRef = useRef<Meta>({ at: 0, color, nick, user: userId });
+  const metaRef = useRef<Meta>({ at: 0, color, nick, xp: profile.xp, user: userId });
   // Czy ta karta steruje postacią; false, gdy nowsza karta tego konta (w dowolnym pokoju) przejęła konto.
   const activeRef = useRef(true);
   const { superseded, reclaim } = useAccountLock(userId);
@@ -307,6 +339,9 @@ export function RoomStage({
   // Zapisu pozycji nie wolno zacząć przed wczytaniem starej — inaczej losowy start ją nadpisze.
   const spawnLoadedRef = useRef(false);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  // Czerwony komunikat po odmowie wejścia (np. trwa faza work) — znika sam po kilku sekundach.
+  const [entryError, setEntryError] = useState<string | null>(null);
+  const entryErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const myPos = useRef<Pos>({
     ...clampPos(WORLD_W / 2, WORLD_H / 2),
     d: DIR_DOWN,
@@ -467,17 +502,24 @@ export function RoomStage({
       for (const z of zonesRef.current) {
         const active = z.slug === eHoldSlug && eHoldStart !== null;
         ctx.lineWidth = active ? 3 : 1.5;
-        ctx.strokeStyle = active ? "#ffffff" : "rgba(255,255,255,0.4)";
-        ctx.fillStyle = active ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.05)";
+        ctx.strokeStyle = active ? "#ffffff" : (z.color ?? "rgba(255,255,255,0.4)");
+        ctx.fillStyle = active ? "rgba(255,255,255,0.12)" : (z.color ? `${z.color}26` : "rgba(255,255,255,0.05)");
         ctx.beginPath();
         ctx.roundRect(z.x, z.y, z.w, z.h, 10);
         ctx.fill();
         ctx.stroke();
+        const phaseState = z.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, z.phase) : null;
         ctx.fillStyle = "rgba(255,255,255,0.85)";
-        ctx.font = "600 16px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2);
+        if (phaseState?.phase === "work") {
+          // Zablokowane (praca w toku, nie da się teraz wejść) — kłódka zamiast numeru pokoju.
+          ctx.font = "20px sans-serif";
+          ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2);
+        } else {
+          ctx.font = "600 16px sans-serif";
+          ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2);
+        }
         if (active && eHoldStart !== null) {
           const p = Math.min(1, (t - eHoldStart) / roomEnterMs());
           const barW = z.w - 16;
@@ -485,6 +527,26 @@ export function RoomStage({
           ctx.fillRect(z.x + 8, z.y + z.h - 14, barW, 6);
           ctx.fillStyle = "#ffffff";
           ctx.fillRect(z.x + 8, z.y + z.h - 14, barW * p, 6);
+        }
+        // Pod kwadratem pomodoro: czy właśnie trwa "Work" (czerwony, zablokowany) czy "Break"
+        // (zielony), ile zostało do końca fazy i pasek postępu — jak w RoomTimer w samym pokoju.
+        if (phaseState) {
+          const state = phaseState;
+          const phaseColor = PHASE_COLOR[state.phase];
+          ctx.fillStyle = phaseColor;
+          ctx.font = "700 14px sans-serif";
+          ctx.fillText(
+            `${state.phase === "work" ? "WORK" : "BREAK"} · ${formatMs(state.remainingMs)}`,
+            z.x + z.w / 2,
+            z.y + z.h + 20,
+          );
+          const barW = z.w - 16;
+          const barY = z.y + z.h + 32;
+          const progress = 1 - state.remainingMs / state.phaseMs;
+          ctx.fillStyle = "rgba(255,255,255,0.2)";
+          ctx.fillRect(z.x + 8, barY, barW, 6);
+          ctx.fillStyle = phaseColor;
+          ctx.fillRect(z.x + 8, barY, barW * progress, 6);
         }
       }
       // W pełni naładowana kula pulsuje.
@@ -617,10 +679,40 @@ export function RoomStage({
         } else if (!entered) {
           entered = true;
           eKeyLockedAcrossRooms = true;
-          const target = zone.slug === "lobby" ? "/" : `/rooms/${zone.slug}`;
-          // ?from= mówi drugiej stronie, z którego pokoju przyszliśmy — lobby ma wiele stref
-          // wejścia/wyjścia i inaczej nie wiedziałoby, w której z nich dokładnie wylądować.
-          router.push(`${target}?from=${encodeURIComponent(roomSlug)}`);
+          // sessionStorage (nie URL) mówi drugiej stronie, z którego pokoju przyszliśmy — lobby
+          // ma wiele stref wejścia/wyjścia i inaczej nie wiedziałoby, w której z nich dokładnie
+          // wylądować. Zapisujemy tuż przed nawigacją, docelowa strona odczytuje to raz i czyści.
+          window.sessionStorage.setItem(SPAWN_FROM_KEY, roomSlug);
+          if (zone.slug === "lobby") {
+            router.push("/");
+          } else {
+            // Wejście do pokoju wymaga biletu wydanego tylko za to przytrzymanie E — samo
+            // wklejenie /rooms/<slug> w pasku adresu nic nie da (patrz proxy.ts).
+            void fetch("/api/rooms/enter", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ slug: zone.slug }),
+            })
+              .then(async (res) => {
+                if (res.ok) {
+                  router.push(`/rooms/${zone.slug}`);
+                  return;
+                }
+                const data: unknown = await res.json().catch(() => null);
+                const code = data && typeof data === "object" && "error" in data ? (data as { error: unknown }).error : null;
+                throw new Error(code === "work-in-progress" ? "work-in-progress" : "entry ticket request failed");
+              })
+              .catch((err: unknown) => {
+                // Serwer odmówił biletu — zostajemy tu, E można spróbować przytrzymać ponownie.
+                entered = false;
+                eKeyLockedAcrossRooms = false;
+                if (err instanceof Error && err.message === "work-in-progress") {
+                  if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
+                  setEntryError("You can only enter during the break — a work session is in progress.");
+                  entryErrorTimer.current = setTimeout(() => setEntryError(null), 4000);
+                }
+              });
+          }
         }
       }
       // Ostatnią pozycję po zatrzymaniu też wysyłamy (dirty zostaje do skutecznego wysłania).
@@ -863,14 +955,14 @@ export function RoomStage({
     othersRef.current = others;
   }, [others]);
 
-  // Zmiana koloru / nicku (np. po zalogowaniu) — odświeżamy wpis w Presence.
+  // Zmiana koloru / nicku / XP (np. po zalogowaniu albo po heartbeacie) — odświeżamy wpis w Presence.
   useEffect(() => {
     colorRef.current = color;
     userIdRef.current = userId;
-    metaRef.current = { at: Date.now(), color, nick, user: userId };
+    metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId };
     const channel = channelRef.current;
     if (channel?.state === "joined" && activeRef.current) void channel.track({ ...metaRef.current, ...myPos.current });
-  }, [color, nick, userId]);
+  }, [color, nick, profile.xp, userId]);
 
   // Hint dla wszystkich (też bez konta): widoczny HINT_MS, potem HINT_FADE_MS zanikania.
   const [hint, setHint] = useState<"show" | "fade" | "done">("show");
@@ -881,6 +973,9 @@ export function RoomStage({
       clearTimeout(fade);
       clearTimeout(done);
     };
+  }, []);
+  useEffect(() => () => {
+    if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
   }, []);
 
   // Czat: Enter otwiera pole (domyślnie widok "room"), Tab przełącza na "all", Enter znowu wysyła.
@@ -990,12 +1085,20 @@ export function RoomStage({
     {hint !== "done" && (
       <div
         role="status"
-        className={`pointer-events-none fixed left-1/2 top-6 z-10 -translate-x-1/2 rounded-full transition-opacity duration-1000 ${hint === "fade" ? "opacity-0" : "opacity-100"} bg-zinc-900/80 px-4 py-2 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100/90 dark:text-zinc-900`}
+        className={`pointer-events-none fixed bottom-6 left-1/2 z-10 -translate-x-1/2 rounded-full transition-opacity duration-1000 ${hint === "fade" ? "opacity-0" : "opacity-100"} bg-zinc-900/80 px-4 py-2 text-sm text-zinc-100 shadow-lg dark:bg-zinc-100/90 dark:text-zinc-900`}
       >
         Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge, release to shoot
         {zones.some((z) => (z.kind ?? "nav") === "nav") && " · walk into a room and hold E to enter"}
         {zones.some((z) => z.kind === "action") && " · stand on a button and hold E to use it"}
         {chat.available && chat.canSend && " · Enter opens chat, Tab switches room/all"}
+      </div>
+    )}
+    {entryError && (
+      <div
+        role="alert"
+        className="pointer-events-none fixed left-1/2 top-20 z-20 -translate-x-1/2 rounded-full bg-red-600/90 px-4 py-2 text-sm font-medium text-white shadow-lg"
+      >
+        {entryError}
       </div>
     )}
     {superseded && (
@@ -1028,7 +1131,7 @@ export function RoomStage({
             style={{ transform: `translate(${o.x}px, ${o.y}px)` }}
           >
             {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
-            <NameTag name={o.nick} />
+            <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
             <PixelPerson color={o.color} label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={walkers[k]} />
           </div>
         ))}
@@ -1037,7 +1140,7 @@ export function RoomStage({
           className={`absolute left-0 top-0 opacity-70 will-change-transform ${superseded ? "invisible" : ""}`}
         >
           {bubbles.me && <ChatBubble text={bubbles.me.text} />}
-          <NameTag name={nick} />
+          <NameTag name={nick} xp={session ? profile.xp : undefined} />
           <PixelPerson color={color} label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myDir} walking={myWalking} />
         </div>
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
@@ -1075,7 +1178,10 @@ export function RoomStage({
                     {chatScope === "all" && (
                       <span className="mr-1 rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-400">{roomLabel(m.room_slug)}</span>
                     )}
-                    <span className="font-medium text-sky-300">{m.author}: </span>
+                    <span className="font-medium text-sky-300">
+                      {m.authorXp !== undefined && <LevelBadge xp={m.authorXp} className="mr-1" />}
+                      {m.author}:{" "}
+                    </span>
                     {m.body}
                   </p>
                 ))

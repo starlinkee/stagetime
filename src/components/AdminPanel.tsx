@@ -21,9 +21,9 @@ export function AdminPanel() {
   if (!isAdminUiEnabled()) return null;
 
   return (
-    <div className="fixed bottom-4 left-4 z-50">
+    <div className="relative">
       {open && (
-        <div className="mb-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
+        <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
           <div className="mb-3 flex items-center justify-between">
             <span className="font-semibold">Admin</span>
             <button
