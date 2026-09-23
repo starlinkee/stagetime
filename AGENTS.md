@@ -42,20 +42,24 @@ podział, jaki dziś istnieje w kodzie.
   - reconnect + grace period (12 s) po zerwaniu WebSocketu;
   - okresowy zapis pozycji do Postgresa przez `src/app/api/internal/positions`;
   - limity antynadużyciowe: wiadomości/s, połączenia/IP, gracze/pokój, pociski/gracz.
-- To jest **PvP kosmetyczne między prawdziwymi graczami** (brak HP/ekonomii/nagród za trafienie)
-  — nie ma tu, i nie jest planowane, AI/FSM/przeciwników sterowanych komputerowo.
+- To jest **PvP kosmetyczne między prawdziwymi graczami**: HP (`MAX_HP` w
+  `realtime-server/shared/constants.ts`, dmg/respawn/immunity w `server.ts`) **już istnieje** —
+  obrażenia liczą się tylko poza lobby (`isLobbyRoom` w `server.ts` pomija odejmowanie HP). Brak
+  tu za to ekonomii (transakcyjnej — dziś jest tylko `coins`) i nagród za trafienie; nie ma tu, i
+  nie jest planowane, AI/FSM/przeciwników sterowanych komputerowo.
 
-### Decyzja (2026-09-23): Colyseus przy dodaniu HP / ekonomii / AI przeciwników
-Dodanie HP, ekonomii (transakcyjnej, nie tylko `coins` jak dziś) czy AI przeciwników **samo w
-sobie nie wymaga i nie uzasadnia** przejścia na Colyseus — to tylko więcej pól w `Conn`
-(`realtime-server/src/server.ts`) i więcej logiki w tej samej pętli tick, dokładnie ten sam wzorzec
-co dziś dla ruchu/walki (patrz sekcja `realtime-server/` wyżej). Colyseus rozwiązuje dwa problemy,
+### Decyzja (2026-09-23): Colyseus przy dodaniu ekonomii / AI przeciwników
+HP już istnieje (patrz wyżej) i nie wymagało Colyseusa — poszło jako pola w `Conn`
+(`realtime-server/src/server.ts`, `hp`/`respawnAt`/`immuneUntil`) i logika w tej samej pętli tick,
+dokładnie ten sam wzorzec co dziś dla ruchu/walki (patrz sekcja `realtime-server/` wyżej). Ta sama
+zasada dotyczy ekonomii (transakcyjnej, nie tylko `coins` jak dziś) i AI przeciwników — **same w
+sobie nie wymagają i nie uzasadniają** przejścia na Colyseus. Colyseus rozwiązuje dwa problemy,
 których to repo dziś nie ma: matchmaking wielu pokoi i binarny delta-encoding stanu
 (`@colyseus/schema`) zamiast pełnego stanu jako JSON co broadcast.
 Sygnał, że warto to zrewidować: `BROADCAST_MS` wysyła pełny stan pokoju (nie diff) — to zaczyna
 realnie kosztować pasmo dopiero przy dużej liczbie encji (gracze + przeciwnicy + stan ekonomii) na
 pokój; przy dzisiejszym `MAX_PLAYERS_PER_ROOM` = 50 to nie jest wąskie gardło. Nie proponuj migracji
-na Colyseus tylko dlatego, że pojawia się HP/ekonomia/AI — dopiero przy konkretnym, zmierzonym
+na Colyseus tylko dlatego, że pojawia się ekonomia/AI — dopiero przy konkretnym, zmierzonym
 problemie z pasmem albo realną potrzebą matchmakingu wielu pokoi.
 
 **Konkretne progi, przy których Colyseus staje się zasadny (rewizja tej decyzji, nie automat):**
@@ -86,5 +90,6 @@ wyłącznie za wygląd (rendering/animacje), nie za wynik.
    `src/components/RoomStage.tsx` wyłącznie jako prezentacja tego, co przyszło z serwera.
 3. Nic, co dotyczy AI przeciwników/FSM potworów — to nie ma zastosowania w tym repo i nie jest
    planowane.
-4. Jeśli ktoś poprosi o dodanie HP/ekonomii/AI przeciwników, nie proponuj przy tej okazji migracji
-   na Colyseus — patrz "Decyzja (2026-09-23)" wyżej o tym, kiedy to faktycznie byłoby zasadne.
+4. Jeśli ktoś poprosi o zmiany w HP albo o dodanie ekonomii/AI przeciwników, nie proponuj przy tej
+   okazji migracji na Colyseus — patrz "Decyzja (2026-09-23)" wyżej o tym, kiedy to faktycznie
+   byłoby zasadne.

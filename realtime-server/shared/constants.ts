@@ -155,7 +155,7 @@ export const DEFAULT_CHARACTER_STATS: CharacterStats = {
  * `isLobbyRoom` in server.ts skips the HP subtraction). Every connection starts and respawns at
  * `MAX_HP`.
  */
-export const MAX_HP = 50;
+export const MAX_HP = 25;
 /** Charged-throw damage range — interpolated by charge fraction (0..1), same `p` spawnBall already
  * uses for `ORB_R_MIN`/`ORB_R_MAX`. */
 export const DMG_MIN = 1;
