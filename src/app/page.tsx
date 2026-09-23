@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
 import { ROOMS } from "@/lib/rooms";
 import { useRoomOccupancy } from "@/lib/useRoomOccupancy";
+import { SCREEN_W } from "@realtime-shared/constants";
 
 /**
  * Kwadraty pokoi w lobby: jeden wiersz na typ pomodoro (25+5, 20+5, 50+10, patrz pomodoroVariants
@@ -31,7 +32,7 @@ for (const r of pomodoroRooms) {
 
 const pomodoroZones: RoomZone[] = [...pomodoroGroups.values()].flatMap((group, row) => {
   const rowW = group.length * ZONE_W + (group.length - 1) * COL_GAP;
-  const rowStartX = (1600 - rowW) / 2;
+  const rowStartX = (SCREEN_W - rowW) / 2;
   return group.map((r, col) => ({
     slug: r.slug,
     // Slug ma postać "<workMin>-<breakMin>-<wariant>" — ostatni człon to numer wariantu na kwadracie.
@@ -49,7 +50,7 @@ const TIMER_ZONE_Y = gridStartY + pomodoroGroups.size * (ZONE_H + ROW_GAP) + 10;
 const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
   slug: r.slug,
   name: "Timer",
-  x: 1600 / 2 - 110 - 150,
+  x: SCREEN_W / 2 - 110 - 150,
   y: TIMER_ZONE_Y,
   w: 220,
   h: 140,
@@ -60,7 +61,7 @@ const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
 const shopZones: RoomZone[] = shopRooms.map((r) => ({
   slug: r.slug,
   name: "Shop",
-  x: 1600 / 2 + 150 - 110,
+  x: SCREEN_W / 2 + 150 - 110,
   y: TIMER_ZONE_Y,
   w: 220,
   h: 140,

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { verifyEntryToken } from "../shared/entryToken";
 import { clampPos } from "../shared/physics";
-import { LOBBY_ZONE_RECTS } from "../shared/rooms";
+import { getRoomPhase, LOBBY_ZONE_RECTS } from "../shared/rooms";
 import {
   BALL_SPEED,
   BROADCAST_MS,
@@ -12,7 +12,7 @@ import {
   DASH_DISTANCE_MULT,
   DASH_MS,
   DASH_TELEPORT_AT_MS,
-  DEFAULT_PLAYER_SPEED,
+  DEFAULT_CHARACTER_STATS,
   DIRS,
   DIR_OF,
   DMG_MAX,
@@ -20,7 +20,6 @@ import {
   EXIT_ZONE,
   HIT_PAD,
   IMMUNITY_MS,
-  MAX_BALLS_PER_PLAYER,
   MAX_HP,
   ORB_R_MAX,
   ORB_R_MIN,
@@ -40,7 +39,7 @@ import {
   worldH,
   worldW,
 } from "../shared/constants";
-import type { ClientMessage, Dir, HitEvent, PlayerState, ServerBall, ServerMessage } from "../shared/types";
+import type { CharacterStats, ClientMessage, Dir, HitEvent, PlayerState, ServerBall, ServerMessage } from "../shared/types";
 
 const PORT = Number(process.env.PORT) || 8080;
 
@@ -133,20 +132,48 @@ type Conn = {
   // claimed `chargeMs` to what actually elapsed here, not to what the client claims elapsed.
   chargeStartAt: number | null;
   meleeCooldownUntil: number;
-  // Normally always DEFAULT_PLAYER_SPEED — only ever different when DEV_OVERRIDES_ENABLED and the
+  // Salvo state for `fire` — see its handler above. `shotsFired` counts up to
+  // stats.maxProjectiles, then resets to 0 the same moment fireCooldownUntil is set.
+  fireCooldownUntil: number;
+  shotsFired: number;
+  // Normally always stats.moveSpeed — only ever different when DEV_OVERRIDES_ENABLED and the
   // client sent an `input.speedOverride` (admin panel), see the "input" handler below.
   speed: number;
+  // This connection's own copy of CharacterStats (see its doc comment in shared/types.ts) — a
+  // clone of DEFAULT_CHARACTER_STATS today since there's no character choice yet, but every rule
+  // that used to read a global constant (max projectiles in flight, fire cooldown, damage) now
+  // reads this instead, so a future character pick or item bonus only has to mutate this one
+  // connection's copy.
+  stats: CharacterStats;
   // HP/respawn/immunity — see MAX_HP/RESPAWN_MS/IMMUNITY_MS doc comments in shared/constants.ts.
   // `respawnAt`: 0 while alive; otherwise the epoch ms this connection respawns at, and `isDead()`
   // below treats it as frozen (no movement/actions) until then.
   hp: number;
   respawnAt: number;
   immuneUntil: number;
+  // Ghost position/facing while isDead(conn) — see PlayerState.gx/gy/gd's doc comment in
+  // shared/types.ts. x/y/d stay frozen at the death spot (the corpse) for the whole respawn
+  // countdown; gx/gy/gd is what the "input" handler actually moves during that window.
+  gx: number;
+  gy: number;
+  gd: Dir;
 };
 
 /** Frozen (no movement, no roll/dash/charge/fire/strike) while waiting out RESPAWN_MS. */
 function isDead(conn: Conn): boolean {
   return conn.respawnAt > 0;
+}
+
+/**
+ * Frozen (no movement, no roll/dash/charge/fire/strike) while this connection's own room is in
+ * its "work" phase — the coworking half of the cycle, where nobody should be able to walk around
+ * or fight. Thaws automatically the instant `getRoomPhase` flips to "break", same clock every
+ * client already renders the countdown against (src/lib/timer.ts's getTimerState), so there's
+ * nothing here to broadcast: every client sees the same freeze/thaw at the same instant on its
+ * own. `null` (lobby/stopwatch/shop — no pomodoro cycle) never freezes.
+ */
+function isFrozen(conn: Conn): boolean {
+  return getRoomPhase(conn.roomSlug, Date.now()) === "work";
 }
 
 const rooms = new Map<string, Set<Conn>>();
@@ -201,10 +228,11 @@ function countOwnedBalls(roomSlug: string, ownerId: string): number {
   return n;
 }
 
-/** Shared by spawnBall/spawnMelee — enforces MAX_BALLS_PER_PLAYER (Faza F3's anti-spam limit;
- * see the constant's doc comment for why this is per-player rather than per-room). */
+/** Shared by spawnBall/spawnMelee — enforces this connection's own stats.maxProjectiles (Faza
+ * F3's anti-spam limit; see MAX_BALLS_PER_PLAYER's doc comment for why this is per-player rather
+ * than per-room). */
 function pushBall(conn: Conn, ball: ServerBall) {
-  if (countOwnedBalls(conn.roomSlug, conn.id) >= MAX_BALLS_PER_PLAYER) return;
+  if (countOwnedBalls(conn.roomSlug, conn.id) >= conn.stats.maxProjectiles) return;
   let balls = roomBalls.get(conn.roomSlug);
   if (!balls) {
     balls = [];
@@ -219,7 +247,10 @@ function spawnBall(conn: Conn, p: number) {
   const [ux, uy] = DIRS[conn.d];
   const n = Math.hypot(ux, uy) || 1;
   const r = ORB_R_MIN + (ORB_R_MAX - ORB_R_MIN) * p;
-  const dmg = Math.max(DMG_MIN, Math.min(DMG_MAX, Math.round(DMG_MIN + (DMG_MAX - DMG_MIN) * p)));
+  // Base damage from charge fraction, then scaled by this connection's own attackPower — 1 for
+  // everyone today, but a higher one (future item/character) can push past DMG_MAX on purpose.
+  const baseDmg = Math.max(DMG_MIN, Math.min(DMG_MAX, DMG_MIN + (DMG_MAX - DMG_MIN) * p));
+  const dmg = Math.round(baseDmg * conn.stats.attackPower);
   pushBall(conn, {
     id: `${conn.id}:${nextBallId++}`,
     x: conn.x + PERSON_W / 2,
@@ -250,7 +281,7 @@ function spawnMelee(conn: Conn) {
     owner: conn.id,
     melee: true,
     until: Date.now() + STRIKE_MS,
-    dmg: STRIKE_DMG,
+    dmg: Math.round(STRIKE_DMG * conn.stats.attackPower),
   });
 }
 
@@ -399,17 +430,30 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
     clearTimeout(pending);
     pendingRemoval.delete(key);
   }
-  let resumeFrom: { x: number; y: number; d: Dir; hp: number; respawnAt: number; immuneUntil: number } | null = null;
+  let resumeFrom:
+    | { x: number; y: number; d: Dir; hp: number; respawnAt: number; immuneUntil: number; gx: number; gy: number; gd: Dir }
+    | null = null;
   const targetSet = rooms.get(verified.roomSlug);
   if (targetSet) {
     for (const other of targetSet) {
       if (other !== conn && other.id === newId) {
-        // Carries HP/respawn/immunity across the reconnect too — most notably this is what makes
-        // the server-side respawn (see the tick loop) actually stick: it moves the *old* Conn into
-        // the lobby room and sends it `respawn_redirect`, then closes; the new page's fresh `join`
-        // resumes this same connection's post-respawn state (full HP, still-ticking immunity)
-        // instead of the new WS's fresh-connection defaults.
-        resumeFrom = { x: other.x, y: other.y, d: other.d, hp: other.hp, respawnAt: other.respawnAt, immuneUntil: other.immuneUntil };
+        // Carries HP/respawn/immunity (and, mid-respawn-countdown, ghost position) across the
+        // reconnect too — most notably this is what makes the server-side respawn (see the tick
+        // loop) actually stick: it moves the *old* Conn into the lobby room and sends it
+        // `respawn_redirect`, then closes; the new page's fresh `join` resumes this same
+        // connection's post-respawn state (full HP, still-ticking immunity) instead of the new
+        // WS's fresh-connection defaults.
+        resumeFrom = {
+          x: other.x,
+          y: other.y,
+          d: other.d,
+          hp: other.hp,
+          respawnAt: other.respawnAt,
+          immuneUntil: other.immuneUntil,
+          gx: other.gx,
+          gy: other.gy,
+          gd: other.gd,
+        };
         targetSet.delete(other);
         break;
       }
@@ -470,6 +514,8 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.respawnAt = resumeFrom?.respawnAt ?? 0;
   conn.immuneUntil = resumeFrom?.immuneUntil ?? 0;
   const resolved = resumeFrom ?? loaded;
+  // Same "only a reconnect-ghost resume carries this forward" rule as hp/respawnAt/immuneUntil
+  // above — the fallback (conn.x/y/d) is filled in by the branch below, run right after.
   if (resolved) {
     const clamped = clampPos(resolved.x, resolved.y, conn.isLobby);
     conn.x = clamped.x;
@@ -490,6 +536,12 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
     conn.x = spawn.x;
     conn.y = spawn.y;
   }
+  // Ghost position/facing: a mid-respawn-countdown reconnect carries its ghost forward same as
+  // hp/respawnAt/immuneUntil above; every other case (fresh life) just starts the ghost coincident
+  // with the body it'll leave behind on the next death.
+  conn.gx = resumeFrom?.gx ?? conn.x;
+  conn.gy = resumeFrom?.gy ?? conn.y;
+  conn.gd = resumeFrom?.gd ?? conn.d;
   joinRoom(conn);
 }
 
@@ -503,6 +555,10 @@ wss.on("connection", (ws, req) => {
     return;
   }
   connectionsByIp.set(ip, ipCount + 1);
+
+  // See Conn.stats' doc comment — own copy, not a shared reference, so a future item/character
+  // bonus can mutate this connection's stats without touching the default or any other connection.
+  const stats: CharacterStats = { ...DEFAULT_CHARACTER_STATS };
 
   const conn: Conn = {
     id: randomUUID(),
@@ -531,10 +587,16 @@ wss.on("connection", (ws, req) => {
     dashTeleported: true,
     chargeStartAt: null,
     meleeCooldownUntil: 0,
-    speed: DEFAULT_PLAYER_SPEED,
+    fireCooldownUntil: 0,
+    shotsFired: 0,
+    speed: stats.moveSpeed,
+    stats,
     hp: MAX_HP,
     respawnAt: 0,
     immuneUntil: 0,
+    gx: 0,
+    gy: 0,
+    gd: 2,
   };
 
   send(ws, { type: "welcome", id: conn.id });
@@ -563,7 +625,7 @@ wss.on("connection", (ws, req) => {
     // direction/distance itself from this connection's own `d`/`x`/`y`, and silently ignores the
     // request while on cooldown, exactly like a well-behaved client already does today.
     if (msg.type === "roll") {
-      if (isDead(conn)) return;
+      if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
       if (now >= conn.rollCooldownUntil && now >= conn.dashUntil) {
         const [ux, uy] = DIRS[conn.d];
@@ -576,7 +638,7 @@ wss.on("connection", (ws, req) => {
       return;
     }
     if (msg.type === "dash") {
-      if (isDead(conn)) return;
+      if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
       if (now >= conn.dashCooldownUntil && now >= conn.rollUntil) {
         const [ux, uy] = DIRS[conn.d];
@@ -595,22 +657,31 @@ wss.on("connection", (ws, req) => {
     // Faza F3: marks when charging actually started here, so `fire` below can't claim more than
     // really elapsed.
     if (msg.type === "charge") {
-      if (isDead(conn)) return;
+      if (isDead(conn) || isFrozen(conn)) return;
       conn.chargeStartAt = msg.on === true ? Date.now() : null;
       return;
     }
     if (msg.type === "fire") {
-      if (isDead(conn)) return;
+      if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
+      // Salvo, not a per-shot cooldown: stats.maxProjectiles shots come out back to back (same
+      // number pushBall's in-flight cap uses), and only once that many have been fired does
+      // stats.fireCooldownMs start — then the counter resets and the next burst is free again.
+      if (now < conn.fireCooldownUntil) return;
       const elapsed = conn.chargeStartAt !== null ? now - conn.chargeStartAt : 0;
       const claimed = typeof msg.chargeMs === "number" && Number.isFinite(msg.chargeMs) ? msg.chargeMs : 0;
       const chargeMs = Math.max(0, Math.min(CHARGE_MS, Math.min(elapsed, claimed)));
       conn.chargeStartAt = null;
       spawnBall(conn, chargeMs / CHARGE_MS);
+      conn.shotsFired += 1;
+      if (conn.shotsFired >= conn.stats.maxProjectiles) {
+        conn.shotsFired = 0;
+        conn.fireCooldownUntil = now + conn.stats.fireCooldownMs;
+      }
       return;
     }
     if (msg.type === "strike") {
-      if (isDead(conn)) return;
+      if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
       if (now < conn.meleeCooldownUntil) return;
       conn.meleeCooldownUntil = now + STRIKE_COOLDOWN_MS;
@@ -680,13 +751,41 @@ setInterval(() => {
       conn.hp = MAX_HP;
       conn.respawnAt = 0;
       conn.immuneUntil = now + IMMUNITY_MS;
+      // Ghost only exists for the respawn countdown that just ended — snap it back onto the body
+      // so it isn't left dangling wherever the player last steered it (harmless either way, since
+      // clients only read gx/gy/gd while respawnAt > 0, but this keeps it from being stale state).
+      conn.gx = conn.x;
+      conn.gy = conn.y;
+      conn.gd = conn.d;
       joinRoom(conn);
       send(conn.ws, { type: "respawn_redirect" });
     }
   }
   for (const set of rooms.values()) {
     for (const conn of set) {
-      if (isDead(conn)) continue;
+      if (isDead(conn)) {
+        // Ghost movement: the body (x/y/d) stays frozen at the death spot for the whole respawn
+        // countdown (the corpse), but the player still steers something — a ghost, at gx/gy/gd —
+        // for the same RESPAWN_MS window (see PlayerState.gx/gy/gd's doc comment in
+        // shared/types.ts). No roll/dash/charge/fire/strike here: those message handlers already
+        // reject while isDead(conn), so raw input is the only thing that can move a ghost — plain
+        // walking, at the connection's normal speed, no cooldowns to respect.
+        const gdx = conn.inputDx;
+        const gdy = conn.inputDy;
+        if (!gdx && !gdy) continue;
+        if (gdx || gdy) conn.gd = DIR_OF[gdy + 1][gdx + 1] as Dir;
+        const gnorm = gdx && gdy ? Math.SQRT1_2 : 1;
+        const gnx = conn.gx + gdx * conn.speed * dt * gnorm;
+        const gny = conn.gy + gdy * conn.speed * dt * gnorm;
+        const gclamped = clampPos(gnx, gny, conn.isLobby);
+        conn.gx = gclamped.x;
+        conn.gy = gclamped.y;
+        continue;
+      }
+      // Work phase of this connection's own room: nobody moves (see isFrozen's doc comment) —
+      // skip movement entirely, same as isDead above but without the ghost, so a stray in-flight
+      // dash/roll just resumes wherever it left off once the room thaws into "break".
+      if (isFrozen(conn)) continue;
       // Faza F2 (docs/combat_sync_plan.md): dash is a delayed teleport (see spawnBall/dash
       // handler above) — the jump happens once, at dashTeleportAt, not gradually like a roll.
       const dashing = now < conn.dashUntil;
@@ -750,17 +849,37 @@ setInterval(() => {
         }
       }
       if (target) {
+        // Decided before mutating target.hp below, so the HitEvent (which the killer's own client
+        // uses to trigger the "KILL"/reward callout — see the `killed` doc comment in
+        // shared/types.ts) and the actual kill are always in agreement.
+        const killed = !isLobby && target.hp > 0 && target.hp - b.dmg <= 0;
         const hits = roomHits.get(slug) ?? [];
-        hits.push({ targetId: target.id, ownerId: b.owner, melee: Boolean(b.melee), x: b.x, y: b.y, r: b.r, color: b.color });
+        hits.push({
+          targetId: target.id,
+          ownerId: b.owner,
+          melee: Boolean(b.melee),
+          x: b.x,
+          y: b.y,
+          r: b.r,
+          color: b.color,
+          dmg: isLobby ? 0 : b.dmg,
+          killed,
+        });
         roomHits.set(slug, hits);
         // The lobby stays a safe space (see MAX_HP's doc comment in shared/constants.ts): the hit
         // still resolves and flashes for everyone, it just never costs HP or a life there.
         if (!isLobby) {
           target.hp = Math.max(0, target.hp - b.dmg);
-          if (target.hp === 0) {
+          if (killed) {
             target.respawnAt = now + RESPAWN_MS;
             target.inputDx = 0;
             target.inputDy = 0;
+            // The body (x/y/d) stays right where it dropped — that's the corpse. The ghost starts
+            // out standing on top of it and is what the "input" handler actually moves from here
+            // (see the isDead(conn) branch in the movement loop above) until the respawn fires.
+            target.gx = target.x;
+            target.gy = target.y;
+            target.gd = target.d;
             let owner: Conn | null = null;
             for (const c of set) {
               if (c.id === b.owner) {
@@ -797,6 +916,9 @@ setInterval(() => {
       hp: c.hp,
       respawnAt: c.respawnAt,
       immuneUntil: c.immuneUntil,
+      gx: c.gx,
+      gy: c.gy,
+      gd: c.gd,
     }));
     const balls = roomBalls.get(slug) ?? [];
     // Drained, not cumulative — each hit is only ever sent once (Faza F3).

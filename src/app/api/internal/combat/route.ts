@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { KILL_GOLD_REWARD, KILL_XP_REWARD } from "@realtime-shared/constants";
 
 /**
  * Internal bridge realtime-server uses to persist kill/death counters after it resolves a PvP hit
@@ -27,12 +28,15 @@ export async function POST(request: Request) {
   if (!sb) return NextResponse.json({ error: "not configured" }, { status: 503 });
 
   const calls: PromiseLike<{ error: { message: string } | null }>[] = [];
-  if (killerUserId) calls.push(sb.rpc("increment_kills", { p_user_id: killerUserId }));
+  if (killerUserId) {
+    calls.push(sb.rpc("increment_kills", { p_user_id: killerUserId }));
+    calls.push(sb.rpc("award_kill_reward", { p_user_id: killerUserId, p_xp: KILL_XP_REWARD, p_coins: KILL_GOLD_REWARD }));
+  }
   if (victimUserId) calls.push(sb.rpc("increment_deaths", { p_user_id: victimUserId }));
 
   const results = await Promise.all(calls);
   for (const { error } of results) {
-    if (error) console.warn("internal/combat (see supabase/migrations/0024)", error);
+    if (error) console.warn("internal/combat (see supabase/migrations/0024, 0025)", error);
   }
   return NextResponse.json({ ok: true });
 }

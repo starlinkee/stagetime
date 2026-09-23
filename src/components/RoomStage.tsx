@@ -29,8 +29,13 @@ import {
   DASH_TELEPORT_AT_MS,
   DIRS,
   DIR_OF,
+  FIRE_COOLDOWN_MS,
+  GHOST_OPACITY,
   HIT_PAD,
   IMMUNE_OPACITY,
+  KILL_GOLD_REWARD,
+  KILL_XP_REWARD,
+  MAX_BALLS_PER_PLAYER,
   MAX_HP,
   ORB_R_MAX,
   ORB_R_MIN,
@@ -183,9 +188,41 @@ type Shard = {
   born: number;
 };
 
+/** Pływający napis z obrażeniami nad postacią — "-N" na czerwono u trafionego, "N" na biało u
+ * tego, kto trafił (patrz miejsce wypełniania w handlerze "state" WS). */
+type DmgText = {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  born: number;
+};
+
+/**
+ * Floating "KILL" + reward text shown only on the killer's own screen, above the victim's corpse
+ * (see the `killed` flag on HitEvent in realtime-server/shared/types.ts) — three stacked lines
+ * ("KILL", "+N xp", "+N gold"), each its own entry sharing one `born` timestamp so they fade
+ * together. `big` marks the "KILL" line for the larger font.
+ */
+type KillText = {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  born: number;
+  big?: boolean;
+  /** Vertical stack offset (px) from the base "above the corpse" position — 0 for "KILL", then
+   * increasing for each reward line stacked underneath it. */
+  offset: number;
+};
+
 /** Czas trwania animacji uderzenia (ms) i życia odłamków kuli. */
 const HIT_MS = 350;
 const SHARD_MS = 500;
+const DMG_TEXT_MS = 800;
+/** "KILL" callout fades 3x slower than a regular damage number — long enough for the killer to
+ * actually read the reward lines before they're gone. */
+const KILL_TEXT_MS = DMG_TEXT_MS * 3;
 
 /**
  * Kwadrat na scenie: przytrzymanie E przez ROOM_ENTER_MS stojąc w nim albo przenosi do innego
@@ -256,6 +293,12 @@ type Pos = {
   hp?: number;
   respawnAt?: number;
   immuneUntil?: number;
+  /** Ghost position/facing while respawnAt is in the future — only meaningful then (see
+   * PlayerState.gx/gy/gd's doc comment in realtime-server/shared/types.ts); the corpse stays
+   * rendered at x/y/d for the same window. */
+  gx?: number;
+  gy?: number;
+  gd?: Dir;
 };
 type Others = Record<string, Meta & Pos>;
 
@@ -385,7 +428,7 @@ function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: numbe
 function NameTag({ name, xp }: { name: string | null; xp?: number }) {
   return (
     <span
-      className="absolute bottom-full left-1/2 mb-0.5 flex max-w-40 -translate-x-1/2 items-center gap-1 whitespace-nowrap text-xs leading-4 text-zinc-700 dark:text-zinc-200"
+      className="absolute bottom-full left-1/2 mb-0.5 flex max-w-56 -translate-x-1/2 items-center gap-1 whitespace-nowrap text-base font-medium leading-5 text-zinc-700 dark:text-zinc-200"
       style={{ height: TAG_H - 2 }}
     >
       {xp !== undefined && <LevelBadge xp={xp} />}
@@ -405,7 +448,7 @@ function RewardPopup({ coins, xp, id }: { coins: number; xp: number; id: number 
   return (
     <span
       key={id}
-      className="pp-reward absolute bottom-full left-1/2 mb-5 whitespace-nowrap text-xs font-bold text-amber-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
+      className="pp-reward absolute bottom-full left-1/2 mb-5 whitespace-nowrap text-sm font-bold text-amber-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
     >
       {parts.join(" · ")}
     </span>
@@ -415,7 +458,7 @@ function RewardPopup({ coins, xp, id }: { coins: number; xp: number; id: number 
 /** Dymek nad postacią z jej ostatnią wiadomością — znika sam po BUBBLE_MS. */
 function ChatBubble({ text }: { text: string }) {
   return (
-    <div className="absolute bottom-full left-1/2 mb-5 max-w-48 -translate-x-1/2 whitespace-pre-wrap break-words rounded-xl bg-white px-2.5 py-1.5 text-center text-xs text-zinc-900 shadow-lg after:absolute after:left-1/2 after:top-full after:-ml-1.5 after:border-4 after:border-transparent after:border-t-white">
+    <div className="absolute bottom-full left-1/2 mb-5 max-w-60 -translate-x-1/2 whitespace-pre-wrap break-words rounded-xl bg-white px-3 py-2 text-center text-sm text-zinc-900 shadow-lg after:absolute after:left-1/2 after:top-full after:-ml-1.5 after:border-4 after:border-transparent after:border-t-white">
       {text}
     </div>
   );
@@ -626,6 +669,17 @@ export function RoomStage({
   /** Mirrors PlayerState.immuneUntil for the rAF tick loop below (see its `person.style.opacity`
    * line) — that loop reads refs every frame instead of depending on React state/re-renders. */
   const myImmuneUntilRef = useRef(0);
+  /** Mirrors myRespawnAt for the same reason: tick() (a rAF loop, not a React re-render) needs to
+   * know every frame whether this player is currently a ghost, to reconcile against the server's
+   * gx/gy/gd instead of x/y/d — see PlayerState.gx/gy/gd's doc comment in
+   * realtime-server/shared/types.ts. */
+  const myRespawnAtRef = useRef(0);
+  /** This player's own corpse — frozen at the death spot (server's x/y/d, which stop moving the
+   * moment respawnAt is set — see the isDead(conn) branch of the movement loop in
+   * realtime-server/src/server.ts) — rendered separately from `personRef`, which becomes the
+   * controllable ghost for the same window. null while alive. */
+  const [myCorpse, setMyCorpse] = useState<{ x: number; y: number; d: Dir } | null>(null);
+  const myCorpseRef = useRef<{ x: number; y: number; d: Dir } | null>(null);
   // A React-render-safe "now" (Date.now() can't be called directly during render, see
   // react-hooks/purity) for the respawn countdown and others' immunity opacity below — ticks
   // while REALTIME_SERVER_URL is set, since either can happen at any time, not just while dead.
@@ -656,6 +710,8 @@ export function RoomStage({
    */
   const predictedRef = useRef<Ball[]>([]);
   const shardsRef = useRef<Shard[]>([]);
+  const dmgTextRef = useRef<DmgText[]>([]);
+  const killTextRef = useRef<KillText[]>([]);
   /** Kiedy (performance.now) dana osoba dostała kulą: klucz → czas; własna pod "me". */
   const hitRef = useRef<Record<string, number>>({});
   /** Kto teraz ładuje kulę: klucz → początek ładowania (performance.now). */
@@ -791,6 +847,12 @@ export function RoomStage({
     let dashTeleported = false;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
+    // Mirrors the server's own salvo state (see Conn.shotsFired/fireCooldownUntil in
+    // realtime-server/src/server.ts) — without this, our own predicted preview kept showing
+    // unlimited shots on spam while the server (and everyone else) only ever confirmed
+    // MAX_BALLS_PER_PLAYER of them per burst.
+    let shotsFired = 0;
+    let fireCooldownUntil = 0;
     // Wejście do pokoju: trzymając E w jego kwadracie przez ROOM_ENTER_MS, wchodzimy na jego stronę.
     let eDown = false;
     // Jeśli E zostało wciśnięte jeszcze w poprzednim pokoju, ignorujemy je, dopóki nie przyjdzie keyup.
@@ -840,10 +902,23 @@ export function RoomStage({
     // Ostatnia znana autorytatywna pozycja z serwera dla nas — NIE jest zerowana po jednym użyciu:
     // tick() dogania ją co klatkę (patrz RECONCILE_HZ), więc kolejny "state" po prostu przesuwa
     // cel, do którego lokalna predykcja nadal płynnie dąży.
-    let serverMe: { x: number; y: number; d: number } | null = null;
+    let serverMe: { x: number; y: number; d: number; gx: number; gy: number; gd: number } | null = null;
+    // Mirrors myRespawnAtRef, read by the roll/dash/charge key handlers below (a ghost can move
+    // but not attack — the server already rejects those messages while isDead(conn), this just
+    // avoids the wasted message and the locally-predicted preview it would otherwise show).
+    let myDead = false;
     // Kierunek koryguje się jednorazowo, nie płynnie (to dyskretna orientacja sprite'a, nie
     // pozycja) — osobna flaga, żeby nie stosować go ponownie co klatkę dopóki nie przyjdzie nowy.
     let serverDirPending = false;
+    // Czy TEN pokój jest teraz w fazie "work" — realtime-server odrzuca ruch/roll/dash/charge/fire
+    // przez cały ten czas (patrz isFrozen w realtime-server/src/server.ts), więc lokalna predykcja
+    // musi się zatrzymać w tej samej chwili, inaczej trzymanie strzałki wygląda jak ruch, dopóki
+    // reconciliation nie ściągnie z powrotem na miejsce. Ta sama, czysta funkcja zegara co
+    // getTimerState gdzie indziej w tym pliku — zero komunikacji z serwerem ruchu potrzebnej, żeby
+    // się z nim zgadzać. Nie dotyczy strefy E (wejście/wyjście z pokoju) — wyjście podczas pracy
+    // zostaje możliwe (z ostrzeżeniem), patrz zone-hold logika niżej.
+    const frozenByWork = () =>
+      Boolean(phase && serverNowRef.current !== null && getTimerState(serverNowRef.current, phase).phase === "work");
 
     const scheduleReconnect = () => {
       if (wsCleanedUp) return;
@@ -916,17 +991,36 @@ export function RoomStage({
         if (msg.type !== "state") return;
         for (const p of msg.players) {
           if (p.id === netKey) {
-            serverMe = { x: p.x, y: p.y, d: p.d };
+            serverMe = { x: p.x, y: p.y, d: p.d, gx: p.gx, gy: p.gy, gd: p.gd };
             serverDirPending = true;
             setMyHp(p.hp);
             setMyRespawnAt(p.respawnAt);
+            myRespawnAtRef.current = p.respawnAt;
+            myDead = p.respawnAt > 0;
             myImmuneUntilRef.current = p.immuneUntil;
+            if (myDead && !myCorpseRef.current) {
+              myCorpseRef.current = { x: p.x, y: p.y, d: asDir(p.d) };
+              setMyCorpse(myCorpseRef.current);
+            } else if (!myDead && myCorpseRef.current) {
+              myCorpseRef.current = null;
+              setMyCorpse(null);
+            }
             continue;
           }
           // Mirrors the Supabase "pos" broadcast handler below (same posRef/setOthers/setWalkers
           // pattern) — posRef alone wouldn't trigger a re-render, `others` state has to change too.
           const prevPos = posRef.current[p.id];
-          const nextPos = { ...clampPos(p.x, p.y, isLobby), d: asDir(p.d), hp: p.hp, respawnAt: p.respawnAt, immuneUntil: p.immuneUntil };
+          const ghostClamped = clampPos(p.gx, p.gy, isLobby);
+          const nextPos = {
+            ...clampPos(p.x, p.y, isLobby),
+            d: asDir(p.d),
+            hp: p.hp,
+            respawnAt: p.respawnAt,
+            immuneUntil: p.immuneUntil,
+            gx: ghostClamped.x,
+            gy: ghostClamped.y,
+            gd: asDir(p.gd),
+          };
           posRef.current[p.id] = nextPos;
           if (!prevPos || prevPos.x !== nextPos.x || prevPos.y !== nextPos.y) {
             setWalkers((w) => (w[p.id] ? w : { ...w, [p.id]: true }));
@@ -968,8 +1062,28 @@ export function RoomStage({
         const hits: HitEvent[] = msg.hits;
         for (const h of hits) {
           const t = performance.now();
-          hitRef.current[h.targetId === netKey ? "me" : h.targetId] = t;
+          const isMe = h.targetId === netKey;
+          hitRef.current[isMe ? "me" : h.targetId] = t;
           burst({ x: h.x, y: h.y, r: h.r, color: h.color }, t);
+          // Trafiony widzi "-N" na czerwono nad sobą; ten, kto trafił, widzi "N" na biało nad
+          // celem. Bez tekstu w bezpiecznym lobby (dmg 0 — patrz MAX_HP w shared/constants.ts).
+          if (h.dmg > 0) {
+            if (isMe) {
+              dmgTextRef.current.push({ x: h.x, y: h.y, text: `-${h.dmg}`, color: "#ef4444", born: t });
+            } else if (h.ownerId === (keyRef.current || "me")) {
+              dmgTextRef.current.push({ x: h.x, y: h.y, text: `${h.dmg}`, color: "#ffffff", born: t });
+              // The killing blow: big "KILL" callout plus the reward that just landed (see
+              // KILL_XP_REWARD/KILL_GOLD_REWARD's doc comment) — shown only here, on the killer's
+              // own screen, stacked under the regular "N" damage number above.
+              if (h.killed) {
+                killTextRef.current.push(
+                  { x: h.x, y: h.y, text: "KILL", color: "#ef4444", born: t, big: true, offset: 0 },
+                  { x: h.x, y: h.y, text: `+${KILL_XP_REWARD} xp`, color: "#facc15", born: t, offset: 24 },
+                  { x: h.x, y: h.y, text: `+${KILL_GOLD_REWARD} gold`, color: "#facc15", born: t, offset: 46 },
+                );
+              }
+            }
+          }
         }
       });
       socket.addEventListener("close", () => {
@@ -1001,27 +1115,43 @@ export function RoomStage({
       const p = Math.min(1, chargeMs / CHARGE_MS);
       chargeStart = null;
       if (!activeRef.current) return;
-      if (REALTIME_SERVER_URL) {
-        // Faza F4: the server decides the real ball (chargeMs capped to what it actually saw
-        // elapse since our own `charge: { on: true }`, see the "fire" handler in
-        // realtime-server/src/server.ts) — this is only the shooter's own instant, cosmetic
-        // preview. It flies under the same rule as a real ball (out-of-bounds, see tick() below)
-        // rather than a short fixed timer, and gets handed off to ballsRef the moment the server's
-        // own broadcast confirms it — see the "state" handler above.
-        launch(predictedRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          const fire: ClientMessage = { type: "fire", chargeMs };
-          ws.send(JSON.stringify(fire));
+      // Same salvo rule the server enforces (MAX_BALLS_PER_PLAYER shots, then FIRE_COOLDOWN_MS —
+      // see the "fire" handler in realtime-server/src/server.ts): once our own cooldown is up,
+      // this release doesn't actually fire — no predicted ball, no message, no shot count — but
+      // still clears the charging halo below, same as a real shot would. Without this, spamming
+      // fire kept adding unlimited local predicted balls while the server (and everyone else)
+      // only ever confirmed MAX_BALLS_PER_PLAYER of them per burst.
+      const now = performance.now();
+      const firing = !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || now >= fireCooldownUntil);
+      if (firing) {
+        if (REALTIME_SERVER_URL) {
+          // Faza F4: the server decides the real ball (chargeMs capped to what it actually saw
+          // elapse since our own `charge: { on: true }`, see the "fire" handler in
+          // realtime-server/src/server.ts) — this is only the shooter's own instant, cosmetic
+          // preview. It flies under the same rule as a real ball (out-of-bounds, see tick()
+          // below) rather than a short fixed timer, and gets handed off to ballsRef the moment
+          // the server's own broadcast confirms it — see the "state" handler above.
+          launch(predictedRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            const fire: ClientMessage = { type: "fire", chargeMs };
+            ws.send(JSON.stringify(fire));
+          }
+          shotsFired += 1;
+          if (shotsFired >= MAX_BALLS_PER_PLAYER) {
+            shotsFired = 0;
+            fireCooldownUntil = now + FIRE_COOLDOWN_MS;
+          }
+        } else {
+          launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
         }
-      } else {
-        launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
       }
-      // Still emitted in both modes — other clients use "fire" only to clear the charging halo
-      // they're drawing for this player (chargingRef), unrelated to who-hit-who.
+      // Still emitted in both modes (and even when the cooldown blocked the shot above) — other
+      // clients use "fire" only to clear the charging halo they're drawing for this player
+      // (chargingRef), unrelated to who-hit-who.
       emit("fire", { ...myPos.current, p });
       // Every real shot by a signed-in user bumps their all-time count (shown in
       // src/components/ProfileMenu.tsx), server-side via supabase/migrations/0012_balls_shot.sql.
-      if (userIdRef.current)
+      if (firing && userIdRef.current)
         void getSupabase()
           ?.rpc("increment_balls_shot")
           .then(({ error }) => {
@@ -1067,10 +1197,10 @@ export function RoomStage({
         ctx.textBaseline = "middle";
         if (authLocked || phaseState?.phase === "work") {
           // Zablokowane (praca w toku albo trzeba się zalogować) — kłódka zamiast numeru pokoju.
-          ctx.font = "20px sans-serif";
+          ctx.font = "28px sans-serif";
           ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
         } else {
-          ctx.font = "600 16px sans-serif";
+          ctx.font = "600 24px sans-serif";
           ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2 - 6);
         }
         // Pod numerem/kłódką: stojąc na wyjściu (kwadrat "lobby" na scenie samego pokoju) — zielony
@@ -1079,9 +1209,9 @@ export function RoomStage({
         // w pokoju, ale tylko gdy ktoś tam jest.
         const occupants = occupancyRef.current?.[z.slug];
         const isExitHere = roomSlug !== "lobby" && z.slug === "lobby";
-        // Pokój zamknięty (trwa faza work): pokazujemy tylko kłódkę i czerwone odliczanie pod
-        // kwadratem (patrz niżej, phaseState) — żadnych innych informacji (nagroda, liczba osób,
-        // teksty przy wejściu w strefę).
+        // Pokój zamknięty (trwa faza work): kłódka, czerwone odliczanie pod kwadratem (patrz
+        // niżej, phaseState) i liczba osób w środku (STU-26) — bez nagrody i tekstów wejścia,
+        // bo i tak nie można teraz wejść.
         const workClosed = phaseState?.phase === "work";
         // Nagroda XP tego pokoju i długość faz: pod numerem/kłódką, zawsze widoczna (nie tylko
         // stojąc na kwadracie) — dla pomodoro to praca+przerwa w minutach i nagroda za całą sesję
@@ -1089,36 +1219,36 @@ export function RoomStage({
         // w src/lib/xp.ts).
         if ((z.kind ?? "nav") === "nav" && !isExitHere && !z.noReward && !workClosed) {
           ctx.fillStyle = "rgba(255,255,255,0.7)";
-          ctx.font = "600 10px sans-serif";
-          ctx.fillText(z.phase ? `${z.phase.workMin}+${z.phase.breakMin} min` : "no timer", z.x + z.w / 2, z.y + z.h / 2 + 10);
+          ctx.font = "600 14px sans-serif";
+          ctx.fillText(z.phase ? `${z.phase.workMin}+${z.phase.breakMin} min` : "no timer", z.x + z.w / 2, z.y + z.h / 2 + 14);
           ctx.fillStyle = "#fbbf24";
-          ctx.font = "700 10px sans-serif";
+          ctx.font = "700 14px sans-serif";
           ctx.fillText(
             z.phase
               ? `+${xpForMinutes(z.phase.workMin)} XP · +${coinsForMinutes(z.phase.workMin)} coins/session`
               : "+0.1 XP/5min · +0.1 coins/min while running",
             z.x + z.w / 2,
-            z.y + z.h / 2 + 22,
+            z.y + z.h / 2 + 30,
           );
         }
         if (inZone(x, y, z) && (z.kind ?? "nav") === "nav" && !workClosed) {
           if (isExitHere) {
             ctx.fillStyle = "#22c55e";
-            ctx.font = "700 12px sans-serif";
-            ctx.fillText("E to exit room", z.x + z.w / 2, z.y + z.h / 2 + 38);
+            ctx.font = "700 16px sans-serif";
+            ctx.fillText("E to exit room", z.x + z.w / 2, z.y + z.h / 2 + 42);
           } else if (authLocked) {
             ctx.fillStyle = "rgba(255,255,255,0.75)";
-            ctx.font = "700 12px sans-serif";
-            ctx.fillText("Sign in required", z.x + z.w / 2, z.y + z.h / 2 + 38);
+            ctx.font = "700 16px sans-serif";
+            ctx.fillText("Sign in required", z.x + z.w / 2, z.y + z.h / 2 + 42);
           } else {
             ctx.fillStyle = "#22c55e";
-            ctx.font = "700 12px sans-serif";
-            ctx.fillText("E to enter room", z.x + z.w / 2, z.y + z.h / 2 + 38);
+            ctx.font = "700 16px sans-serif";
+            ctx.fillText("E to enter room", z.x + z.w / 2, z.y + z.h / 2 + 42);
           }
-        } else if (occupants && !workClosed) {
+        } else if (occupants) {
           ctx.fillStyle = "rgba(255,255,255,0.75)";
-          ctx.font = "500 12px sans-serif";
-          ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 38);
+          ctx.font = "500 16px sans-serif";
+          ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 42);
         }
         if (active && eHoldStart !== null) {
           const p = Math.min(1, (t - eHoldStart) / roomEnterMs());
@@ -1134,14 +1264,14 @@ export function RoomStage({
           const state = phaseState;
           const phaseColor = PHASE_COLOR[state.phase];
           ctx.fillStyle = phaseColor;
-          ctx.font = "700 14px sans-serif";
+          ctx.font = "700 19px sans-serif";
           ctx.fillText(
             `${state.phase === "work" ? "WORK" : "STARTS IN"} · ${formatMs(state.remainingMs)}`,
             z.x + z.w / 2,
-            z.y + z.h + 20,
+            z.y + z.h + 24,
           );
           const barW = z.w - 16;
-          const barY = z.y + z.h + 32;
+          const barY = z.y + z.h + 36;
           const progress = 1 - state.remainingMs / state.phaseMs;
           ctx.fillStyle = "rgba(255,255,255,0.2)";
           ctx.fillRect(z.x + 8, barY, barW, 6);
@@ -1209,6 +1339,32 @@ export function RoomStage({
         ctx.fill();
       }
       ctx.globalAlpha = 0.85;
+      // Pływające napisy z obrażeniami — unoszą się i gasną (patrz push w handlerze "state" WS).
+      dmgTextRef.current = dmgTextRef.current.filter((d) => t - d.born < DMG_TEXT_MS);
+      ctx.font = "bold 21px sans-serif";
+      ctx.textAlign = "center";
+      for (const d of dmgTextRef.current) {
+        const age = t - d.born;
+        const life = 1 - age / DMG_TEXT_MS;
+        ctx.globalAlpha = life;
+        ctx.fillStyle = d.color;
+        ctx.fillText(d.text, d.x, d.y - 20 - 26 * (age / DMG_TEXT_MS));
+      }
+      // "KILL" callout + reward, stacked below it — see the `killed` push in the "state" WS
+      // handler above. Fades 3x slower than a regular damage number (KILL_TEXT_MS), floats up the
+      // same way but starting from each line's own stack offset.
+      killTextRef.current = killTextRef.current.filter((k) => t - k.born < KILL_TEXT_MS);
+      ctx.textAlign = "center";
+      for (const k of killTextRef.current) {
+        const age = t - k.born;
+        const life = 1 - age / KILL_TEXT_MS;
+        ctx.font = k.big ? "bold 34px sans-serif" : "bold 20px sans-serif";
+        ctx.globalAlpha = life;
+        ctx.fillStyle = k.color;
+        ctx.fillText(k.text, k.x, k.y - 40 - k.offset - 30 * (age / KILL_TEXT_MS));
+      }
+      ctx.textAlign = "left";
+      ctx.globalAlpha = 0.85;
     };
 
     const burst = (b: { x: number; y: number; r: number; color: string }, t: number) => {
@@ -1252,19 +1408,26 @@ export function RoomStage({
       // przekraczamy RECONCILE_SNAP_PX i wtedy nadal lądujemy tam natychmiast — wygładzanie
       // takiego skoku wyglądałoby jak ślizganie się przez pół mapy.
       if (serverMe) {
-        const errX = serverMe.x - x;
-        const errY = serverMe.y - y;
+        // Dead: the body (x/y/d) is the frozen corpse (rendered separately, see myCorpse below) —
+        // what this node reconciles against, and what the player still steers, is the ghost
+        // (gx/gy/gd) for the rest of the respawn countdown. See PlayerState.gx/gy/gd's doc comment
+        // in realtime-server/shared/types.ts.
+        const dead = myRespawnAtRef.current > 0;
+        const targetX = dead ? serverMe.gx : serverMe.x;
+        const targetY = dead ? serverMe.gy : serverMe.y;
+        const errX = targetX - x;
+        const errY = targetY - y;
         const errDist = Math.hypot(errX, errY);
         if (errDist > RECONCILE_SNAP_PX) {
-          x = serverMe.x;
-          y = serverMe.y;
+          x = targetX;
+          y = targetY;
         } else if (errDist > 0.05) {
           const alpha = 1 - Math.exp(-RECONCILE_HZ * dt);
           x += errX * alpha;
           y += errY * alpha;
         }
         if (serverDirPending) {
-          const newDir = asDir(serverMe.d);
+          const newDir = asDir(dead ? serverMe.gd : serverMe.d);
           if (newDir !== dir) {
             dir = newDir;
             setMyDir(newDir);
@@ -1273,7 +1436,11 @@ export function RoomStage({
         }
       }
       const on = activeRef.current;
-      const dashing = on && t < dashUntil;
+      // Zablokowane przez fazę "work" tego pokoju — patrz frozenByWork. Osobne od `on`: strefa
+      // wejścia/wyjścia (E) niżej nadal używa samego `on`, bo wyjście podczas pracy ma zostać
+      // możliwe (z ostrzeżeniem o utracie XP), tylko ruch/przewrót/unik mają zamarznąć.
+      const canAct = on && !frozenByWork();
+      const dashing = canAct && t < dashUntil;
       if (dashing !== dashingNow) {
         dashingNow = dashing;
         setMyDashing(dashing);
@@ -1286,7 +1453,7 @@ export function RoomStage({
         y = dashTargetY;
         dirty = true;
       }
-      const rolling = !dashing && on && t < rollUntil;
+      const rolling = !dashing && canAct && t < rollUntil;
       if (rolling !== rollingNow) {
         rollingNow = rolling;
         setMyRolling(rolling);
@@ -1295,14 +1462,14 @@ export function RoomStage({
         ? 0
         : rolling
           ? rollDx
-          : on
+          : canAct
             ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0)
             : 0;
       const dy = dashing
         ? 0
         : rolling
           ? rollDy
-          : on
+          : canAct
             ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0)
             : 0;
       // Surowa intencja ruchu (bez przewrotu/uniku — te idą przez osobne wiadomości "roll"/"dash",
@@ -1318,8 +1485,8 @@ export function RoomStage({
       // serwer twierdził, że w ogóle się nie ruszył. Heartbeat co SEND_EVERY zostaje jako
       // zabezpieczenie (np. na wypadek zgubienia stanu przy reconnect), ale to zmiana dx/dy jest
       // teraz głównym wyzwalaczem wysyłki.
-      const rawDx = on ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0) : 0;
-      const rawDy = on ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0) : 0;
+      const rawDx = canAct ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0) : 0;
+      const rawDy = canAct ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0) : 0;
       const inputChanged = rawDx !== lastSentDx || rawDy !== lastSentDy;
       if (ws && ws.readyState === WebSocket.OPEN && (inputChanged || t - lastInputSent >= SEND_EVERY)) {
         const input: ClientMessage = {
@@ -1363,11 +1530,20 @@ export function RoomStage({
       const hitAge = t - (hitRef.current.me ?? -Infinity);
       const shake = hitAge < HIT_MS ? Math.sin(hitAge / 18) * 5 * (1 - hitAge / HIT_MS) : 0;
       person.style.transform = `translate(${x + shake}px, ${y}px)`;
-      // Lower opacity while immune (post-respawn grace window) — mirrors the `others` rendering
-      // below, but imperative like `transform` above: this component's own position/appearance is
-      // driven straight from refs every rAF frame rather than React state, for the same reason
-      // (avoiding a state update, and the resulting re-render, every single frame).
-      if (REALTIME_SERVER_URL) person.style.opacity = myImmuneUntilRef.current > Date.now() ? String(IMMUNE_OPACITY) : "0.7";
+      // Lower opacity while immune (post-respawn grace window) or ghost (mid-respawn-countdown) —
+      // mirrors the `others` rendering below, but imperative like `transform` above: this
+      // component's own position/appearance is driven straight from refs every rAF frame rather
+      // than React state, for the same reason (avoiding a state update, and the resulting
+      // re-render, every single frame).
+      if (REALTIME_SERVER_URL) {
+        person.style.opacity =
+          myRespawnAtRef.current > 0
+            ? String(GHOST_OPACITY)
+            : myImmuneUntilRef.current > Date.now()
+              ? String(IMMUNE_OPACITY)
+              : "0.7";
+        person.style.filter = myRespawnAtRef.current > 0 ? "grayscale(1) brightness(1.3)" : "";
+      }
       myPos.current = { x, y, d: dir, r: rolling, dash: dashing };
       // Wejście do pokoju: E trzeba trzymać nieprzerwanie, stojąc w jego kwadracie.
       const zone = on ? zonesRef.current.find((z) => inZone(x, y, z)) : undefined;
@@ -1549,6 +1725,10 @@ export function RoomStage({
     const onKeyDown = (e: KeyboardEvent) => {
       if (!activeRef.current || document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey)
         return;
+      // A ghost can move but not attack (roll/dash/charge/fire) — see myDead's doc comment above.
+      // Same for a room currently in its "work" phase (see frozenByWork): nobody rolls/dashes/
+      // fires while frozen, the server would reject it anyway (isFrozen in server.ts).
+      if ((myDead || frozenByWork()) && (e.code === "Space" || e.code === "KeyC" || e.code === "KeyV")) return;
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
         if (!e.repeat && chargeStart === null) {
@@ -2016,8 +2196,9 @@ export function RoomStage({
       </div>
     )}
     {respawnRemainingSec > 0 && (
-      <div className="pointer-events-none fixed inset-0 z-30 flex items-center justify-center bg-zinc-950/60">
-        <p className="text-2xl font-bold text-white">Respawning in {respawnRemainingSec}…</p>
+      <div className="pointer-events-none fixed inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-zinc-950/60">
+        <p className="text-4xl font-extrabold text-red-500">You died…</p>
+        <p className="text-lg font-medium text-zinc-200">Respawning in {respawnRemainingSec}…</p>
       </div>
     )}
     {REALTIME_SERVER_URL && wsStatus === "reconnecting" && (
@@ -2052,31 +2233,56 @@ export function RoomStage({
         style={{ width: WORLD_W, height: WORLD_H }}
       >
         {isLobby && <DungeonBackground width={WORLD_W} height={WORLD_H} />}
-        {Object.entries(others).map(([k, o]) => (
+        {Object.entries(others).map(([k, o]) => {
+          // respawnAt > 0: this player just died — o.x/o.y/o.d is their corpse, frozen where it
+          // dropped, and o.gx/o.gy/o.gd is the ghost they're still steering (see
+          // PlayerState.gx/gy/gd's doc comment in realtime-server/shared/types.ts). Both render,
+          // for everyone in the room, until respawnAt clears.
+          const dead = Boolean(o.respawnAt && o.respawnAt > 0);
+          return (
+            <div key={k}>
+              {dead && (
+                <div className="absolute left-0 top-0" style={{ transform: `translate(${o.x}px, ${o.y}px)`, opacity: GHOST_OPACITY }}>
+                  <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
+                  <PlayerSprite label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={false} rolling={false} dashing={false} />
+                </div>
+              )}
+              <div
+                className={`absolute left-0 top-0 ease-linear ${o.dash ? "" : "transition-transform duration-100"}`}
+                style={{
+                  transform: `translate(${dead ? (o.gx ?? o.x) : o.x}px, ${dead ? (o.gy ?? o.y) : o.y}px)`,
+                  // Lower opacity while immune (post-respawn grace window) or ghost (mid-respawn
+                  // countdown, see GHOST_OPACITY) — see IMMUNE_OPACITY in
+                  // realtime-server/shared/constants.ts. `others` re-renders every state broadcast
+                  // (~BROADCAST_MS) regardless of movement, so this clears on its own.
+                  opacity: dead ? GHOST_OPACITY : o.immuneUntil && o.immuneUntil > nowTick ? IMMUNE_OPACITY : 0.7,
+                  filter: dead ? "grayscale(1) brightness(1.3)" : undefined,
+                }}
+              >
+                {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
+                {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
+                <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
+                <PlayerSprite
+                  label={o.nick ?? NO_NAME}
+                  size={PERSON_W / 8}
+                  dir={dead ? (o.gd ?? o.d) : o.d}
+                  walking={!dead && walkers[k] && !o.r && !o.dash}
+                  rolling={o.r}
+                  dashing={o.dash}
+                />
+              </div>
+            </div>
+          );
+        })}
+        {myCorpse && (
           <div
-            key={k}
-            className={`absolute left-0 top-0 ease-linear ${o.dash ? "" : "transition-transform duration-100"}`}
-            style={{
-              transform: `translate(${o.x}px, ${o.y}px)`,
-              // Lower opacity while immune (post-respawn grace window) — see IMMUNE_OPACITY in
-              // realtime-server/shared/constants.ts. `others` re-renders every state broadcast
-              // (~BROADCAST_MS) regardless of movement, so this clears on its own near `immuneUntil`.
-              opacity: o.immuneUntil && o.immuneUntil > nowTick ? IMMUNE_OPACITY : 0.7,
-            }}
+            className="absolute left-0 top-0 opacity-40 grayscale"
+            style={{ transform: `translate(${myCorpse.x}px, ${myCorpse.y}px)` }}
           >
-            {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
-            {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
-            <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
-            <PlayerSprite
-              label={o.nick ?? NO_NAME}
-              size={PERSON_W / 8}
-              dir={o.d}
-              walking={walkers[k] && !o.r && !o.dash}
-              rolling={o.r}
-              dashing={o.dash}
-            />
+            <NameTag name={nick} xp={session ? profile.xp : undefined} />
+            <PlayerSprite label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myCorpse.d} walking={false} rolling={false} dashing={false} />
           </div>
-        ))}
+        )}
         <div
           ref={personRef}
           className={`absolute left-0 top-0 opacity-70 will-change-transform ${superseded ? "invisible" : ""}`}

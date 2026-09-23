@@ -17,6 +17,9 @@
  * directly usable as a world position — don't add the offset again at the call site.
  */
 
+import { SCREEN_W, SCREEN_H } from "./constants";
+import { getPhase, type Phase } from "./timer";
+
 export type RoomKind = "pomodoro" | "stopwatch" | "shop";
 
 interface RoomMeta {
@@ -24,16 +27,22 @@ interface RoomMeta {
   kind: RoomKind;
   workMin?: number;
   breakMin?: number;
+  /** Same meaning as PomodoroRoomConfig.offsetMs in src/lib/timer.ts — must match the value
+   * pomodoroVariants() in src/lib/rooms.ts computes for the same slug, or this server and the
+   * client would disagree about which phase (work/break) a given variant is currently in. */
+  offsetMs?: number;
 }
 
-/** Same count/slug formula as pomodoroVariants() in src/lib/rooms.ts. */
+/** Same count/slug/offsetMs formula as pomodoroVariants() in src/lib/rooms.ts. */
 function pomodoroSlugs(slugBase: string, workMin: number, breakMin: number): RoomMeta[] {
+  const cycleMs = (workMin + breakMin) * 60_000;
   const count = Math.ceil((workMin + breakMin) / breakMin);
   return Array.from({ length: count }, (_, i) => ({
     slug: `${slugBase}-${i + 1}`,
     kind: "pomodoro" as const,
     workMin,
     breakMin,
+    offsetMs: Math.round((i / count) * cycleMs),
   }));
 }
 
@@ -54,8 +63,6 @@ export interface Rect {
 }
 
 // Grid constants — must match src/app/page.tsx exactly.
-const SCREEN_W = 1600;
-const SCREEN_H = 900;
 const ZONE_W = 180;
 const ZONE_H = 100;
 const COL_GAP = 50;
@@ -105,3 +112,18 @@ function buildLobbyZoneRects(): ReadonlyMap<string, Rect> {
 
 /** slug -> lobby zone rect, for every room in ROOM_META. */
 export const LOBBY_ZONE_RECTS: ReadonlyMap<string, Rect> = buildLobbyZoneRects();
+
+const ROOM_META_BY_SLUG: ReadonlyMap<string, RoomMeta> = new Map(ROOM_META.map((r) => [r.slug, r]));
+
+/**
+ * Which phase (work/break) `roomSlug` is in right now, or `null` for a room with no pomodoro
+ * cycle (stopwatch/shop/lobby) — those never gate anything. Used by server.ts to freeze movement
+ * and combat for the whole room while it's in "work" (see isFrozen there): a pure function of the
+ * server's own clock, so it needs no state and can't drift from what every client's own
+ * getTimerState (src/lib/timer.ts) computes for the same room.
+ */
+export function getRoomPhase(roomSlug: string, nowMs: number): Phase | null {
+  const meta = ROOM_META_BY_SLUG.get(roomSlug);
+  if (!meta || meta.kind !== "pomodoro" || meta.workMin === undefined || meta.breakMin === undefined) return null;
+  return getPhase(nowMs, meta.workMin, meta.breakMin, meta.offsetMs);
+}

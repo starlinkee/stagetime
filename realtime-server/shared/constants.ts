@@ -5,11 +5,13 @@
  * visibly disagree with what the server decides.
  */
 
-export const SCREEN_W = 1600;
-export const SCREEN_H = 900;
+import type { CharacterStats } from "./types";
+
+export const SCREEN_W = 1366;
+export const SCREEN_H = 768;
 export const PERSON_W = 32;
 export const PERSON_H = 48;
-export const TAG_H = 18;
+export const TAG_H = 26;
 
 /** World units per second — matches DEFAULT_ADMIN_SETTINGS.playerSpeed in src/lib/adminSettings.ts. */
 export const DEFAULT_PLAYER_SPEED = 220;
@@ -106,8 +108,29 @@ export const HIT_PAD = 4;
  * called for in docs/combat_sync_plan.md Faza F3 (resolves open question 3 in that doc: chosen
  * per-player rather than per-room, since it composes with MAX_PLAYERS_PER_ROOM to give an
  * implicit room-wide ceiling — 50 players x 3 balls — without a second, redundant counter).
+ * This is a *default*, not a hardcoded ceiling: it's the `maxProjectiles` every connection starts
+ * with in `DEFAULT_CHARACTER_STATS` below, which an item or character choice can later raise per
+ * connection (see `Conn.stats` in server.ts).
  */
 export const MAX_BALLS_PER_PLAYER = 3;
+/** Salvo cooldown, not a per-shot one: a connection can fire MAX_BALLS_PER_PLAYER shots back to
+ * back, and only once it's used all of them does this cooldown start — see the "fire" handler
+ * (shotsFired/fireCooldownUntil) in server.ts, and its mirror in RoomStage.tsx's release(). Also
+ * just a default; see `DEFAULT_CHARACTER_STATS`. */
+export const FIRE_COOLDOWN_MS = 1800;
+
+/**
+ * Every connection's stats until character selection exists (see AGENTS.md's 2026-09-23 note:
+ * no character classes/items yet) — copied into `Conn.stats` per connection (never shared by
+ * reference, so a future per-connection item bonus can mutate its own copy without touching this
+ * default or any other connection's stats).
+ */
+export const DEFAULT_CHARACTER_STATS: CharacterStats = {
+  moveSpeed: DEFAULT_PLAYER_SPEED,
+  maxProjectiles: MAX_BALLS_PER_PLAYER,
+  fireCooldownMs: FIRE_COOLDOWN_MS,
+  attackPower: 1,
+};
 
 /**
  * HP/damage/respawn — combat only deals damage outside the lobby (a decision made when this was
@@ -115,7 +138,7 @@ export const MAX_BALLS_PER_PLAYER = 3;
  * `isLobbyRoom` in server.ts skips the HP subtraction). Every connection starts and respawns at
  * `MAX_HP`.
  */
-export const MAX_HP = 100;
+export const MAX_HP = 50;
 /** Charged-throw damage range — interpolated by charge fraction (0..1), same `p` spawnBall already
  * uses for `ORB_R_MIN`/`ORB_R_MAX`. */
 export const DMG_MIN = 1;
@@ -128,3 +151,15 @@ export const RESPAWN_MS = 5000;
 export const IMMUNITY_MS = 5000;
 /** Client-side rendering hint: sprite opacity while `now < immuneUntil`. */
 export const IMMUNE_OPACITY = 0.4;
+/** Client-side rendering hint: sprite opacity for a ghost (dead player, controllable for
+ * RESPAWN_MS — see PlayerState.gx/gy/gd's doc comment in shared/types.ts). */
+export const GHOST_OPACITY = 0.35;
+
+/**
+ * Kill reward shown to the killer only (as "+N xp"/"+N gold" text next to the big "KILL" callout,
+ * see the `killed` flag on HitEvent in shared/types.ts) and actually credited to their account via
+ * src/app/api/internal/combat/route.ts. A single source for both so the number on screen always
+ * matches what actually lands in Postgres.
+ */
+export const KILL_XP_REWARD = 1;
+export const KILL_GOLD_REWARD = 5;

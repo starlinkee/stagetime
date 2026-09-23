@@ -1,5 +1,25 @@
 export type Dir = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
+/**
+ * Per-connection combat/movement stats — everyone gets `DEFAULT_CHARACTER_STATS` (see
+ * constants.ts) today, since there's no character-class selection yet, but every server-side
+ * rule that used to read a single global constant now reads a connection's own `stats` instead,
+ * so a future character choice (or a stat-boosting item) only has to compute a different
+ * `CharacterStats` per connection — no other code needs to change.
+ */
+export interface CharacterStats {
+  /** World units per second. Replaces the old flat DEFAULT_PLAYER_SPEED. */
+  moveSpeed: number;
+  /** Concurrent projectiles/melee hitboxes this connection may have in flight at once — see
+   * MAX_BALLS_PER_PLAYER's doc comment in constants.ts for why this is per-player. */
+  maxProjectiles: number;
+  /** Minimum time between this connection's own shots, regardless of charge. */
+  fireCooldownMs: number;
+  /** Multiplier applied to a shot's/strike's base damage (see spawnBall/spawnMelee in
+   * server.ts). 1 = base damage, unmodified. */
+  attackPower: number;
+}
+
 export interface PlayerState {
   id: string;
   userId: string | null;
@@ -15,6 +35,16 @@ export interface PlayerState {
   /** 0/past while not immune; otherwise the epoch ms immunity (post-respawn) ends — client renders
    * reduced opacity for anyone still under it, not just itself. */
   immuneUntil: number;
+  /**
+   * Ghost position/facing, meaningful only while `respawnAt > 0` (see RESPAWN_MS in constants.ts):
+   * on death the body freezes at `x`/`y`/`d` (the corpse, still shown there), and the player keeps
+   * moving as a ghost at `gx`/`gy`/`gd` for the rest of the respawn countdown — visible to both the
+   * dead player and everyone else. Stale (last life's values) while alive; clients only read these
+   * when `respawnAt > 0`.
+   */
+  gx: number;
+  gy: number;
+  gd: Dir;
 }
 
 /**
@@ -66,6 +96,15 @@ export interface HitEvent {
   y: number;
   r: number;
   color: string;
+  /** HP actually removed by this hit (0 in the lobby, which stays a safe space — see MAX_HP's
+   * doc comment in shared/constants.ts). Lets the client show a floating damage number without
+   * having to look up the `ServerBall`, which is already gone by the time this event is sent. */
+  dmg: number;
+  /** True when this hit brought `targetId` to 0 HP — the killing blow. Lets `ownerId`'s own client
+   * show the "KILL" callout and reward text (see KILL_XP_REWARD/KILL_GOLD_REWARD in
+   * shared/constants.ts) without having to diff HP itself. Always false in the lobby (no damage
+   * there, see `dmg` above). */
+  killed: boolean;
 }
 
 /**
