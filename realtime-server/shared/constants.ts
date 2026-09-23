@@ -113,11 +113,26 @@ export const HIT_PAD = 4;
  * connection (see `Conn.stats` in server.ts).
  */
 export const MAX_BALLS_PER_PLAYER = 3;
-/** Salvo cooldown, not a per-shot one: a connection can fire MAX_BALLS_PER_PLAYER shots back to
- * back, and only once it's used all of them does this cooldown start — see the "fire" handler
- * (shotsFired/fireCooldownUntil) in server.ts, and its mirror in RoomStage.tsx's release(). Also
- * just a default; see `DEFAULT_CHARACTER_STATS`. */
-export const FIRE_COOLDOWN_MS = 1800;
+/**
+ * Stamina (fire-rate) model, replacing the old flat "N shots then a hard 1.8s wait" salvo
+ * cooldown: a connection has a pool of `STAMINA_MAX` units that drains by `STAMINA_COST_PER_SHOT`
+ * per shot and regenerates continuously at `STAMINA_REGEN_PER_SEC` units/sec — no per-tick loop
+ * needed server-side, since stamina at any instant is just `min(max, last + elapsed * rate)`,
+ * computed lazily off a timestamp (see `currentStamina` in server.ts) only when it's actually
+ * needed (a `fire` message, or a broadcast) — that's what keeps this cheap at hundreds of
+ * concurrent fighters, not a per-connection regen tick.
+ * Chosen so the numbers still land on the old feel: STAMINA_MAX / STAMINA_COST_PER_SHOT = 3 shots
+ * from a full bar (matches the old MAX_BALLS_PER_PLAYER-shot salvo), and a full bar refills in
+ * 1.8s (matches the old FIRE_COOLDOWN_MS) — except now that's smooth/continuous instead of
+ * empty-then-suddenly-full, so evenly-spaced taps (one shot every
+ * STAMINA_COST_PER_SHOT / STAMINA_REGEN_PER_SEC = 0.6s) can go on forever instead of only ever
+ * coming in bursts of 3. Also just defaults — see `DEFAULT_CHARACTER_STATS`; a future character
+ * choice or item can raise any of the three per connection (bigger pool, cheaper shots, faster
+ * regen) without this code changing.
+ */
+export const STAMINA_MAX = 180;
+export const STAMINA_COST_PER_SHOT = 60;
+export const STAMINA_REGEN_PER_SEC = STAMINA_MAX / 1.8;
 
 /**
  * Every connection's stats until character selection exists (see AGENTS.md's 2026-09-23 note:
@@ -128,7 +143,9 @@ export const FIRE_COOLDOWN_MS = 1800;
 export const DEFAULT_CHARACTER_STATS: CharacterStats = {
   moveSpeed: DEFAULT_PLAYER_SPEED,
   maxProjectiles: MAX_BALLS_PER_PLAYER,
-  fireCooldownMs: FIRE_COOLDOWN_MS,
+  staminaMax: STAMINA_MAX,
+  staminaCostPerShot: STAMINA_COST_PER_SHOT,
+  staminaRegenPerSec: STAMINA_REGEN_PER_SEC,
   attackPower: 1,
 };
 

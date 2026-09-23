@@ -13,8 +13,15 @@ export interface CharacterStats {
   /** Concurrent projectiles/melee hitboxes this connection may have in flight at once — see
    * MAX_BALLS_PER_PLAYER's doc comment in constants.ts for why this is per-player. */
   maxProjectiles: number;
-  /** Minimum time between this connection's own shots, regardless of charge. */
-  fireCooldownMs: number;
+  /** Full stamina pool this connection's `fire` draws from — see `staminaCostPerShot`/
+   * `staminaRegenPerSec` and STAMINA_MAX's doc comment in constants.ts for the model. */
+  staminaMax: number;
+  /** Stamina spent per `fire`; a shot is refused (see the "fire" handler in server.ts) while the
+   * connection's current stamina is below this. */
+  staminaCostPerShot: number;
+  /** Stamina regenerated per second, continuously (not per-tick) — see STAMINA_REGEN_PER_SEC's
+   * doc comment in constants.ts. */
+  staminaRegenPerSec: number;
   /** Multiplier applied to a shot's/strike's base damage (see spawnBall/spawnMelee in
    * server.ts). 1 = base damage, unmodified. */
   attackPower: number;
@@ -45,6 +52,13 @@ export interface PlayerState {
   gx: number;
   gy: number;
   gd: Dir;
+  /** This connection's current fire stamina (0..staminaMax), computed lazily from a timestamp —
+   * see `currentStamina` in server.ts — not ticked per-frame server-side. Drives the green meter
+   * under the health bar in RoomStage.tsx. */
+  stamina: number;
+  /** This connection's own stamina pool size — a per-character/item stat (see CharacterStats in
+   * this file), not a global constant, so the client can't just read STAMINA_MAX itself. */
+  staminaMax: number;
 }
 
 /**

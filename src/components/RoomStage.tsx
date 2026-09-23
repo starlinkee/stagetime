@@ -29,13 +29,11 @@ import {
   DASH_TELEPORT_AT_MS,
   DIRS,
   DIR_OF,
-  FIRE_COOLDOWN_MS,
   GHOST_OPACITY,
   HIT_PAD,
   IMMUNE_OPACITY,
   KILL_GOLD_REWARD,
   KILL_XP_REWARD,
-  MAX_BALLS_PER_PLAYER,
   MAX_HP,
   ORB_R_MAX,
   ORB_R_MIN,
@@ -46,6 +44,9 @@ import {
   ROLL_SPEED_MULT,
   SCREEN_H,
   SCREEN_W,
+  STAMINA_COST_PER_SHOT,
+  STAMINA_MAX,
+  STAMINA_REGEN_PER_SEC,
   STRIKE_MS,
   STRIKE_R,
   STRIKE_REACH,
@@ -560,23 +561,56 @@ export function RoomStage({
   // phase (stopwatch/shop) or before the server clock is synced, in which case it doesn't gate
   // anything (see xpAccruing below).
   const roomPhase = phase && serverNow !== null ? getTimerState(serverNow, phase).phase : null;
-  // Credits XP for time spent in this room (no-op in the lobby or signed out) — see
-  // supabase/migrations/0010_xp.sql and 0014_timer_xp_rate.sql. `xpRunning` gates accrual (used
-  // by the Timer Room, see prop doc above); for pomodoro rooms it's further gated to the "work"
-  // phase only — no XP/coins while waiting for work to start or during the break. Own XP then
-  // updates live via useMyProfile's Realtime sub.
-  const xpAccruing = xpRunning && (roomPhase === null || roomPhase === "work");
+  // Pokój bez `phase` (Timer Room, patrz src/components/TimerRoom.tsx) ma indywidualny stoper —
+  // tick nagrody widzi tylko właściciel, nie jest rozgłaszany do innych w pokoju. Zdefiniowane tu
+  // (przed xpAccruing), bo obie strony nowego podziału nagród (heartbeat vs lump sum niżej) go
+  // potrzebują.
+  const isSharedTick = phase !== undefined;
+  // Credits XP for time spent in this room via the per-minute heartbeat (no-op in the lobby or
+  // signed out) — see supabase/migrations/0010_xp.sql and 0014_timer_xp_rate.sql. Only for rooms
+  // with no fixed pomodoro cycle (Timer Room/Shop, `isSharedTick` false): a pomodoro room instead
+  // pays its whole session's XP/coins in one lump sum on the work→break transition below (see
+  // supabase/migrations/0026_room_session_reward.sql) — `xpRunning` still gates the Timer Room's
+  // own stopwatch-running condition. Own XP then updates live via useMyProfile's Realtime sub.
+  const xpAccruing = !isSharedTick && xpRunning && (roomPhase === null || roomPhase === "work");
   // Work → break transition (this room only, never the lobby itself, which has no `phase`):
   // shows a "Congratulations" screen for CONGRATS_MS, then sends everyone in the room back to
-  // the lobby. `roomPhase` is a pure function of the server clock (see getTimerState), so every
-  // client watching the same room sees the transition at the same instant without needing a
-  // server broadcast for it.
+  // the lobby, and (pomodoro rooms only) pays out the whole session's XP/coins in one lump sum —
+  // see room_session_complete's doc comment in supabase/migrations/0026_room_session_reward.sql
+  // for why this can't be claimed for a cycle you weren't actually present for. `roomPhase` is a
+  // pure function of the server clock (see getTimerState), so every client watching the same room
+  // sees the transition — and computes the same `cycle` number — at the same instant, without
+  // needing a server broadcast for either.
   const prevRoomPhaseRef = useRef<Phase | null>(null);
   const [showCongrats, setShowCongrats] = useState(false);
   useEffect(() => {
     const prev = prevRoomPhaseRef.current;
     prevRoomPhaseRef.current = roomPhase;
-    if (prev === "work" && roomPhase === "break") setShowCongrats(true);
+    if (prev !== "work" || roomPhase !== "break") return;
+    setShowCongrats(true);
+    if (isSharedTick && userId && phase && serverNow !== null) {
+      const cycle = getTimerState(serverNow, phase).cycle;
+      const dXp = xpForMinutes(phase.workMin);
+      const dCoins = coinsForMinutes(phase.workMin);
+      void getSupabase()
+        ?.rpc("room_session_complete", { p_room: roomSlug, p_cycle: cycle })
+        .then(({ data, error }) => {
+          if (error) {
+            console.error("room_session_complete", error);
+            return;
+          }
+          const row = (Array.isArray(data) ? data[0] : data) as { credited: boolean } | undefined;
+          // `credited` false means this cycle was already paid out for this account (e.g. a
+          // reconnect firing the effect twice) — no popup, no rebroadcast, nothing double-paid.
+          if (!row?.credited) return;
+          triggerReward("me", dCoins, dXp);
+          channelRef.current?.send({
+            type: "broadcast",
+            event: "reward",
+            payload: { k: keyRef.current, coins: dCoins, xp: dXp },
+          });
+        });
+    }
   }, [roomPhase]);
   useEffect(() => {
     if (!showCongrats) return;
@@ -586,6 +620,22 @@ export function RoomStage({
     }, CONGRATS_MS);
     return () => clearTimeout(timer);
   }, [showCongrats, roomSlug, router]);
+  // Explicit "Leave room" button (see JSX below) — the only way out of a pomodoro room during its
+  // "work" phase now that movement (and so the walk-to-the-exit-zone E-hold flow) is frozen for
+  // the whole phase (see AGENTS.md's realtime-server section / isFrozen in
+  // realtime-server/src/server.ts). Confirms first when leaving would forfeit the session's
+  // reward — during "work" itself, since the lump sum only ever pays out on the work→break
+  // transition above; leaving during "break" costs nothing, so no confirmation needed then.
+  const handleLeaveRoom = () => {
+    if (isSharedTick && phase && roomPhase === "work") {
+      const ok = window.confirm(
+        `Leaving now forfeits the +${xpForMinutes(phase.workMin)} XP and +${coinsForMinutes(phase.workMin)} coins for this work session. Leave anyway?`,
+      );
+      if (!ok) return;
+    }
+    window.sessionStorage.setItem(SPAWN_FROM_KEY, roomSlug);
+    router.push("/");
+  };
 
   const stageRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -628,9 +678,9 @@ export function RoomStage({
   // Poprzednie totale z heartbeatu (useStudyXp) — do wyliczenia delty przy kolejnym tick-u; null
   // dopóki nie przyszedł pierwszy (p_reset) heartbeat, który tylko synchronizuje zegar.
   const prevStudyRef = useRef<{ xp: number; coins: number } | null>(null);
-  // Pokój bez `phase` (Timer Room, patrz src/components/TimerRoom.tsx) ma indywidualny stoper —
-  // tick nagrody widzi tylko właściciel, nie jest rozgłaszany do innych w pokoju.
-  const isSharedTick = phase !== undefined;
+  // isSharedTick is defined earlier (next to xpAccruing) — this heartbeat path is now only ever
+  // "running" (xpAccruing true) for the Timer Room, where isSharedTick is always false, so the
+  // broadcast below never actually fires for a pomodoro room's own lump-sum reward.
   useStudyXp(roomSlug, xpAccruing, (u, credited) => {
     const prev = prevStudyRef.current;
     prevStudyRef.current = { xp: u.xp, coins: u.coins };
@@ -678,6 +728,12 @@ export function RoomStage({
   // handler below), never predicted locally: unlike movement, there's nothing useful to predict
   // here, and the server is broadcasting at BROADCAST_MS anyway.
   const [myHp, setMyHp] = useState(MAX_HP);
+  // Fire stamina — same "server broadcasts, we just display" rule as myHp above, for the green
+  // meter under the health bar (see the JSX below). `myStaminaMax` isn't STAMINA_MAX: it's this
+  // connection's own stats.staminaMax (see PlayerState.staminaMax's doc comment in
+  // realtime-server/shared/types.ts), which a future character/item bonus can raise per player.
+  const [myStamina, setMyStamina] = useState(STAMINA_MAX);
+  const [myStaminaMax, setMyStaminaMax] = useState(STAMINA_MAX);
   const [myRespawnAt, setMyRespawnAt] = useState(0);
   /** Mirrors PlayerState.immuneUntil for the rAF tick loop below (see its `person.style.opacity`
    * line) — that loop reads refs every frame instead of depending on React state/re-renders. */
@@ -860,12 +916,12 @@ export function RoomStage({
     let dashTeleported = false;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
-    // Mirrors the server's own salvo state (see Conn.shotsFired/fireCooldownUntil in
-    // realtime-server/src/server.ts) — without this, our own predicted preview kept showing
-    // unlimited shots on spam while the server (and everyone else) only ever confirmed
-    // MAX_BALLS_PER_PLAYER of them per burst.
-    let shotsFired = 0;
-    let fireCooldownUntil = 0;
+    // Mirrors the server's own stamina state (see currentStamina()/Conn.staminaAt in
+    // realtime-server/src/server.ts) — without this, our own predicted preview kept showing shots
+    // the server would actually refuse. Regenerated every frame in tick() (STAMINA_REGEN_PER_SEC),
+    // spent in release() below, and resynced to the authoritative value on every "state" broadcast
+    // (see setMyStamina above) so small drift never accumulates.
+    let predictedStamina = STAMINA_MAX;
     // Wejście do pokoju: trzymając E w jego kwadracie przez ROOM_ENTER_MS, wchodzimy na jego stronę.
     let eDown = false;
     // Jeśli E zostało wciśnięte jeszcze w poprzednim pokoju, ignorujemy je, dopóki nie przyjdzie keyup.
@@ -1007,6 +1063,13 @@ export function RoomStage({
             serverMe = { x: p.x, y: p.y, d: p.d, gx: p.gx, gy: p.gy, gd: p.gd };
             serverDirPending = true;
             setMyHp(p.hp);
+            setMyStamina(p.stamina);
+            setMyStaminaMax(p.staminaMax);
+            // Resyncs the local predicted mirror (see predictedStamina below) to the server's own
+            // value on every broadcast, same reasoning as shotsFired used to need for the old
+            // salvo model: without this, small client/server clock drift over a long session would
+            // slowly desync when this player's own fire actually gets refused.
+            predictedStamina = p.stamina;
             setMyRespawnAt(p.respawnAt);
             myRespawnAtRef.current = p.respawnAt;
             myDead = p.respawnAt > 0;
@@ -1128,14 +1191,13 @@ export function RoomStage({
       const p = Math.min(1, chargeMs / CHARGE_MS);
       chargeStart = null;
       if (!activeRef.current) return;
-      // Same salvo rule the server enforces (MAX_BALLS_PER_PLAYER shots, then FIRE_COOLDOWN_MS —
-      // see the "fire" handler in realtime-server/src/server.ts): once our own cooldown is up,
-      // this release doesn't actually fire — no predicted ball, no message, no shot count — but
+      // Same stamina rule the server enforces (see currentStamina()/the "fire" handler in
+      // realtime-server/src/server.ts): once our own predicted pool can't cover the cost, this
+      // release doesn't actually fire — no predicted ball, no message, no stamina spent — but
       // still clears the charging halo below, same as a real shot would. Without this, spamming
       // fire kept adding unlimited local predicted balls while the server (and everyone else)
-      // only ever confirmed MAX_BALLS_PER_PLAYER of them per burst.
-      const now = performance.now();
-      const firing = !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || now >= fireCooldownUntil);
+      // only ever confirmed shots this connection could actually afford.
+      const firing = !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || predictedStamina >= STAMINA_COST_PER_SHOT);
       if (firing) {
         if (REALTIME_SERVER_URL) {
           // Faza F4: the server decides the real ball (chargeMs capped to what it actually saw
@@ -1149,11 +1211,8 @@ export function RoomStage({
             const fire: ClientMessage = { type: "fire", chargeMs };
             ws.send(JSON.stringify(fire));
           }
-          shotsFired += 1;
-          if (shotsFired >= MAX_BALLS_PER_PLAYER) {
-            shotsFired = 0;
-            fireCooldownUntil = now + FIRE_COOLDOWN_MS;
-          }
+          predictedStamina -= STAMINA_COST_PER_SHOT;
+          setMyStamina(predictedStamina);
         } else {
           launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
         }
@@ -1400,6 +1459,13 @@ export function RoomStage({
     const tick = (t: number) => {
       const dt = Math.min((t - last) / 1000, 0.05);
       last = t;
+      // Continuous local regen mirroring currentStamina() server-side (see STAMINA_REGEN_PER_SEC's
+      // doc comment in realtime-shared/constants.ts) — resynced to the authoritative value on
+      // every "state" broadcast (see setMyStamina above), so this only ever has to be right for
+      // the ~50ms between broadcasts, not for a whole session.
+      if (REALTIME_SERVER_URL && predictedStamina < STAMINA_MAX) {
+        predictedStamina = Math.min(STAMINA_MAX, predictedStamina + dt * STAMINA_REGEN_PER_SEC);
+      }
       // Pozycja wczytana z bazy zastępuje losowy start.
       const spawn = spawnRef.current;
       if (spawn) {
@@ -2193,6 +2259,15 @@ export function RoomStage({
         {entryError}
       </div>
     )}
+    {isSharedTick && (
+      <button
+        type="button"
+        onClick={handleLeaveRoom}
+        className="fixed bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full bg-zinc-900/90 px-4 py-2 text-sm font-medium text-white shadow-lg hover:bg-zinc-800 dark:bg-zinc-100/95 dark:text-zinc-900 dark:hover:bg-white"
+      >
+        Leave room
+      </button>
+    )}
     {REALTIME_SERVER_URL && (
       <div
         role="meter"
@@ -2200,11 +2275,26 @@ export function RoomStage({
         aria-valuemin={0}
         aria-valuemax={MAX_HP}
         aria-valuenow={myHp}
-        className="pointer-events-none fixed bottom-4 right-4 z-20 h-3 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
+        className="pointer-events-none fixed bottom-9 right-4 z-20 h-3 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
       >
         <div
           className="h-full rounded-full bg-red-600 transition-[width]"
           style={{ width: `${(Math.max(0, myHp) / MAX_HP) * 100}%` }}
+        />
+      </div>
+    )}
+    {REALTIME_SERVER_URL && (
+      <div
+        role="meter"
+        aria-label="Stamina"
+        aria-valuemin={0}
+        aria-valuemax={myStaminaMax}
+        aria-valuenow={Math.round(myStamina)}
+        className="pointer-events-none fixed bottom-4 right-4 z-20 h-2 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
+      >
+        <div
+          className="h-full rounded-full bg-green-500 transition-[width]"
+          style={{ width: `${(Math.max(0, myStamina) / myStaminaMax) * 100}%` }}
         />
       </div>
     )}

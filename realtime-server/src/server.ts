@@ -132,10 +132,14 @@ type Conn = {
   // claimed `chargeMs` to what actually elapsed here, not to what the client claims elapsed.
   chargeStartAt: number | null;
   meleeCooldownUntil: number;
-  // Salvo state for `fire` — see its handler above. `shotsFired` counts up to
-  // stats.maxProjectiles, then resets to 0 the same moment fireCooldownUntil is set.
-  fireCooldownUntil: number;
-  shotsFired: number;
+  // Stamina (fire-rate) state — see currentStamina() and the "fire" handler below, and
+  // STAMINA_MAX's doc comment in shared/constants.ts for the model. `staminaAt` is the stamina
+  // value *as of* `staminaUpdatedAt`, not the live value — currentStamina() projects it forward
+  // from there. Only ever written at a `fire` (spend) or a reconnect resume (carried forward like
+  // hp/respawnAt/immuneUntil below), never on a per-tick timer — that's what keeps this O(1) per
+  // event instead of a regen loop over every connection every tick.
+  staminaAt: number;
+  staminaUpdatedAt: number;
   // Normally always stats.moveSpeed — only ever different when DEV_OVERRIDES_ENABLED and the
   // client sent an `input.speedOverride` (admin panel), see the "input" handler below.
   speed: number;
@@ -174,6 +178,18 @@ function isDead(conn: Conn): boolean {
  */
 function isFrozen(conn: Conn): boolean {
   return getRoomPhase(conn.roomSlug, Date.now()) === "work";
+}
+
+/**
+ * This connection's fire stamina *right now*, projected forward from the last time it was
+ * actually written (`staminaAt`/`staminaUpdatedAt`) instead of ticked every server frame — see the
+ * `Conn.staminaAt` doc comment and STAMINA_MAX's in shared/constants.ts. Cheap at any connection
+ * count: called only from the "fire" handler (to spend) and the broadcast loop (to report), never
+ * from the tick loop.
+ */
+function currentStamina(conn: Conn, now: number): number {
+  const elapsedSec = Math.max(0, now - conn.staminaUpdatedAt) / 1000;
+  return Math.min(conn.stats.staminaMax, conn.staminaAt + elapsedSec * conn.stats.staminaRegenPerSec);
 }
 
 const rooms = new Map<string, Set<Conn>>();
@@ -431,7 +447,19 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
     pendingRemoval.delete(key);
   }
   let resumeFrom:
-    | { x: number; y: number; d: Dir; hp: number; respawnAt: number; immuneUntil: number; gx: number; gy: number; gd: Dir }
+    | {
+        x: number;
+        y: number;
+        d: Dir;
+        hp: number;
+        respawnAt: number;
+        immuneUntil: number;
+        gx: number;
+        gy: number;
+        gd: Dir;
+        staminaAt: number;
+        staminaUpdatedAt: number;
+      }
     | null = null;
   const targetSet = rooms.get(verified.roomSlug);
   if (targetSet) {
@@ -453,6 +481,8 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
           gx: other.gx,
           gy: other.gy,
           gd: other.gd,
+          staminaAt: other.staminaAt,
+          staminaUpdatedAt: other.staminaUpdatedAt,
         };
         targetSet.delete(other);
         break;
@@ -513,6 +543,11 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.hp = resumeFrom?.hp ?? MAX_HP;
   conn.respawnAt = resumeFrom?.respawnAt ?? 0;
   conn.immuneUntil = resumeFrom?.immuneUntil ?? 0;
+  // Same "only a reconnect-ghost resume carries this forward" rule as hp/respawnAt/immuneUntil —
+  // a fresh life (or a saved-position load, which never had a live Conn to read stamina from)
+  // just starts full, same as a brand-new connection.
+  conn.staminaAt = resumeFrom?.staminaAt ?? conn.stats.staminaMax;
+  conn.staminaUpdatedAt = resumeFrom?.staminaUpdatedAt ?? Date.now();
   const resolved = resumeFrom ?? loaded;
   // Same "only a reconnect-ghost resume carries this forward" rule as hp/respawnAt/immuneUntil
   // above — the fallback (conn.x/y/d) is filled in by the branch below, run right after.
@@ -587,8 +622,8 @@ wss.on("connection", (ws, req) => {
     dashTeleported: true,
     chargeStartAt: null,
     meleeCooldownUntil: 0,
-    fireCooldownUntil: 0,
-    shotsFired: 0,
+    staminaAt: stats.staminaMax,
+    staminaUpdatedAt: Date.now(),
     speed: stats.moveSpeed,
     stats,
     hp: MAX_HP,
@@ -664,20 +699,18 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "fire") {
       if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
-      // Salvo, not a per-shot cooldown: stats.maxProjectiles shots come out back to back (same
-      // number pushBall's in-flight cap uses), and only once that many have been fired does
-      // stats.fireCooldownMs start — then the counter resets and the next burst is free again.
-      if (now < conn.fireCooldownUntil) return;
+      // Stamina, not a salvo cooldown — see currentStamina() and STAMINA_MAX's doc comment in
+      // shared/constants.ts. A shot is refused outright (not queued/partial) when the pool can't
+      // cover its cost; concurrent-in-flight is still separately capped by pushBall/maxProjectiles.
+      const stamina = currentStamina(conn, now);
+      if (stamina < conn.stats.staminaCostPerShot) return;
       const elapsed = conn.chargeStartAt !== null ? now - conn.chargeStartAt : 0;
       const claimed = typeof msg.chargeMs === "number" && Number.isFinite(msg.chargeMs) ? msg.chargeMs : 0;
       const chargeMs = Math.max(0, Math.min(CHARGE_MS, Math.min(elapsed, claimed)));
       conn.chargeStartAt = null;
       spawnBall(conn, chargeMs / CHARGE_MS);
-      conn.shotsFired += 1;
-      if (conn.shotsFired >= conn.stats.maxProjectiles) {
-        conn.shotsFired = 0;
-        conn.fireCooldownUntil = now + conn.stats.fireCooldownMs;
-      }
+      conn.staminaAt = stamina - conn.stats.staminaCostPerShot;
+      conn.staminaUpdatedAt = now;
       return;
     }
     if (msg.type === "strike") {
@@ -904,6 +937,7 @@ setInterval(() => {
 }, TICK_MS);
 
 setInterval(() => {
+  const now = Date.now();
   for (const [slug, set] of rooms) {
     const players: PlayerState[] = [...set].map((c) => ({
       id: c.id,
@@ -919,6 +953,8 @@ setInterval(() => {
       gx: c.gx,
       gy: c.gy,
       gd: c.gd,
+      stamina: currentStamina(c, now),
+      staminaMax: c.stats.staminaMax,
     }));
     const balls = roomBalls.get(slug) ?? [];
     // Drained, not cumulative — each hit is only ever sent once (Faza F3).
