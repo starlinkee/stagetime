@@ -2,12 +2,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RoomStage, type RoomZone } from "@/components/RoomStage";
 import { EXIT_ZONE } from "@/lib/rooms";
+import { SCREEN_W } from "@realtime-shared/constants";
 
 const ZONE_W = 200;
 const ZONE_H = 150;
 const ZONE_GAP = 60;
 const ZONE_Y = 620;
-const WORLD_W = 1600;
+const WORLD_W = SCREEN_W;
 
 /** mm:ss dla czasu, który upływa (w odróżnieniu od formatMs liczącego w dół — tu bez zaokrąglania w górę). */
 function formatElapsed(ms: number): string {
@@ -41,6 +42,18 @@ export function TimerRoom({ roomSlug }: { roomSlug: string }) {
   }, [running]);
 
   const currentMs = running && startedAt !== null ? elapsedMs + (now - startedAt) : elapsedMs;
+  const elapsedLabel = formatElapsed(currentMs);
+
+  // Pokazuje upływający czas w tytule karty, żeby było go widać bez przełączania się na tę kartę
+  // (STU-7) — tylko gdy stoper faktycznie liczy, i tylko przy zmianie wyświetlanej sekundy.
+  useEffect(() => {
+    document.title = running ? `${elapsedLabel} — StudyQuest.Party` : "StudyQuest.Party";
+  }, [elapsedLabel, running]);
+  useEffect(() => {
+    return () => {
+      document.title = "StudyQuest.Party";
+    };
+  }, []);
 
   // Wszystkie akcje przyjmują `at` — chwilę NACIŚNIĘCIA E (RoomStage.onZoneAction), a nie
   // potwierdzenia po roomEnterMs() później. Inaczej np. pauza doliczałaby do wyniku cały czas

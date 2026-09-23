@@ -1,4 +1,5 @@
 "use client";
+import { useEffect } from "react";
 import { formatMs, getTimerState, type PomodoroRoomConfig } from "@/lib/timer";
 import { useServerNow } from "@/lib/useServerClock";
 
@@ -24,11 +25,26 @@ function Counter({
 
 export function RoomTimer({ room }: { room: PomodoroRoomConfig }) {
   const now = useServerNow();
+  const s = now === null ? null : getTimerState(now, room);
+  const remainingLabel = s ? formatMs(s.remainingMs) : null;
+  const isWork = s?.phase === "work";
 
-  if (now === null) return <p className="text-zinc-400">Syncing clock…</p>;
+  // Pokazuje pozostały czas fazy w tytule karty, żeby było go widać bez przełączania się na tę
+  // kartę (STU-7) — tylko przy zmianie wyświetlanej sekundy, nie co tick zegara (250ms). Reset
+  // tytułu w osobnym efekcie (tylko przy odmontowaniu), żeby nie migać nim przy każdej sekundzie.
+  // Hooki muszą biec przed ewentualnym wczesnym returnem (rules-of-hooks) — stąd `s` może być null.
+  useEffect(() => {
+    if (!remainingLabel) return;
+    document.title = `${remainingLabel} · ${isWork ? "Work" : "Break"} — StudyQuest.Party`;
+  }, [remainingLabel, isWork]);
+  useEffect(() => {
+    return () => {
+      document.title = "StudyQuest.Party";
+    };
+  }, []);
 
-  const s = getTimerState(now, room);
-  const isWork = s.phase === "work";
+  if (!s) return <p className="text-zinc-400">Syncing clock…</p>;
+
   const progress = 1 - s.remainingMs / s.phaseMs;
   const workMs = room.workMin * 60_000;
   const breakMs = room.breakMin * 60_000;
