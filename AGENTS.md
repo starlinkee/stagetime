@@ -79,6 +79,32 @@ Broadcast, bez żadnej wspólnej, autorytatywnej prawdy. Kierunek docelowy (usta
 zależność od Vercel jako miejsca liczenia stanu rozgrywki — klient ma z czasem odpowiadać
 wyłącznie za wygląd (rendering/animacje), nie za wynik.
 
+### Deploy: Vercel jest już podpięty pod `git push` — nie wołaj `vercel --prod` ręcznie
+Projekt Vercel ma **aktywną integrację z GitHubiem** na branchu `main`: sam `git push origin main`
+już wywołuje deploy na produkcję (alias `stagetime-git-main-…`). Ręczne odpalenie `vercel --prod`
+po takim pushu ściga się z tym automatycznym deployem o ten sam `deploymentId` i **zawsze przegrywa**.
+
+Powtarzający się błąd, który to sygnalizuje:
+```
+A deployment with the user-configured deploymentId "<12-znakowy-sha>" already exists in this
+project. User-configured deployment IDs must be unique per project.
+```
+`deploymentId` (`next.config.ts`, ok. linii 6–13) to celowo pierwsze 12 znaków
+`VERCEL_GIT_COMMIT_SHA` — to jest `VersionWatcher` (klient porównuje go z `/api/version` i
+przeładowuje się, gdy wykryje nowszy build). Skoro ID zależy 1:1 od hasha commita, drugi deploy
+tego samego commita (ręczny CLI albo retry) zawsze koliduje z tym, co integracja GitHub już
+zdążyła wdrożyć.
+
+**Co robić:**
+- Normalny deploy na prod = zwykły `git push origin main`. Nic więcej nie trzeba odpalać.
+- Jeśli mimo braku zmian w kodzie trzeba wymusić nowy deploy ("redeploy tego samego commita"), nie
+  walcz z `vercel --prod --force` (to nie pomaga, bo kolizja jest po `deploymentId`, nie po cache) —
+  zrób pusty commit i wypchnij go: `git commit --allow-empty -m "..." && git push origin main`.
+  Nowy sha → nowy `deploymentId` → integracja GitHub sama zdeployuje.
+- `realtime-server/` na Fly.io to osobny mechanizm, bez tego problemu — `fly deploy` z
+  `realtime-server/` zawsze idzie bezpośrednio na `studyquest`, nie ma tam integracji git ani
+  kolizji ID. Fly **nie ma** dziś osobnego env preview/staging — jeden `fly.toml`, jedna appka.
+
 ## Instrukcje dla Asystenta AI przy generowaniu kodu w tym repo
 1. Nie zakładaj `/client` `/server` `/shared` ani Colyseus — to nie istnieje w tym repo.
 2. Nową mechanikę ruchu/walki/współdzielonego stanu zacznij od typów/stałych w
