@@ -18,6 +18,10 @@ import {
   DMG_MAX,
   DMG_MIN,
   EXIT_ZONE,
+  HITBOX_H,
+  HITBOX_OFFSET_X,
+  HITBOX_OFFSET_Y,
+  HITBOX_W,
   HIT_PAD,
   IMMUNITY_MS,
   MAX_HP,
@@ -874,8 +878,8 @@ setInterval(() => {
         // Dead (mid-respawn-countdown) or still immune — untargetable, same as owner: the ball/
         // hitbox passes through instead of being consumed by a hit that can't do anything.
         if (isDead(conn) || now < conn.immuneUntil) continue;
-        const nx = Math.max(conn.x - HIT_PAD, Math.min(b.x, conn.x + PERSON_W + HIT_PAD));
-        const ny = Math.max(conn.y - HIT_PAD, Math.min(b.y, conn.y + PERSON_H + HIT_PAD));
+        const nx = Math.max(conn.x + HITBOX_OFFSET_X - HIT_PAD, Math.min(b.x, conn.x + HITBOX_OFFSET_X + HITBOX_W + HIT_PAD));
+        const ny = Math.max(conn.y + HITBOX_OFFSET_Y - HIT_PAD, Math.min(b.y, conn.y + HITBOX_OFFSET_Y + HITBOX_H + HIT_PAD));
         if (Math.hypot(b.x - nx, b.y - ny) <= b.r) {
           target = conn;
           break;

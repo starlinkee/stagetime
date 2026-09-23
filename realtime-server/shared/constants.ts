@@ -9,8 +9,8 @@ import type { CharacterStats } from "./types";
 
 export const SCREEN_W = 1366;
 export const SCREEN_H = 768;
-export const PERSON_W = 32;
-export const PERSON_H = 48;
+export const PERSON_W = 64;
+export const PERSON_H = 96;
 export const TAG_H = 26;
 
 /** World units per second — matches DEFAULT_ADMIN_SETTINGS.playerSpeed in src/lib/adminSettings.ts. */
@@ -91,18 +91,29 @@ export const DASH_TELEPORT_AT_MS = DASH_MS / 2;
 /** Dash cooldown is 4x the roll cooldown. */
 export const DASH_COOLDOWN_MS = ROLL_COOLDOWN_MS * 4;
 /** Charged-ball radius range — interpolated by charge fraction (0..1). */
-export const ORB_R_MIN = 5;
-export const ORB_R_MAX = 30;
+export const ORB_R_MIN = 10;
+export const ORB_R_MAX = 60;
 /** Thrown-ball flight speed, px/s. */
 export const BALL_SPEED = 520;
 /** Melee (fist swing, key 1): short reach, no charge, hits immediately on press. */
-export const STRIKE_REACH = 22;
-export const STRIKE_R = 20;
+export const STRIKE_REACH = 44;
+export const STRIKE_R = 40;
 export const STRIKE_MS = 150;
 /** Cooldown between melee swings. */
 export const STRIKE_COOLDOWN_MS = 260;
 /** Character hitbox padding used by ball/melee collision checks. */
-export const HIT_PAD = 4;
+export const HIT_PAD = 8;
+/**
+ * Combat hitbox (ball/melee collision only) — narrower and shorter than the full
+ * PERSON_W x PERSON_H box, which stays the movement footprint (world clamp, zone overlap, spawn
+ * centering) and sprite scale unchanged. Centered within that box so a thrown ball only connects
+ * with the character's visible silhouette instead of its whole walking footprint. Must match
+ * RoomStage.tsx's `hits()` exactly, same as PERSON_W/PERSON_H above.
+ */
+export const HITBOX_W = PERSON_W / 2;
+export const HITBOX_H = PERSON_H * 0.8;
+export const HITBOX_OFFSET_X = (PERSON_W - HITBOX_W) / 2;
+export const HITBOX_OFFSET_Y = (PERSON_H - HITBOX_H) / 2;
 /**
  * Concurrent projectiles/melee hitboxes allowed per player at once — the anti-spam mechanism
  * called for in docs/combat_sync_plan.md Faza F3 (resolves open question 3 in that doc: chosen

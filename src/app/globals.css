@@ -93,6 +93,15 @@ body {
 }
 .pp-reward { animation: pp-reward 1.4s ease-out forwards; }
 
+/* Dymek czatu (nad postacią i toast z kanału "all"): trzyma się pełną jasność, po czym płynnie
+   gaśnie w ostatniej sekundzie życia. Czas trwania MUSI się zgadzać z BUBBLE_MS w RoomStage.tsx
+   (6000ms) — to ten sam "czas fadingu", do którego user-facing kopia ("Tab: room/all") się odwołuje. */
+@keyframes chat-fade {
+  0%, 83% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.chat-fade { animation: chat-fade 6s ease-in forwards; }
+
 /* Podświetlenie przycisku "Sign in with Discord" (STU-21): pulsujący glow, żeby przyciągał wzrok
    osób grających jako gość ("[no-name]") zamiast ginąć obok reszty nagłówka. */
 @keyframes discord-pulse {
