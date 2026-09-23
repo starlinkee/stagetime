@@ -93,11 +93,17 @@ Powtarzający się błąd, który to sygnalizuje:
 A deployment with the user-configured deploymentId "<12-znakowy-sha>" already exists in this
 project. User-configured deployment IDs must be unique per project.
 ```
-`deploymentId` (`next.config.ts`, ok. linii 6–13) to celowo pierwsze 12 znaków
-`VERCEL_GIT_COMMIT_SHA` — to jest `VersionWatcher` (klient porównuje go z `/api/version` i
-przeładowuje się, gdy wykryje nowszy build). Skoro ID zależy 1:1 od hasha commita, drugi deploy
-tego samego commita (ręczny CLI albo retry) zawsze koliduje z tym, co integracja GitHub już
-zdążyła wdrożyć.
+`deploymentId` (`next.config.ts`) to `VERCEL_GIT_COMMIT_SHA` (12 znaków), od 2026-09-23 z prefiksem
+`VERCEL_ENV` (`prod-`/`prev-`/`deve-`) — to jest `VersionWatcher` (klient porównuje go z
+`/api/version` i przeładowuje się, gdy wykryje nowszy build). Skoro rdzeń ID nadal zależy 1:1 od
+hasha commita, kolizja wraca za każdym razem, gdy **ten sam commit + to samo środowisko** deployuje
+się dwa razy. Dwie znane przyczyny:
+1. Ręczny `vercel --prod` po tym samym pushu (patrz nagłówek wyżej) — oba deploye to środowisko
+   `production`, więc prefiks ich nie rozróżnia; nie odpalaj `vercel --prod` ręcznie.
+2. **(Naprawione 2026-09-23, było źródłem tego zgłoszenia)** ten sam commit trafiający na `dev` i
+   `main` przez fast-forward merge — Vercel deployuje push na `dev` jako `preview`, a na `main` jako
+   `production`; bez prefiksu środowiska te dwa deploye dzieliły identyczny `deploymentId` mimo
+   różnych środowisk. Prefiks `VERCEL_ENV` to rozróżnia — nie cofaj go z powrotem do gołego hasha.
 
 **Co robić:**
 - Normalny deploy na prod = zwykły `git push origin main`. Nic więcej nie trzeba odpalać.
