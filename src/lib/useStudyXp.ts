@@ -26,7 +26,13 @@ export type StudyXpUpdate = { xp: number; study_seconds: number; coins: number }
  * now and fetches current totals, crediting nothing. Without this, entering a room would credit
  * whatever time had passed since the user's last heartbeat *anywhere* (a different room, or the
  * lobby in between), i.e. free reward for walking in and immediately back out. Only the periodic
- * 60s ticks and visibility-change beats after that credit real elapsed time.
+ * 60s ticks after that credit real elapsed time.
+ *
+ * The first beat *after* the tab comes back from being hidden is also sent with `p_reset: true`
+ * (see STU-20): the server only knows the gap since the last heartbeat it received, and no
+ * heartbeat is sent while hidden (the `beat` guard below), so without this the entire time the
+ * tab was backgrounded would get credited in one lump the moment it's foregrounded again —
+ * exactly the "stacked" reward the tab-switching bug report described.
  */
 const NON_STUDY_ROOMS = new Set(["lobby", "shop"]);
 
@@ -52,11 +58,15 @@ export function useStudyXp(
     if (!sb || !userId || NON_STUDY_ROOMS.has(roomSlug)) return;
     let cancelled = false;
     let isFirstBeat = true;
+    // Set whenever the tab goes hidden; consumed (and cleared) by the next beat, which is always
+    // the one right after the tab becomes visible again — see doc comment above.
+    let pendingReset = false;
 
     const beat = () => {
       if (document.visibilityState !== "visible") return;
-      const p_reset = isFirstBeat;
+      const p_reset = isFirstBeat || pendingReset;
       isFirstBeat = false;
+      pendingReset = false;
       void sb
         .rpc("room_study_heartbeat", { p_room: roomSlug, p_running: running, p_reset })
         .then(({ data, error }) => {
@@ -68,7 +78,13 @@ export function useStudyXp(
 
     beat();
     const interval = running ? setInterval(beat, HEARTBEAT_MS) : null;
-    const onVisibilityChange = () => beat();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        pendingReset = true;
+        return;
+      }
+      beat();
+    };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
