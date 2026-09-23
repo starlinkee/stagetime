@@ -12,7 +12,7 @@ import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { formatMs, getTimerState, type Phase } from "@/lib/timer";
 import { useAccountLock } from "@/lib/useAccountLock";
-import { MAX_BODY, useChat } from "@/lib/useChat";
+import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
 import { safeColor, useMyProfile } from "@/lib/useProfile";
 import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
@@ -30,6 +30,10 @@ import {
   DIRS,
   DIR_OF,
   GHOST_OPACITY,
+  HITBOX_H,
+  HITBOX_OFFSET_X,
+  HITBOX_OFFSET_Y,
+  HITBOX_W,
   HIT_PAD,
   IMMUNE_OPACITY,
   KILL_GOLD_REWARD,
@@ -264,8 +268,8 @@ const toWorldZone = (z: RoomZone, ox: number, oy: number): RoomZone => ({ ...z, 
 
 /** Czy koło (kula) styka się z hitboxem postaci o lewym górnym rogu (px, py). */
 function hits(b: Ball, px: number, py: number) {
-  const nx = Math.max(px - HIT_PAD, Math.min(b.x, px + PERSON_W + HIT_PAD));
-  const ny = Math.max(py - HIT_PAD, Math.min(b.y, py + PERSON_H + HIT_PAD));
+  const nx = Math.max(px + HITBOX_OFFSET_X - HIT_PAD, Math.min(b.x, px + HITBOX_OFFSET_X + HITBOX_W + HIT_PAD));
+  const ny = Math.max(py + HITBOX_OFFSET_Y - HIT_PAD, Math.min(b.y, py + HITBOX_OFFSET_Y + HITBOX_H + HIT_PAD));
   return Math.hypot(b.x - nx, b.y - ny) <= b.r;
 }
 
@@ -472,7 +476,7 @@ function RewardPopup({ coins, xp, id }: { coins: number; xp: number; id: number 
 /** Dymek nad postacią z jej ostatnią wiadomością — znika sam po BUBBLE_MS. */
 function ChatBubble({ text }: { text: string }) {
   return (
-    <div className="absolute bottom-full left-1/2 mb-5 max-w-60 -translate-x-1/2 whitespace-pre-wrap break-words rounded-xl bg-white px-3 py-2 text-center text-sm text-zinc-900 shadow-lg after:absolute after:left-1/2 after:top-full after:-ml-1.5 after:border-4 after:border-transparent after:border-t-white">
+    <div className="chat-fade absolute bottom-full left-1/2 mb-5 max-w-60 -translate-x-1/2 whitespace-pre-wrap break-words rounded-xl bg-white px-3 py-2 text-center text-sm text-zinc-900 shadow-lg after:absolute after:left-1/2 after:top-full after:-ml-1.5 after:border-4 after:border-transparent after:border-t-white">
       {text}
     </div>
   );
@@ -1395,13 +1399,13 @@ export function RoomStage({
         ctx.globalAlpha = 0.75 * f;
         ctx.fillStyle = "#ef4444";
         ctx.beginPath();
-        ctx.roundRect(px, py, PERSON_W, PERSON_H, 8);
+        ctx.roundRect(px + HITBOX_OFFSET_X, py + HITBOX_OFFSET_Y, HITBOX_W, HITBOX_H, 16);
         ctx.fill();
         ctx.globalAlpha = f;
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(px + PERSON_W / 2, py + PERSON_H / 2, 14 + (1 - f) * 26, 0, Math.PI * 2);
+        ctx.arc(px + PERSON_W / 2, py + PERSON_H / 2, 28 + (1 - f) * 52, 0, Math.PI * 2);
         ctx.stroke();
         ctx.globalAlpha = 0.85;
       };
@@ -2145,7 +2149,10 @@ export function RoomStage({
   const [chatDraft, setChatDraft] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const chatInputRef = useRef<HTMLInputElement>(null);
-  const chatAll = useChat(roomSlug, { scope: "all", enabled: chatOpen && chatScope === "all" });
+  // "all" scope subskrybujemy zawsze (nie tylko gdy panel jest otwarty na tej zakładce) — to
+  // źródło danych zarówno dla podglądu w panelu, jak i dla pływających toastów niżej, które mają
+  // pokazywać wiadomości z całego serwera, a nie tylko z pokoju, w którym akurat stoi postać.
+  const chatAll = useChat(roomSlug, { scope: "all" });
   const chatPreview = chatScope === "room" ? chat.messages : chatAll.messages;
   const chatListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -2195,6 +2202,36 @@ export function RoomStage({
   }, [chat.messages, chat.loaded]);
   useEffect(() => {
     const timers = bubbleTimers.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
+
+  // Toasty czatu: wiadomości z kanału "all", pokazywane w tym samym miejscu co panel czatu, gdy
+  // panel jest zamknięty — znikają po BUBBLE_MS, tak jak dymek nad postacią (ten sam czas fadingu,
+  // patrz .chat-fade w globals.css). Dopóki panel jest otwarty, te same wiadomości widać już w
+  // liście czatu w dokładnie tym samym miejscu, więc toasty się chowają — stąd wrażenie, że
+  // najnowsze wiadomości "nakrywają się 1-1" z listą po otwarciu.
+  const [toasts, setToasts] = useState<ChatMessage[]>([]);
+  const toastTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const toastSeenIdsRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!chatAll.loaded) return;
+    const ids = new Set(chatAll.messages.map((m) => m.id));
+    const seen = toastSeenIdsRef.current;
+    toastSeenIdsRef.current = ids;
+    if (!seen) return;
+    for (const m of chatAll.messages) {
+      if (seen.has(m.id)) continue;
+      setToasts((t) => [...t, m]);
+      toastTimers.current[m.id] = setTimeout(() => {
+        setToasts((t) => t.filter((x) => x.id !== m.id));
+        delete toastTimers.current[m.id];
+      }, BUBBLE_MS);
+    }
+  }, [chatAll.messages, chatAll.loaded]);
+  useEffect(() => {
+    const timers = toastTimers.current;
     return () => {
       for (const t of Object.values(timers)) clearTimeout(t);
     };
@@ -2442,6 +2479,35 @@ export function RoomStage({
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
       </div>
     </div>
+    {!chatOpen && toasts.length > 0 && (
+      // Toasty z kanału "all": ta sama pozycja (fixed inset-x-0 bottom-6, ta sama kolumna po
+      // odjęciu pustego miejsca na przełącznik room/all) co lista wiadomości w panelu poniżej —
+      // dzięki temu, gdy panel się otworzy, ostatnia wiadomość ląduje dokładnie tam, gdzie przed
+      // chwilą był jej toast ("nakrywają się 1-1").
+      <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex justify-center px-4">
+        <div className="flex w-full max-w-xl items-end gap-2">
+          {/* Niewidzialny klon przełącznika room/all z panelu niżej — samo utrzymanie tej samej
+              szerokości (a nie zgadywanie px) gwarantuje, że kolumna wiadomości wyląduje dokładnie
+              tam, gdzie w otwartym panelu, niezależnie od fontu/zawartości przycisków. */}
+          <div className="invisible flex shrink-0 flex-col gap-1 rounded-xl p-1 text-xs" aria-hidden>
+            <span className="px-2 py-1.5">Room</span>
+            <span className="px-2 py-1.5">All</span>
+          </div>
+          <div className="flex h-64 flex-1 flex-col justify-end gap-1.5 overflow-hidden p-3 text-sm">
+            {toasts.slice(-6).map((m) => (
+              <p key={m.id} className="chat-fade break-words text-zinc-100 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
+                <span className="mr-1 rounded bg-zinc-800/70 px-1.5 py-0.5 text-xs text-zinc-300">{roomLabel(m.room_slug)}</span>
+                <span className="font-medium text-sky-300">
+                  {m.authorXp !== undefined && <LevelBadge xp={m.authorXp} className="mr-1" />}
+                  {m.author}:{" "}
+                </span>
+                {m.body}
+              </p>
+            ))}
+          </div>
+        </div>
+      </div>
+    )}
     {chatOpen && (
       <div className="pointer-events-none fixed inset-x-0 bottom-6 z-30 flex justify-center px-4">
         <div className="pointer-events-auto flex w-full max-w-xl items-end gap-2">
@@ -2464,15 +2530,15 @@ export function RoomStage({
           <div className="flex flex-1 flex-col gap-2">
             <div
               ref={chatListRef}
-              className="flex h-64 flex-col gap-1.5 overflow-y-auto rounded-xl bg-zinc-900/85 p-3 text-sm shadow-lg backdrop-blur"
+              className="flex h-64 flex-col gap-1.5 overflow-y-auto rounded-xl bg-zinc-900/5 p-3 text-sm shadow-lg backdrop-blur-[1px]"
             >
               {chatPreview.length === 0 ? (
                 <p className="m-auto text-xs text-zinc-500">No messages yet.</p>
               ) : (
                 chatPreview.map((m) => (
-                  <p key={m.id} className="break-words text-zinc-200">
+                  <p key={m.id} className="break-words text-zinc-100 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
                     {chatScope === "all" && (
-                      <span className="mr-1 rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-400">{roomLabel(m.room_slug)}</span>
+                      <span className="mr-1 rounded bg-zinc-800/70 px-1.5 py-0.5 text-xs text-zinc-300">{roomLabel(m.room_slug)}</span>
                     )}
                     <span className="font-medium text-sky-300">
                       {m.authorXp !== undefined && <LevelBadge xp={m.authorXp} className="mr-1" />}
