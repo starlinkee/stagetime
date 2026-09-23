@@ -96,7 +96,7 @@ export function PlayerSprite({
               position: "absolute",
               top: "6%",
               left: "50%",
-              width: "48%",
+              width: "24%",
               transform: "translate(-50%, -55%)",
               pointerEvents: "none",
             }}
