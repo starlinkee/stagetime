@@ -1,6 +1,7 @@
 "use client";
-import { useEffect } from "react";
-import { formatMs, getTimerState, type PomodoroRoomConfig } from "@/lib/timer";
+import { useEffect, useRef } from "react";
+import { playSessionEndChime } from "@/lib/chime";
+import { formatMs, getTimerState, type Phase, type PomodoroRoomConfig } from "@/lib/timer";
 import { useServerNow } from "@/lib/useServerClock";
 
 function Counter({
@@ -42,6 +43,15 @@ export function RoomTimer({ room }: { room: PomodoroRoomConfig }) {
       document.title = "StudyQuest.Party";
     };
   }, []);
+
+  // Dźwięk gdy sesja pracy się kończy (STU-24) — tylko na przejściu work -> break, nie przy
+  // pierwszym renderze (prevPhaseRef zaczyna jako null, więc wejście w trakcie przerwy nie gra).
+  const phase: Phase | null = s?.phase ?? null;
+  const prevPhaseRef = useRef<Phase | null>(null);
+  useEffect(() => {
+    if (prevPhaseRef.current === "work" && phase === "break") playSessionEndChime();
+    prevPhaseRef.current = phase;
+  }, [phase]);
 
   if (!s) return <p className="text-zinc-400">Syncing clock…</p>;
 
