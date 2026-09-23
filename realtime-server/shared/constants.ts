@@ -104,16 +104,6 @@ export const STRIKE_COOLDOWN_MS = 260;
 /** Character hitbox padding used by ball/melee collision checks. */
 export const HIT_PAD = 4;
 /**
- * Concurrent projectiles/melee hitboxes allowed per player at once — the anti-spam mechanism
- * called for in docs/combat_sync_plan.md Faza F3 (resolves open question 3 in that doc: chosen
- * per-player rather than per-room, since it composes with MAX_PLAYERS_PER_ROOM to give an
- * implicit room-wide ceiling — 50 players x 3 balls — without a second, redundant counter).
- * This is a *default*, not a hardcoded ceiling: it's the `maxProjectiles` every connection starts
- * with in `DEFAULT_CHARACTER_STATS` below, which an item or character choice can later raise per
- * connection (see `Conn.stats` in server.ts).
- */
-export const MAX_BALLS_PER_PLAYER = 3;
-/**
  * Stamina (fire-rate) model, replacing the old flat "N shots then a hard 1.8s wait" salvo
  * cooldown: a connection has a pool of `STAMINA_MAX` units that drains by `STAMINA_COST_PER_SHOT`
  * per shot and regenerates continuously at `STAMINA_REGEN_PER_SEC` units/sec — no per-tick loop
@@ -122,13 +112,16 @@ export const MAX_BALLS_PER_PLAYER = 3;
  * needed (a `fire` message, or a broadcast) — that's what keeps this cheap at hundreds of
  * concurrent fighters, not a per-connection regen tick.
  * Chosen so the numbers still land on the old feel: STAMINA_MAX / STAMINA_COST_PER_SHOT = 3 shots
- * from a full bar (matches the old MAX_BALLS_PER_PLAYER-shot salvo), and a full bar refills in
- * 1.8s (matches the old FIRE_COOLDOWN_MS) — except now that's smooth/continuous instead of
- * empty-then-suddenly-full, so evenly-spaced taps (one shot every
- * STAMINA_COST_PER_SHOT / STAMINA_REGEN_PER_SEC = 0.6s) can go on forever instead of only ever
- * coming in bursts of 3. Also just defaults — see `DEFAULT_CHARACTER_STATS`; a future character
- * choice or item can raise any of the three per connection (bigger pool, cheaper shots, faster
- * regen) without this code changing.
+ * from a full bar (matches the old salvo), and a full bar refills in 1.8s (matches the old
+ * FIRE_COOLDOWN_MS) — except now that's smooth/continuous instead of empty-then-suddenly-full, so
+ * evenly-spaced taps (one shot every STAMINA_COST_PER_SHOT / STAMINA_REGEN_PER_SEC = 0.6s) go on
+ * forever, at that exact cadence. Stamina is the *only* gate on fire rate — there used to be a
+ * second, independently-tuned concurrent-in-flight ball cap here too, which could silently drop a
+ * shot the stamina bar said was fine (the bar has no idea how many of your balls are still flying);
+ * it was removed rather than kept in sync, since two limits that must always agree is itself the
+ * bug. Also just defaults — see `DEFAULT_CHARACTER_STATS`; a future character choice or item can
+ * raise any of the three per connection (bigger pool, cheaper shots, faster regen) without this
+ * code changing.
  */
 export const STAMINA_MAX = 180;
 export const STAMINA_COST_PER_SHOT = 60;
@@ -142,7 +135,6 @@ export const STAMINA_REGEN_PER_SEC = STAMINA_MAX / 1.8;
  */
 export const DEFAULT_CHARACTER_STATS: CharacterStats = {
   moveSpeed: DEFAULT_PLAYER_SPEED,
-  maxProjectiles: MAX_BALLS_PER_PLAYER,
   staminaMax: STAMINA_MAX,
   staminaCostPerShot: STAMINA_COST_PER_SHOT,
   staminaRegenPerSec: STAMINA_REGEN_PER_SEC,

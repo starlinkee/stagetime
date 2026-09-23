@@ -236,19 +236,10 @@ function leaveRoom(conn: Conn) {
 
 let nextBallId = 0;
 
-function countOwnedBalls(roomSlug: string, ownerId: string): number {
-  const balls = roomBalls.get(roomSlug);
-  if (!balls) return 0;
-  let n = 0;
-  for (const b of balls) if (b.owner === ownerId) n += 1;
-  return n;
-}
-
-/** Shared by spawnBall/spawnMelee — enforces this connection's own stats.maxProjectiles (Faza
- * F3's anti-spam limit; see MAX_BALLS_PER_PLAYER's doc comment for why this is per-player rather
- * than per-room). */
+/** Shared by spawnBall/spawnMelee. Stamina (see STAMINA_MAX's doc comment in
+ * shared/constants.ts) is the only fire-rate limit — no separate concurrent-in-flight cap here,
+ * so there's nothing that can silently disagree with what the stamina bar shows. */
 function pushBall(conn: Conn, ball: ServerBall) {
-  if (countOwnedBalls(conn.roomSlug, conn.id) >= conn.stats.maxProjectiles) return;
   let balls = roomBalls.get(conn.roomSlug);
   if (!balls) {
     balls = [];
@@ -701,7 +692,7 @@ wss.on("connection", (ws, req) => {
       const now = Date.now();
       // Stamina, not a salvo cooldown — see currentStamina() and STAMINA_MAX's doc comment in
       // shared/constants.ts. A shot is refused outright (not queued/partial) when the pool can't
-      // cover its cost; concurrent-in-flight is still separately capped by pushBall/maxProjectiles.
+      // cover its cost; this is the only fire-rate gate (see pushBall's doc comment).
       const stamina = currentStamina(conn, now);
       if (stamina < conn.stats.staminaCostPerShot) return;
       const elapsed = conn.chargeStartAt !== null ? now - conn.chargeStartAt : 0;

@@ -10,9 +10,6 @@ export type Dir = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export interface CharacterStats {
   /** World units per second. Replaces the old flat DEFAULT_PLAYER_SPEED. */
   moveSpeed: number;
-  /** Concurrent projectiles/melee hitboxes this connection may have in flight at once — see
-   * MAX_BALLS_PER_PLAYER's doc comment in constants.ts for why this is per-player. */
-  maxProjectiles: number;
   /** Full stamina pool this connection's `fire` draws from — see `staminaCostPerShot`/
    * `staminaRegenPerSec` and STAMINA_MAX's doc comment in constants.ts for the model. */
   staminaMax: number;

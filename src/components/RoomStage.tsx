@@ -1196,7 +1196,8 @@ export function RoomStage({
       // release doesn't actually fire — no predicted ball, no message, no stamina spent — but
       // still clears the charging halo below, same as a real shot would. Without this, spamming
       // fire kept adding unlimited local predicted balls while the server (and everyone else)
-      // only ever confirmed shots this connection could actually afford.
+      // only ever confirmed shots this connection could actually afford. Stamina is the only
+      // fire-rate gate (see pushBall's doc comment in server.ts) — nothing else to mirror here.
       const firing = !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || predictedStamina >= STAMINA_COST_PER_SHOT);
       if (firing) {
         if (REALTIME_SERVER_URL) {
@@ -1462,9 +1463,13 @@ export function RoomStage({
       // Continuous local regen mirroring currentStamina() server-side (see STAMINA_REGEN_PER_SEC's
       // doc comment in realtime-shared/constants.ts) — resynced to the authoritative value on
       // every "state" broadcast (see setMyStamina above), so this only ever has to be right for
-      // the ~50ms between broadcasts, not for a whole session.
+      // the ~50ms between broadcasts, not for a whole session. Pushed into React state every frame
+      // too (not just on fire/broadcast) so the visible bar never drifts from the value the fire
+      // gate above actually checks — otherwise a slow frame or a delayed broadcast leaves the bar
+      // showing a stale, higher number than what you can actually spend.
       if (REALTIME_SERVER_URL && predictedStamina < STAMINA_MAX) {
         predictedStamina = Math.min(STAMINA_MAX, predictedStamina + dt * STAMINA_REGEN_PER_SEC);
+        setMyStamina(predictedStamina);
       }
       // Pozycja wczytana z bazy zastępuje losowy start.
       const spawn = spawnRef.current;
@@ -2293,7 +2298,7 @@ export function RoomStage({
         className="pointer-events-none fixed bottom-4 right-4 z-20 h-2 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
       >
         <div
-          className="h-full rounded-full bg-green-500 transition-[width]"
+          className="h-full rounded-full bg-green-500"
           style={{ width: `${(Math.max(0, myStamina) / myStaminaMax) * 100}%` }}
         />
       </div>
