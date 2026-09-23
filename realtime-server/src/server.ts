@@ -71,22 +71,21 @@ const DEV_OVERRIDES_ENABLED = process.env.NODE_ENV !== "production";
 const MIN_DEV_SPEED = 1;
 const MAX_DEV_SPEED = 2000;
 
-// Faza C / C1-C2 (docs/stateful_server_plan.md): fail loud at boot, same as REALTIME_SECRET —
-// a silent (200,200)-spawn/no-persistence fallback here is exactly what made the missing Vercel
-// deployment-protection bypass on the preview branch invisible for days (no boot warning survives
-// scrolling Fly logs, and per-request failures were swallowed too). Local dev without Next.js
-// wired up now needs these two set (see realtime-server/.env.example) rather than silently
-// degrading.
-const PERSISTENCE_API_URL = (() => {
-  const url = process.env.PERSISTENCE_API_URL;
-  if (!url) throw new Error("PERSISTENCE_API_URL is not set");
-  return url;
-})();
-const REALTIME_INTERNAL_SECRET = (() => {
-  const secret = process.env.REALTIME_INTERNAL_SECRET;
-  if (!secret) throw new Error("REALTIME_INTERNAL_SECRET is not set");
-  return secret;
-})();
+// Faza C / C1-C2 (docs/stateful_server_plan.md): unlike REALTIME_SECRET, missing persistence
+// config is NOT fatal — movement/combat (the thing players actually feel) works fine without it,
+// so crash-looping the whole server over a persistence-only misconfiguration would trade a small,
+// contained problem (positions don't save) for a much bigger one (nobody can play). It still needs
+// to be impossible to miss, though — a one-line boot warning is exactly what let this go
+// unnoticed on preview for a while — so PERSISTENCE_ENABLED also gates a loud, *repeating* error
+// folded into the METRICS_INTERVAL_MS snapshot below, not just a one-shot log at boot.
+const PERSISTENCE_API_URL = process.env.PERSISTENCE_API_URL || null;
+const REALTIME_INTERNAL_SECRET = process.env.REALTIME_INTERNAL_SECRET || null;
+const PERSISTENCE_ENABLED = Boolean(PERSISTENCE_API_URL && REALTIME_INTERNAL_SECRET);
+if (!PERSISTENCE_ENABLED) {
+  console.error(
+    "PERSISTENCE_API_URL/REALTIME_INTERNAL_SECRET not set — positions won't be persisted, every spawn is (200,200). This will repeat every METRICS_INTERVAL_MS until fixed.",
+  );
+}
 /** How often (and, at minimum, when) each signed-in player's position is saved — see
  * savePositions/persistPosition below. */
 const SAVE_EVERY_MS = 8_000;
@@ -271,8 +270,9 @@ function withinRateLimit(conn: Conn): boolean {
  * swallowed silently here, which is exactly what hid the preview-branch bug this replaced.
  */
 async function fetchSavedPosition(userId: string, room: string): Promise<{ x: number; y: number; d: Dir } | null> {
+  if (!PERSISTENCE_ENABLED) return null;
   try {
-    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL);
+    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL!);
     url.searchParams.set("userId", userId);
     url.searchParams.set("room", room);
     const res = await fetch(url, { headers: { authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` } });
@@ -293,9 +293,9 @@ async function fetchSavedPosition(userId: string, room: string): Promise<{ x: nu
  * that doc comment) but not fatal: the next periodic sweep (SAVE_EVERY_MS) or the next explicit
  * call tries again. */
 async function savePositions(entries: Array<{ userId: string; room: string; x: number; y: number; d: number }>) {
-  if (entries.length === 0) return;
+  if (!PERSISTENCE_ENABLED || entries.length === 0) return;
   try {
-    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL);
+    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL!);
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` },
@@ -743,6 +743,14 @@ setInterval(() => {
       rssMb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
     }),
   );
+  // Repeats the boot warning every interval (see PERSISTENCE_ENABLED above) so a misconfigured
+  // deploy can't just scroll off the bottom of `fly logs` between the one boot line and whenever
+  // someone happens to check — this is the loud-but-not-fatal middle ground.
+  if (!PERSISTENCE_ENABLED) {
+    console.error(
+      "PERSISTENCE_API_URL/REALTIME_INTERNAL_SECRET still not set — positions still not being persisted, every spawn is (200,200)",
+    );
+  }
 }, METRICS_INTERVAL_MS);
 
 httpServer.listen(PORT, () => {
