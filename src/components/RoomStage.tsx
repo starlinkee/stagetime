@@ -424,14 +424,27 @@ function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: numbe
   ctx.restore();
 }
 
-/** Podpis nad postacią: poziom (zalogowana osoba) i nick albo [no-name]. */
+/**
+ * Podpis nad postacią: poziom i nick albo [no-name]. `xp` undefined = gość (niezalogowany) —
+ * pokazujemy szary "Lv.0" zamiast prawdziwego LevelBadge (STU-21), żeby było widać, że jeszcze
+ * nie zbiera się XP, zamiast po prostu nic nie pokazywać obok nicku.
+ */
 function NameTag({ name, xp }: { name: string | null; xp?: number }) {
   return (
     <span
       className="absolute bottom-full left-1/2 mb-0.5 flex max-w-56 -translate-x-1/2 items-center gap-1 whitespace-nowrap text-base font-medium leading-5 text-zinc-700 dark:text-zinc-200"
       style={{ height: TAG_H - 2 }}
     >
-      {xp !== undefined && <LevelBadge xp={xp} />}
+      {xp !== undefined ? (
+        <LevelBadge xp={xp} />
+      ) : (
+        <span
+          title="Sign in to start earning XP"
+          className="inline-flex items-center rounded-full bg-zinc-500/20 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-zinc-400"
+        >
+          Lv.0
+        </span>
+      )}
       <span className="truncate">{name?.trim() || NO_NAME}</span>
     </span>
   );

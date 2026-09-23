@@ -93,6 +93,14 @@ body {
 }
 .pp-reward { animation: pp-reward 1.4s ease-out forwards; }
 
+/* Podświetlenie przycisku "Sign in with Discord" (STU-21): pulsujący glow, żeby przyciągał wzrok
+   osób grających jako gość ("[no-name]") zamiast ginąć obok reszty nagłówka. */
+@keyframes discord-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(88, 101, 242, 0); }
+}
+.discord-pulse { animation: discord-pulse 2s ease-in-out infinite; }
+
 /* Napis w klimacie logo Super Mario 64: bombiaste litery, żółto-czerwony gradient, niebieska obwódka i 3D wytłoczenie. */
 .title-64 {
   font-family: var(--font-fredoka), var(--font-sans), sans-serif;
