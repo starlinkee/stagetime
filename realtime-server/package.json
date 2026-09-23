@@ -6,7 +6,11 @@
   "scripts": {
     "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --external:ws",
     "start": "node dist/server.js",
-    "dev": "npm run build && npm run start",
+    "sync-env": "node scripts/sync-env.mjs",
+    "predev": "npm run sync-env",
+    "dev": "npm run build && concurrently -k -n build,run \"npm:dev:build:watch\" \"npm:dev:start:watch\"",
+    "dev:build:watch": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js --external:ws --watch",
+    "dev:start:watch": "node --watch --env-file-if-exists=.env dist/server.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -15,6 +19,7 @@
   "devDependencies": {
     "@types/node": "^20",
     "@types/ws": "^8",
+    "concurrently": "^9.1.0",
     "esbuild": "^0.28.2",
     "typescript": "^5"
   }

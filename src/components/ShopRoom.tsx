@@ -6,25 +6,16 @@ import { COLOR_CHANGE_COST } from "@/lib/coins";
 import { EXIT_ZONE } from "@/lib/rooms";
 import { COLOR_CHOICES, useMyProfile } from "@/lib/useProfile";
 
-const WORLD_W = 1600;
-const ZONE_W = 260;
-const ZONE_H = 170;
-const ZONE_Y = 420;
 const COLOR_ZONE_SLUG = "color-change";
 
-/** Jedyna dziś strefa akcji w Shopie — kupienie zmiany koloru postaci za copper coins. */
-const SHOP_ZONES: RoomZone[] = [
-  EXIT_ZONE,
-  {
-    slug: COLOR_ZONE_SLUG,
-    name: "Color Change",
-    kind: "action",
-    x: WORLD_W / 2 - ZONE_W / 2,
-    y: ZONE_Y,
-    w: ZONE_W,
-    h: ZONE_H,
-  },
-];
+/**
+ * Color Change is disabled: the player character switched to fixed-art rotation sprites
+ * (public/characters/player/rotation/*.png), which aren't recolorable, so there's currently
+ * nothing to sell here. Only the floor zone is removed — the dialog/purchase logic further down
+ * stays, unreachable, so reviving this (for a different purchasable item) just means adding the
+ * zone back to SHOP_ZONES.
+ */
+const SHOP_ZONES: RoomZone[] = [EXIT_ZONE];
 
 /**
  * Pokój-sklep: wejście już wymaga konta (patrz RoomZone.requiresAuth w lobby i sprawdzenie w
@@ -101,9 +92,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
         xpRunning={false}
       />
       <div className="flex w-full max-w-2xl flex-col items-center gap-2 text-center">
-        <p className="text-sm text-zinc-500">
-          Walk onto the floor button and hold E — Color Change costs {COLOR_CHANGE_COST} copper coins.
-        </p>
+        <p className="text-sm text-zinc-500">Nothing for sale right now — check back later.</p>
         {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
       </div>
       {open && ready && (

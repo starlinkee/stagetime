@@ -61,6 +61,28 @@ body {
 }
 .pp-dash-cloud { transform-box: fill-box; transform-origin: center; animation: pp-dash-cloud 220ms ease-in-out; }
 
+/* PlayerSprite (image-based character, public/characters/player/rotation/*.png): no walk-cycle
+   frames exist, so walking is faked as a chunky step bob instead of leg movement. Roll/dash reuse
+   the pp-roll/pp-dash keyframes above but with border-box instead of fill-box (the source art is
+   an <img>, not SVG). */
+@keyframes ps-walk {
+  0% { transform: translateY(0); }
+  25% { transform: translateY(-2px); }
+  50% { transform: translateY(0); }
+  75% { transform: translateY(-1px); }
+  100% { transform: translateY(0); }
+}
+.ps-walk { animation: ps-walk 0.5s steps(1) infinite; }
+.ps-roll { transform-box: border-box; transform-origin: center; animation: pp-roll 240ms linear; }
+.ps-dash { transform-box: border-box; transform-origin: center; animation: pp-dash 220ms ease-in-out; }
+.ps-dash-cloud {
+  border-radius: 9999px;
+  background: radial-gradient(circle, #f8fafc 0%, #cbd5e1 70%, transparent 72%);
+  transform-box: border-box;
+  transform-origin: center;
+  animation: pp-dash-cloud 220ms ease-in-out;
+}
+
 /* Popup "+1 coin / +xp" nad postacią po co-minutowym tick-u nagrody (patrz REWARD_MS w
    RoomStage.tsx): pojawia się, chwilę wisi, po czym płynnie znika unosząc się lekko w górę. */
 @keyframes pp-reward {
