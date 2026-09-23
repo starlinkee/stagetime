@@ -108,3 +108,23 @@ export const HIT_PAD = 4;
  * implicit room-wide ceiling — 50 players x 3 balls — without a second, redundant counter).
  */
 export const MAX_BALLS_PER_PLAYER = 3;
+
+/**
+ * HP/damage/respawn — combat only deals damage outside the lobby (a decision made when this was
+ * added: the lobby stays a safe social space, balls/melee still fly and visually hit there, but
+ * `isLobbyRoom` in server.ts skips the HP subtraction). Every connection starts and respawns at
+ * `MAX_HP`.
+ */
+export const MAX_HP = 100;
+/** Charged-throw damage range — interpolated by charge fraction (0..1), same `p` spawnBall already
+ * uses for `ORB_R_MIN`/`ORB_R_MAX`. */
+export const DMG_MIN = 1;
+export const DMG_MAX = 5;
+/** Melee has no charge to scale off of, so it deals a fixed, mid-range hit. */
+export const STRIKE_DMG = 3;
+/** How long a dead connection is frozen (no movement/actions) before respawning. */
+export const RESPAWN_MS = 5000;
+/** Grace window after respawning during which a connection can't be damaged or targeted. */
+export const IMMUNITY_MS = 5000;
+/** Client-side rendering hint: sprite opacity while `now < immuneUntil`. */
+export const IMMUNE_OPACITY = 0.4;

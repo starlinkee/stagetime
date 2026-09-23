@@ -37,7 +37,15 @@ export function safeColor(color: string | null | undefined): string {
 const saved = new EventTarget();
 
 /** Publiczna część profilu. */
-export type Profile = { nickname: string; color: string; xp: number; ballsShot: number; fistSwings: number };
+export type Profile = {
+  nickname: string;
+  color: string;
+  xp: number;
+  ballsShot: number;
+  fistSwings: number;
+  kills: number;
+  deaths: number;
+};
 
 /** Mapa `user_id → profil`. */
 export type Profiles = Record<string, Profile>;
@@ -57,6 +65,10 @@ export type MyProfile = {
   ballsShot: number;
   /** Total fist swings thrown (Space with attack 1 selected), ever — 0 until loaded or signed out. */
   fistSwings: number;
+  /** Total PvP kills, ever (damage only happens outside the lobby — see AGENTS.md) — 0 until loaded or signed out. */
+  kills: number;
+  /** Total PvP deaths, ever — 0 until loaded or signed out. */
+  deaths: number;
   /** Copper coin balance (see src/lib/coins.ts) — 0 until loaded or signed out. Private: not shown for other players. */
   coins: number;
   error: string | null;
@@ -97,7 +109,7 @@ export function useMyProfile(): MyProfile {
     if (!sb || !userId) return;
     let cancelled = false;
     sb.from("profiles")
-      .select("nickname, color, xp, balls_shot, fist_swings, coins")
+      .select("nickname, color, xp, balls_shot, fist_swings, kills, deaths, coins")
       .eq("id", userId)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -111,6 +123,8 @@ export function useMyProfile(): MyProfile {
           xp: Number(data?.xp ?? 0),
           ballsShot: data?.balls_shot ?? 0,
           fistSwings: data?.fist_swings ?? 0,
+          kills: data?.kills ?? 0,
+          deaths: data?.deaths ?? 0,
           coins: Number(data?.coins ?? 0),
         });
       });
@@ -144,6 +158,8 @@ export function useMyProfile(): MyProfile {
             xp?: number | string;
             balls_shot?: number;
             fist_swings?: number;
+            kills?: number;
+            deaths?: number;
             coins?: number | string;
           };
           if (!p.nickname) return;
@@ -154,6 +170,8 @@ export function useMyProfile(): MyProfile {
             xp: Number(p.xp ?? 0),
             ballsShot: p.balls_shot ?? 0,
             fistSwings: p.fist_swings ?? 0,
+            kills: p.kills ?? 0,
+            deaths: p.deaths ?? 0,
             coins: Number(p.coins ?? 0),
           });
         },
@@ -168,6 +186,8 @@ export function useMyProfile(): MyProfile {
   const currentXp = loaded?.userId === userId ? loaded.xp : 0;
   const currentBallsShot = loaded?.userId === userId ? loaded.ballsShot : 0;
   const currentFistSwings = loaded?.userId === userId ? loaded.fistSwings : 0;
+  const currentKills = loaded?.userId === userId ? loaded.kills : 0;
+  const currentDeaths = loaded?.userId === userId ? loaded.deaths : 0;
   const currentCoins = loaded?.userId === userId ? loaded.coins : 0;
 
   const save = useCallback(
@@ -208,13 +228,15 @@ export function useMyProfile(): MyProfile {
             xp: currentXp,
             ballsShot: currentBallsShot,
             fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
             coins: currentCoins,
           },
         }),
       );
       return true;
     },
-    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentCoins],
+    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentKills, currentDeaths, currentCoins],
   );
 
   const purchaseColor = useCallback(
@@ -246,13 +268,15 @@ export function useMyProfile(): MyProfile {
             xp: currentXp,
             ballsShot: currentBallsShot,
             fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
             coins: newCoins,
           },
         }),
       );
       return { ok: true as const };
     },
-    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentCoins],
+    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentKills, currentDeaths, currentCoins],
   );
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
@@ -267,6 +291,8 @@ export function useMyProfile(): MyProfile {
     level: levelFromXp(xp),
     ballsShot: mine?.ballsShot ?? 0,
     fistSwings: mine?.fistSwings ?? 0,
+    kills: mine?.kills ?? 0,
+    deaths: mine?.deaths ?? 0,
     coins: mine?.coins ?? 0,
     error,
     save,
@@ -296,7 +322,7 @@ export function useProfiles(userIds: string[]): Profiles {
     for (const id of missing) fetched.current.add(id);
     let cancelled = false;
     sb.from("profiles")
-      .select("id, nickname, color, xp, balls_shot, fist_swings")
+      .select("id, nickname, color, xp, balls_shot, fist_swings, kills, deaths")
       .in("id", missing)
       // xp is numeric(12,1) — PostgREST may serialize it as a string, so toMap() below parses it.
       .then(({ data, error }) => {
@@ -323,9 +349,11 @@ export function useProfiles(userIds: string[]): Profiles {
             xp?: number | string;
             balls_shot?: number;
             fist_swings?: number;
+            kills?: number;
+            deaths?: number;
           };
           if (!profile?.id || !profile.nickname) return;
-          const { id, nickname, color, xp, balls_shot, fist_swings } = profile;
+          const { id, nickname, color, xp, balls_shot, fist_swings, kills, deaths } = profile;
           setProfiles((prev) =>
             // Interesują nas tylko osoby widoczne na stronie (czat, obecni).
             fetched.current.has(id)
@@ -337,6 +365,8 @@ export function useProfiles(userIds: string[]): Profiles {
                     xp: Number(xp ?? 0),
                     ballsShot: balls_shot ?? 0,
                     fistSwings: fist_swings ?? 0,
+                    kills: kills ?? 0,
+                    deaths: deaths ?? 0,
                   },
                 }
               : prev,
@@ -370,6 +400,8 @@ function toMap(
     xp: number | string;
     balls_shot: number;
     fist_swings: number;
+    kills: number;
+    deaths: number;
   }[],
 ): Profiles {
   return Object.fromEntries(
@@ -381,6 +413,8 @@ function toMap(
         xp: Number(r.xp ?? 0),
         ballsShot: r.balls_shot ?? 0,
         fistSwings: r.fist_swings ?? 0,
+        kills: r.kills ?? 0,
+        deaths: r.deaths ?? 0,
       },
     ]),
   );

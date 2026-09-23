@@ -30,6 +30,8 @@ import {
   DIRS,
   DIR_OF,
   HIT_PAD,
+  IMMUNE_OPACITY,
+  MAX_HP,
   ORB_R_MAX,
   ORB_R_MIN,
   PERSON_H,
@@ -39,7 +41,6 @@ import {
   ROLL_SPEED_MULT,
   SCREEN_H,
   SCREEN_W,
-  STRIKE_COOLDOWN_MS,
   STRIKE_MS,
   STRIKE_R,
   STRIKE_REACH,
@@ -244,7 +245,18 @@ type Meta = {
   d?: unknown;
 };
 /** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek i czy trwa przewrót (roll) / unik (dash). */
-type Pos = { x: number; y: number; d: Dir; r?: boolean; dash?: boolean };
+type Pos = {
+  x: number;
+  y: number;
+  d: Dir;
+  r?: boolean;
+  dash?: boolean;
+  /** HP/respawn/immunity — only set on the realtime-server branch (see REALTIME_SERVER_URL), from
+   * PlayerState.hp/respawnAt/immuneUntil (realtime-server/shared/types.ts). */
+  hp?: number;
+  respawnAt?: number;
+  immuneUntil?: number;
+};
 type Others = Record<string, Meta & Pos>;
 
 const orbRadius = (p: number) => ORB_R_MIN + (ORB_R_MAX - ORB_R_MIN) * p;
@@ -606,6 +618,24 @@ export function RoomStage({
   const [myWalking, setMyWalking] = useState(false);
   const [myRolling, setMyRolling] = useState(false);
   const [myDashing, setMyDashing] = useState(false);
+  // HP/respawn/immunity — updated from the server's own "state" broadcast (see the WS message
+  // handler below), never predicted locally: unlike movement, there's nothing useful to predict
+  // here, and the server is broadcasting at BROADCAST_MS anyway.
+  const [myHp, setMyHp] = useState(MAX_HP);
+  const [myRespawnAt, setMyRespawnAt] = useState(0);
+  /** Mirrors PlayerState.immuneUntil for the rAF tick loop below (see its `person.style.opacity`
+   * line) — that loop reads refs every frame instead of depending on React state/re-renders. */
+  const myImmuneUntilRef = useRef(0);
+  // A React-render-safe "now" (Date.now() can't be called directly during render, see
+  // react-hooks/purity) for the respawn countdown and others' immunity opacity below — ticks
+  // while REALTIME_SERVER_URL is set, since either can happen at any time, not just while dead.
+  const [nowTick, setNowTick] = useState(0);
+  useEffect(() => {
+    if (!REALTIME_SERVER_URL) return;
+    const id = setInterval(() => setNowTick(Date.now()), 200);
+    return () => clearInterval(id);
+  }, []);
+  const respawnRemainingSec = myRespawnAt > 0 ? Math.max(0, Math.ceil((myRespawnAt - nowTick) / 1000)) : 0;
   // Kto z innych właśnie się porusza (do animacji chodu) i timery wygaszania.
   const [walkers, setWalkers] = useState<Record<string, boolean>>({});
   const walkTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -761,10 +791,6 @@ export function RoomStage({
     let dashTeleported = false;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
-    /** Wybrany atak: 1 = wręcz (Fist swings, krótki zasięg), 2 = kula (domyślny, jak dotąd). */
-    let attackMode: 1 | 2 = 2;
-    /** Koniec cooldownu ataku wręcz (performance.now), żeby Space nie spamowało uderzeń. */
-    let strikeCooldownUntil = 0;
     // Wejście do pokoju: trzymając E w jego kwadracie przez ROOM_ENTER_MS, wchodzimy na jego stronę.
     let eDown = false;
     // Jeśli E zostało wciśnięte jeszcze w poprzednim pokoju, ignorujemy je, dopóki nie przyjdzie keyup.
@@ -877,17 +903,30 @@ export function RoomStage({
           console.warn("realtime-server: join rejected —", msg.reason);
           return;
         }
+        if (msg.type === "respawn_redirect") {
+          // The server has already moved this connection into the lobby room and reset its
+          // hp/immunity server-side (see the tick loop in realtime-server/src/server.ts) — but
+          // rooms are separate Next.js routes (see AGENTS.md), so only this navigation actually
+          // gets the player looking at the lobby. The new page's own `join` resumes from the
+          // ghost this leaves behind (same reconnect path as any other room switch).
+          window.sessionStorage.removeItem(SPAWN_FROM_KEY);
+          router.push("/");
+          return;
+        }
         if (msg.type !== "state") return;
         for (const p of msg.players) {
           if (p.id === netKey) {
             serverMe = { x: p.x, y: p.y, d: p.d };
             serverDirPending = true;
+            setMyHp(p.hp);
+            setMyRespawnAt(p.respawnAt);
+            myImmuneUntilRef.current = p.immuneUntil;
             continue;
           }
           // Mirrors the Supabase "pos" broadcast handler below (same posRef/setOthers/setWalkers
           // pattern) — posRef alone wouldn't trigger a re-render, `others` state has to change too.
           const prevPos = posRef.current[p.id];
-          const nextPos = { ...clampPos(p.x, p.y, isLobby), d: asDir(p.d) };
+          const nextPos = { ...clampPos(p.x, p.y, isLobby), d: asDir(p.d), hp: p.hp, respawnAt: p.respawnAt, immuneUntil: p.immuneUntil };
           posRef.current[p.id] = nextPos;
           if (!prevPos || prevPos.x !== nextPos.x || prevPos.y !== nextPos.y) {
             setWalkers((w) => (w[p.id] ? w : { ...w, [p.id]: true }));
@@ -1324,6 +1363,11 @@ export function RoomStage({
       const hitAge = t - (hitRef.current.me ?? -Infinity);
       const shake = hitAge < HIT_MS ? Math.sin(hitAge / 18) * 5 * (1 - hitAge / HIT_MS) : 0;
       person.style.transform = `translate(${x + shake}px, ${y}px)`;
+      // Lower opacity while immune (post-respawn grace window) — mirrors the `others` rendering
+      // below, but imperative like `transform` above: this component's own position/appearance is
+      // driven straight from refs every rAF frame rather than React state, for the same reason
+      // (avoiding a state update, and the resulting re-render, every single frame).
+      if (REALTIME_SERVER_URL) person.style.opacity = myImmuneUntilRef.current > Date.now() ? String(IMMUNE_OPACITY) : "0.7";
       myPos.current = { x, y, d: dir, r: rolling, dash: dashing };
       // Wejście do pokoju: E trzeba trzymać nieprzerwanie, stojąc w jego kwadracie.
       const zone = on ? zonesRef.current.find((z) => inZone(x, y, z)) : undefined;
@@ -1505,48 +1549,8 @@ export function RoomStage({
     const onKeyDown = (e: KeyboardEvent) => {
       if (!activeRef.current || document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey)
         return;
-      if (e.code === "Digit1") {
-        attackMode = 1;
-        return;
-      }
-      if (e.code === "Digit2") {
-        attackMode = 2;
-        return;
-      }
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
-        if (attackMode === 1) {
-          if (!e.repeat) {
-            const now = performance.now();
-            if (now >= strikeCooldownUntil) {
-              strikeCooldownUntil = now + STRIKE_COOLDOWN_MS;
-              if (REALTIME_SERVER_URL) {
-                // Faza F4: own instant, cosmetic preview only — the server decides the real
-                // hitbox/hit (see the "strike" handler in realtime-server/src/server.ts).
-                strike(predictedRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                  const strikeMsg: ClientMessage = { type: "strike" };
-                  ws.send(JSON.stringify(strikeMsg));
-                }
-              } else {
-                strike(ballsRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
-                // No longer emitted once the server owns strikes — nothing listens for it there
-                // (see the "strike" broadcast handler above), and other clients in that mode
-                // render melee hits from the server's own ball list/hit events instead.
-                emit("strike", { ...myPos.current });
-              }
-              // Every real swing by a signed-in user bumps their all-time count (shown in
-              // src/components/ProfileMenu.tsx), server-side via supabase/migrations/0023_fist_swings.sql.
-              if (userIdRef.current)
-                void getSupabase()
-                  ?.rpc("increment_fist_swings")
-                  .then(({ error }) => {
-                    if (error) console.error("increment_fist_swings", error);
-                  });
-            }
-          }
-          return;
-        }
         if (!e.repeat && chargeStart === null) {
           chargeStart = performance.now();
           if (REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
@@ -1872,7 +1876,7 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · press 1 for Fist swings (short-range, tap Space to hit) or 2 for the ball (hold Space to charge, release to shoot) · tap C to roll in the direction you're facing (faster than walking) · tap V to dash further away in a puff of cloud (longer cooldown)";
+      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking) · tap V to dash further away in a puff of cloud (longer cooldown)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
@@ -1996,6 +2000,26 @@ export function RoomStage({
         {entryError}
       </div>
     )}
+    {REALTIME_SERVER_URL && (
+      <div
+        role="meter"
+        aria-label="Health"
+        aria-valuemin={0}
+        aria-valuemax={MAX_HP}
+        aria-valuenow={myHp}
+        className="pointer-events-none fixed bottom-4 right-4 z-20 h-3 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
+      >
+        <div
+          className="h-full rounded-full bg-red-600 transition-[width]"
+          style={{ width: `${(Math.max(0, myHp) / MAX_HP) * 100}%` }}
+        />
+      </div>
+    )}
+    {respawnRemainingSec > 0 && (
+      <div className="pointer-events-none fixed inset-0 z-30 flex items-center justify-center bg-zinc-950/60">
+        <p className="text-2xl font-bold text-white">Respawning in {respawnRemainingSec}…</p>
+      </div>
+    )}
     {REALTIME_SERVER_URL && wsStatus === "reconnecting" && (
       <div
         role="status"
@@ -2031,8 +2055,14 @@ export function RoomStage({
         {Object.entries(others).map(([k, o]) => (
           <div
             key={k}
-            className={`absolute left-0 top-0 opacity-70 ease-linear ${o.dash ? "" : "transition-transform duration-100"}`}
-            style={{ transform: `translate(${o.x}px, ${o.y}px)` }}
+            className={`absolute left-0 top-0 ease-linear ${o.dash ? "" : "transition-transform duration-100"}`}
+            style={{
+              transform: `translate(${o.x}px, ${o.y}px)`,
+              // Lower opacity while immune (post-respawn grace window) — see IMMUNE_OPACITY in
+              // realtime-server/shared/constants.ts. `others` re-renders every state broadcast
+              // (~BROADCAST_MS) regardless of movement, so this clears on its own near `immuneUntil`.
+              opacity: o.immuneUntil && o.immuneUntil > nowTick ? IMMUNE_OPACITY : 0.7,
+            }}
           >
             {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
             {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}

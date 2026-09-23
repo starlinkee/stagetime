@@ -8,6 +8,13 @@ export interface PlayerState {
   x: number;
   y: number;
   d: Dir;
+  /** Current HP (0..MAX_HP, see constants.ts). Damage only ever happens outside the lobby. */
+  hp: number;
+  /** 0 while alive; otherwise the epoch ms this connection respawns at (client shows a countdown). */
+  respawnAt: number;
+  /** 0/past while not immune; otherwise the epoch ms immunity (post-respawn) ends — client renders
+   * reduced opacity for anyone still under it, not just itself. */
+  immuneUntil: number;
 }
 
 /**
@@ -36,6 +43,10 @@ export interface ServerBall {
   owner: string;
   melee?: boolean;
   until?: number;
+  /** Damage this ball/hitbox deals on impact — fixed for melee (STRIKE_DMG), scaled by charge
+   * fraction for a thrown ball (DMG_MIN..DMG_MAX), decided once at spawn (see spawnBall/spawnMelee
+   * in server.ts) rather than recomputed from `r` at hit time. */
+  dmg: number;
 }
 
 /**
@@ -112,4 +123,13 @@ export type ServerMessage =
       hits: HitEvent[];
       at: number;
     }
-  | { type: "join_rejected"; reason: "room_full" };
+  | { type: "join_rejected"; reason: "room_full" }
+  /**
+   * Sent only to the one connection that just respawned (never part of `state`) — the server has
+   * already moved it into the lobby room server-side (position/hp/immunity reset), but rooms are
+   * separate Next.js routes (see AGENTS.md), so only the client's own router can actually navigate
+   * its page there. RoomStage.tsx reacts by router.push("/"); the new page's own `join` then
+   * resumes from the ghost this leaves behind, same as any other reconnect (see B2 in
+   * docs/stateful_server_plan.md).
+   */
+  | { type: "respawn_redirect" };

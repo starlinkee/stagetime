@@ -15,18 +15,24 @@ import {
   DEFAULT_PLAYER_SPEED,
   DIRS,
   DIR_OF,
+  DMG_MAX,
+  DMG_MIN,
   EXIT_ZONE,
   HIT_PAD,
+  IMMUNITY_MS,
   MAX_BALLS_PER_PLAYER,
+  MAX_HP,
   ORB_R_MAX,
   ORB_R_MIN,
   PERSON_H,
   PERSON_W,
+  RESPAWN_MS,
   ROLL_COOLDOWN_MS,
   ROLL_MS,
   ROLL_SPEED_MULT,
   SCHEMA_VERSION,
   STRIKE_COOLDOWN_MS,
+  STRIKE_DMG,
   STRIKE_MS,
   STRIKE_R,
   STRIKE_REACH,
@@ -130,7 +136,18 @@ type Conn = {
   // Normally always DEFAULT_PLAYER_SPEED — only ever different when DEV_OVERRIDES_ENABLED and the
   // client sent an `input.speedOverride` (admin panel), see the "input" handler below.
   speed: number;
+  // HP/respawn/immunity — see MAX_HP/RESPAWN_MS/IMMUNITY_MS doc comments in shared/constants.ts.
+  // `respawnAt`: 0 while alive; otherwise the epoch ms this connection respawns at, and `isDead()`
+  // below treats it as frozen (no movement/actions) until then.
+  hp: number;
+  respawnAt: number;
+  immuneUntil: number;
 };
+
+/** Frozen (no movement, no roll/dash/charge/fire/strike) while waiting out RESPAWN_MS. */
+function isDead(conn: Conn): boolean {
+  return conn.respawnAt > 0;
+}
 
 const rooms = new Map<string, Set<Conn>>();
 /** Live projectiles/melee hitboxes per room — Faza F3 (docs/combat_sync_plan.md). */
@@ -202,6 +219,7 @@ function spawnBall(conn: Conn, p: number) {
   const [ux, uy] = DIRS[conn.d];
   const n = Math.hypot(ux, uy) || 1;
   const r = ORB_R_MIN + (ORB_R_MAX - ORB_R_MIN) * p;
+  const dmg = Math.max(DMG_MIN, Math.min(DMG_MAX, Math.round(DMG_MIN + (DMG_MAX - DMG_MIN) * p)));
   pushBall(conn, {
     id: `${conn.id}:${nextBallId++}`,
     x: conn.x + PERSON_W / 2,
@@ -211,6 +229,7 @@ function spawnBall(conn: Conn, p: number) {
     r,
     color: conn.color,
     owner: conn.id,
+    dmg,
   });
 }
 
@@ -231,6 +250,7 @@ function spawnMelee(conn: Conn) {
     owner: conn.id,
     melee: true,
     until: Date.now() + STRIKE_MS,
+    dmg: STRIKE_DMG,
   });
 }
 
@@ -313,6 +333,29 @@ function persistPosition(conn: Conn) {
   void savePositions([{ userId: conn.userId, room: conn.roomSlug, x: conn.x, y: conn.y, d: conn.d }]);
 }
 
+/**
+ * Bumps the killer's/victim's all-time kills/deaths (see ProfileMenu.tsx's "Stats" panel,
+ * supabase/migrations/0024_kills_deaths.sql) — fired once per kill, from the tick loop's hit
+ * resolution below. Like savePositions, this is the only place that can do it: kills/deaths are
+ * decided authoritatively here, not by a client with its own Supabase session (unlike
+ * increment_balls_shot/increment_fist_swings, which a real shot/swing lets the client call for
+ * itself). Either id can be null (a guest killer/victim has nothing to persist) but not both.
+ */
+async function reportCombatEvent(killerUserId: string | null, victimUserId: string | null) {
+  if (!PERSISTENCE_ENABLED || (!killerUserId && !victimUserId)) return;
+  try {
+    const url = new URL("/api/internal/combat", PERSISTENCE_API_URL!);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` },
+      body: JSON.stringify({ killerUserId, victimUserId }),
+    });
+    if (!res.ok) console.error(`reportCombatEvent: ${res.status} ${res.statusText} from ${url}`);
+  } catch (err) {
+    console.error("reportCombatEvent failed", err);
+  }
+}
+
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "text/plain" });
@@ -356,12 +399,17 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
     clearTimeout(pending);
     pendingRemoval.delete(key);
   }
-  let resumeFrom: { x: number; y: number; d: Dir } | null = null;
+  let resumeFrom: { x: number; y: number; d: Dir; hp: number; respawnAt: number; immuneUntil: number } | null = null;
   const targetSet = rooms.get(verified.roomSlug);
   if (targetSet) {
     for (const other of targetSet) {
       if (other !== conn && other.id === newId) {
-        resumeFrom = { x: other.x, y: other.y, d: other.d };
+        // Carries HP/respawn/immunity across the reconnect too — most notably this is what makes
+        // the server-side respawn (see the tick loop) actually stick: it moves the *old* Conn into
+        // the lobby room and sends it `respawn_redirect`, then closes; the new page's fresh `join`
+        // resumes this same connection's post-respawn state (full HP, still-ticking immunity)
+        // instead of the new WS's fresh-connection defaults.
+        resumeFrom = { x: other.x, y: other.y, d: other.d, hp: other.hp, respawnAt: other.respawnAt, immuneUntil: other.immuneUntil };
         targetSet.delete(other);
         break;
       }
@@ -415,6 +463,12 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.userId = verified.userId;
   conn.nick = typeof msg.nick === "string" ? msg.nick.slice(0, 40) : null;
   conn.color = typeof msg.color === "string" ? msg.color : "#ffffff";
+  // Only a reconnect-ghost resume carries HP/respawn/immunity forward — `loaded` (a saved
+  // position from Postgres) and every other branch below are treated as a fresh life, same as a
+  // brand-new connection.
+  conn.hp = resumeFrom?.hp ?? MAX_HP;
+  conn.respawnAt = resumeFrom?.respawnAt ?? 0;
+  conn.immuneUntil = resumeFrom?.immuneUntil ?? 0;
   const resolved = resumeFrom ?? loaded;
   if (resolved) {
     const clamped = clampPos(resolved.x, resolved.y, conn.isLobby);
@@ -478,6 +532,9 @@ wss.on("connection", (ws, req) => {
     chargeStartAt: null,
     meleeCooldownUntil: 0,
     speed: DEFAULT_PLAYER_SPEED,
+    hp: MAX_HP,
+    respawnAt: 0,
+    immuneUntil: 0,
   };
 
   send(ws, { type: "welcome", id: conn.id });
@@ -506,6 +563,7 @@ wss.on("connection", (ws, req) => {
     // direction/distance itself from this connection's own `d`/`x`/`y`, and silently ignores the
     // request while on cooldown, exactly like a well-behaved client already does today.
     if (msg.type === "roll") {
+      if (isDead(conn)) return;
       const now = Date.now();
       if (now >= conn.rollCooldownUntil && now >= conn.dashUntil) {
         const [ux, uy] = DIRS[conn.d];
@@ -518,6 +576,7 @@ wss.on("connection", (ws, req) => {
       return;
     }
     if (msg.type === "dash") {
+      if (isDead(conn)) return;
       const now = Date.now();
       if (now >= conn.dashCooldownUntil && now >= conn.rollUntil) {
         const [ux, uy] = DIRS[conn.d];
@@ -536,10 +595,12 @@ wss.on("connection", (ws, req) => {
     // Faza F3: marks when charging actually started here, so `fire` below can't claim more than
     // really elapsed.
     if (msg.type === "charge") {
+      if (isDead(conn)) return;
       conn.chargeStartAt = msg.on === true ? Date.now() : null;
       return;
     }
     if (msg.type === "fire") {
+      if (isDead(conn)) return;
       const now = Date.now();
       const elapsed = conn.chargeStartAt !== null ? now - conn.chargeStartAt : 0;
       const claimed = typeof msg.chargeMs === "number" && Number.isFinite(msg.chargeMs) ? msg.chargeMs : 0;
@@ -549,6 +610,7 @@ wss.on("connection", (ws, req) => {
       return;
     }
     if (msg.type === "strike") {
+      if (isDead(conn)) return;
       const now = Date.now();
       if (now < conn.meleeCooldownUntil) return;
       conn.meleeCooldownUntil = now + STRIKE_COOLDOWN_MS;
@@ -599,8 +661,32 @@ setInterval(() => {
   const now = tickStart;
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
+  // Respawns due this tick, resolved in their own pass before movement: a respawn moves a
+  // connection from whatever room it died in into the lobby room's own Set (see leaveRoom/
+  // joinRoom below), which would be unsafe to do mid-iteration of the per-room movement loop
+  // right after this. Deleting/adding the *current* iterand of a Set (or the current key of the
+  // outer Map, via leaveRoom's `rooms.delete` when a room empties out) during iteration is safe
+  // per spec; a connection landing in a room this pass hasn't reached yet just gets picked up
+  // next tick, and one already past is a no-op here since `respawnAt` is now 0.
   for (const set of rooms.values()) {
     for (const conn of set) {
+      if (conn.respawnAt === 0 || now < conn.respawnAt) continue;
+      leaveRoom(conn);
+      conn.roomSlug = "lobby";
+      conn.isLobby = true;
+      const spawn = clampPos(worldW(true) / 2, worldH(true) / 2, true);
+      conn.x = spawn.x;
+      conn.y = spawn.y;
+      conn.hp = MAX_HP;
+      conn.respawnAt = 0;
+      conn.immuneUntil = now + IMMUNITY_MS;
+      joinRoom(conn);
+      send(conn.ws, { type: "respawn_redirect" });
+    }
+  }
+  for (const set of rooms.values()) {
+    for (const conn of set) {
+      if (isDead(conn)) continue;
       // Faza F2 (docs/combat_sync_plan.md): dash is a delayed teleport (see spawnBall/dash
       // handler above) — the jump happens once, at dashTeleportAt, not gradually like a roll.
       const dashing = now < conn.dashUntil;
@@ -653,6 +739,9 @@ setInterval(() => {
       let target: Conn | null = null;
       for (const conn of set) {
         if (conn.id === b.owner) continue;
+        // Dead (mid-respawn-countdown) or still immune — untargetable, same as owner: the ball/
+        // hitbox passes through instead of being consumed by a hit that can't do anything.
+        if (isDead(conn) || now < conn.immuneUntil) continue;
         const nx = Math.max(conn.x - HIT_PAD, Math.min(b.x, conn.x + PERSON_W + HIT_PAD));
         const ny = Math.max(conn.y - HIT_PAD, Math.min(b.y, conn.y + PERSON_H + HIT_PAD));
         if (Math.hypot(b.x - nx, b.y - ny) <= b.r) {
@@ -664,6 +753,24 @@ setInterval(() => {
         const hits = roomHits.get(slug) ?? [];
         hits.push({ targetId: target.id, ownerId: b.owner, melee: Boolean(b.melee), x: b.x, y: b.y, r: b.r, color: b.color });
         roomHits.set(slug, hits);
+        // The lobby stays a safe space (see MAX_HP's doc comment in shared/constants.ts): the hit
+        // still resolves and flashes for everyone, it just never costs HP or a life there.
+        if (!isLobby) {
+          target.hp = Math.max(0, target.hp - b.dmg);
+          if (target.hp === 0) {
+            target.respawnAt = now + RESPAWN_MS;
+            target.inputDx = 0;
+            target.inputDy = 0;
+            let owner: Conn | null = null;
+            for (const c of set) {
+              if (c.id === b.owner) {
+                owner = c;
+                break;
+              }
+            }
+            void reportCombatEvent(owner?.userId ?? null, target.userId ?? null);
+          }
+        }
         continue; // one hit ends the ball/hitbox, same as the client-only version did
       }
       if (b.melee) {
@@ -687,6 +794,9 @@ setInterval(() => {
       x: c.x,
       y: c.y,
       d: c.d,
+      hp: c.hp,
+      respawnAt: c.respawnAt,
+      immuneUntil: c.immuneUntil,
     }));
     const balls = roomBalls.get(slug) ?? [];
     // Drained, not cumulative — each hit is only ever sent once (Faza F3).

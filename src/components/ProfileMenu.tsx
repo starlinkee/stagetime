@@ -9,7 +9,7 @@ import { levelFromXp } from "@/lib/xp";
 
 /** Nazwa w nagłówku: klik otwiera panel ze zmianą nicku i wylogowaniem. */
 export function ProfileMenu({ session }: { session: Session }) {
-  const { ready, nickname, xp, ballsShot, fistSwings, coins, error } = useMyProfile();
+  const { ready, nickname, xp, ballsShot, fistSwings, kills, deaths, coins, error } = useMyProfile();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const shown = nickname ?? displayName(session);
@@ -62,6 +62,8 @@ export function ProfileMenu({ session }: { session: Session }) {
               xp={xp}
               ballsShot={ballsShot}
               fistSwings={fistSwings}
+              kills={kills}
+              deaths={deaths}
               coins={coins}
               error={error}
             />
@@ -85,6 +87,8 @@ function ProfileForm({
   xp,
   ballsShot,
   fistSwings,
+  kills,
+  deaths,
   coins,
   error,
 }: {
@@ -92,6 +96,8 @@ function ProfileForm({
   xp: number;
   ballsShot: number;
   fistSwings: number;
+  kills: number;
+  deaths: number;
   coins: number;
   error: string | null;
 }) {
@@ -124,6 +130,14 @@ function ProfileForm({
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
         <span className="text-zinc-400">Fist swings</span>
         <span className="font-semibold text-zinc-200">{fistSwings}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Kills</span>
+        <span className="font-semibold text-zinc-200">{kills}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Deaths</span>
+        <span className="font-semibold text-zinc-200">{deaths}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
         <span className="text-zinc-400">Copper coins</span>
