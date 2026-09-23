@@ -9,40 +9,82 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 <!-- END:nextjs-agent-rules -->
 
 
-## ⚠️ PLAN NA PRZYSZŁOŚĆ — jeszcze nie zaimplementowane
+## Architektura Projektu: stan na 2026-09-23
 
-Sekcja poniżej ("Architektura Projektu: Multiplayer 2D Game") to **koncept docelowej architektury dla walki**, nie opis obecnego stanu repo. Dzisiejszy kod (`src/`) to Next.js + Supabase — pokoje coworkingowe z timerem Pomodoro, presence i pozycjami graczy, bez żadnego silnika walki, AI potworów, FSM ani podziału na `/client` `/server` `/shared` (nie ma monorepo, nie ma Colyseus). Walka jest **następnym krokiem**, jeszcze nie rozpoczętym.
+Ta appka to coworking z timerem Pomodoro (nie gra RPG). Repo **nie jest** monorepo — nie ma
+`/client`, `/server`, `/shared`, nie ma Colyseus, nie ma AI potworów ani FSM. Poniżej faktyczny
+podział, jaki dziś istnieje w kodzie.
 
-Dopóki ta sekcja nie zostanie zrealizowana:
-- Nie zakładaj istnienia `/client`, `/server`, `/shared` ani żadnych plików z nich — sprawdź realną strukturę w `src/`.
-- Traktuj poniższe zasady jako wymagania na *przyszłą* implementację walki, gdy ta faktycznie ruszy — nie stosuj ich do dzisiejszego kodu.
-- Gdy walka zacznie być budowana, ta sekcja opisuje obowiązujący podział ról (serwer autorytatywny, klient = tylko prezentacja).
+### `src/` — Next.js (App Router), warstwa prezentacji + część danych
+- Frontend hostowany typowo na Vercel; `src/app/api/*` to bezstanowe route handlery Next.js.
+- `src/components/RoomStage.tsx` — scena pokoju: rysowanie, input, i (za flagą, patrz niżej)
+  klient sieciowy do `realtime-server`.
+- `src/lib/supabaseAdmin.ts` — jedyne miejsce w Next.js używające `SUPABASE_SERVICE_ROLE_KEY`
+  (bypass RLS), wołane wyłącznie przez `src/app/api/internal/positions/route.ts` na potrzeby
+  `realtime-server` (zapis/odczyt pozycji w imieniu gracza, którego sesji Next.js nie ma).
+- `src/app/api/realtime/token/route.ts` — mintuje krótkotrwały, podpisany token wejścia
+  (`@realtime-shared/entryToken`) na podstawie sesji Supabase Auth zalogowanego użytkownika;
+  `realtime-server` ufa wyłącznie temu tokenowi, nigdy danym podanym wprost przez klienta.
+- Supabase pozostaje: Auth (konta/sesje), Postgres (profile, XP, monety, `player_positions`,
+  czat), i nadal obsługuje presence oraz historię czatu przez Realtime — to się nie zmieniło.
 
-# Architektura Projektu: Multiplayer 2D Game (TypeScript) — koncept, do wdrożenia w przyszłości
+### `realtime-server/` — autorytatywny serwer WebSocket (Node + `ws`), deploy na Fly.io
+- Osobny pakiet npm w tym samym repo (własny `package.json`, `Dockerfile`, `fly.toml`; appka Fly
+  nazywa się `studyquest`). Nie Colyseus — świadomie własny, minimalny WebSocket server.
+- `realtime-server/shared/` (`types.ts`, `constants.ts`, `entryToken.ts`, `physics.ts`) to
+  jedyne "shared" w tym repo — importowane z `src/` przez alias `@realtime-shared/*` w
+  `tsconfig.json`, nie przez osobny pakiet workspace.
+- **Odpowiada za, jako jedyne źródło prawdy (serwer, nie klient, decyduje):**
+  - ruch: pozycję gracza liczy z surowego inputu (`dx`/`dy`), waliduje granice mapy;
+  - roll/dash: serwer sam liczy kierunek i pilnuje cooldownów, klient tylko wysyła żądanie;
+  - pociski/uderzenia wręcz (rzut kulą, fist swing): spawn, fizyka, i **jedna** decyzja "kto kogo
+    trafił", rozgłaszana identycznie wszystkim graczom w pokoju;
+  - reconnect + grace period (12 s) po zerwaniu WebSocketu;
+  - okresowy zapis pozycji do Postgresa przez `src/app/api/internal/positions`;
+  - limity antynadużyciowe: wiadomości/s, połączenia/IP, gracze/pokój, pociski/gracz.
+- To jest **PvP kosmetyczne między prawdziwymi graczami** (brak HP/ekonomii/nagród za trafienie)
+  — nie ma tu, i nie jest planowane, AI/FSM/przeciwników sterowanych komputerowo.
 
-## Kontekst Systemowy
-Projekt to gra wieloosobowa 2D działająca w czasie rzeczywistym. Gra opiera się na architekturze autorytatywnego serwera (Authoritative Server). Repozytorium jest zorganizowane jako Monorepo (npm/pnpm workspaces) i dzieli się na trzy główne pakiety: `/client`, `/server` oraz `/shared`.
+### Decyzja (2026-09-23): Colyseus przy dodaniu HP / ekonomii / AI przeciwników
+Dodanie HP, ekonomii (transakcyjnej, nie tylko `coins` jak dziś) czy AI przeciwników **samo w
+sobie nie wymaga i nie uzasadnia** przejścia na Colyseus — to tylko więcej pól w `Conn`
+(`realtime-server/src/server.ts`) i więcej logiki w tej samej pętli tick, dokładnie ten sam wzorzec
+co dziś dla ruchu/walki (patrz sekcja `realtime-server/` wyżej). Colyseus rozwiązuje dwa problemy,
+których to repo dziś nie ma: matchmaking wielu pokoi i binarny delta-encoding stanu
+(`@colyseus/schema`) zamiast pełnego stanu jako JSON co broadcast.
+Sygnał, że warto to zrewidować: `BROADCAST_MS` wysyła pełny stan pokoju (nie diff) — to zaczyna
+realnie kosztować pasmo dopiero przy dużej liczbie encji (gracze + przeciwnicy + stan ekonomii) na
+pokój; przy dzisiejszym `MAX_PLAYERS_PER_ROOM` = 50 to nie jest wąskie gardło. Nie proponuj migracji
+na Colyseus tylko dlatego, że pojawia się HP/ekonomia/AI — dopiero przy konkretnym, zmierzonym
+problemie z pasmem albo realną potrzebą matchmakingu wielu pokoi.
 
-## Żelazne Zasady Podziału Modułów (Zabrania się łamania tych reguł):
+**Konkretne progi, przy których Colyseus staje się zasadny (rewizja tej decyzji, nie automat):**
+- Stały ruch w stronę >50 graczy w jednym pokoju (dziś to twardy limit `MAX_PLAYERS_PER_ROOM` w
+  `realtime-server/src/server.ts`) — podniesienie go w górę zamiast pozostania przy małych grupach
+  coworkingowych, dla których ten limit został ustawiony.
+- Wiele jednocześnie żywych pokoi z realną potrzebą matchmakingu (przydzielanie gracza do pokoju,
+  balansowanie obciążenia między pokojami/instancjami) — dziś `rooms` to zwykła `Map` po
+  `roomSlug`, bez żadnego mechanizmu wyboru/tworzenia pokoju za gracza.
+- Oba te warunki razem (dużo pokoi × dużo graczy na pokój) to sytuacja, w której ręczne broadcasty
+  pełnego JSON-a i ręczne zarządzanie `Map<roomSlug, Set<Conn>>` przestają się skalować i warto
+  wtedy realnie rozważyć Colyseus (albo inny framework tej klasy) zamiast dalej rozbudowywać
+  własny serwer.
 
-### 1. Moduł `/client` (Frontend)
-- **Środowisko:** Przeglądarka (hostowane na Vercel).
-- **Technologia:** TypeScript + framework renderujący (np. Phaser/Excalibur).
-- **Rola:** Wyłącznie warstwa prezentacyjna i zbieranie danych wejściowych.
-- **Zakazy dla AI:** W tym module NIE WOLNO implementować żadnej logiki decyzyjnej potworów, kalkulacji obrażeń, sztucznej inteligencji, ani weryfikacji kolizji wpływających na stan gry. Kod kliencki ma jedynie odtwarzać animacje (z plików Sprite Sheet) i dźwięki w reakcji na pakiety danych przychodzące z serwera.
+### Flaga rolloutu
+Całość powyższego (ruch + walka na serwerze) działa **tylko** gdy `NEXT_PUBLIC_REALTIME_SERVER_URL`
+jest ustawione w `src/`. Bez tej zmiennej `RoomStage.tsx` wraca do starego zachowania: ruch i
+"walka" liczone w 100% lokalnie u każdego klienta i rozgłaszane peer-to-peer przez Supabase
+Broadcast, bez żadnej wspólnej, autorytatywnej prawdy. Kierunek docelowy (ustalony
+2026-09-23): pełne przejście na wariant z `realtime-server` wszędzie, stopniowo wygaszając
+zależność od Vercel jako miejsca liczenia stanu rozgrywki — klient ma z czasem odpowiadać
+wyłącznie za wygląd (rendering/animacje), nie za wynik.
 
-### 2. Moduł `/server` (Backend)
-- **Środowisko:** Node.js, stały proces z WebSockets (np. Colyseus).
-- **Rola:** "Mózg gry". Przeliczanie głównej pętli (Game Loop), utrzymywanie jedynego, prawdziwego stanu świata.
-- **Sztuczna Inteligencja (AI Potworów):** Cała logika przeciwników musi znajdować się tutaj. Należy stosować wzorzec Skończonej Maszyny Stanów (FSM - np. stany `IDLE`, `CHASE`, `ATTACK`). 
-- **Zadania Serwera:** To serwer sprawdza odległości (pathfinding), decyduje o zmianie stanu potwora na "Atak", przelicza matematycznie obrażenia graczy, oblicza procentowy udział każdego gracza w walce i na tej podstawie rozdziela złoto oraz punkty doświadczenia. Po wykonaniu obliczeń rozsyła do klientów zaktualizowany stan świata i powiadomienia (eventy).
-
-### 3. Moduł `/shared` (Współdzielony)
-- **Rola:** Pojedyncze źródło prawdy dla typów.
-- **Zawartość:** Interfejsy TypeScript (np. `MonsterState`, `PlayerStats`), stałe konfiguracyjne (bazowe statystyki, rozmiary hitboxów), algorytmy matematyczne niezależne od platformy.
-- **Zasada:** Zarówno klient, jak i serwer muszą importować definicje z tego pakietu.
-
-## Instrukcje dla Asystenta AI przy generowaniu kodu:
-1. Generując nową mechanikę, zachowanie AI lub atak, ZAWSZE rozpocznij od definicji typów w `/shared`.
-2. Następnie zaimplementuj matematykę, FSM i logikę po stronie `/server`.
-3. Na końcu zmodyfikuj kod w `/client` wyłącznie w celu wizualnej reprezentacji zmian, które nastąpiły na serwerze (np. dodaj kod odtwarzający konkretną klatkę ze Sprite Sheet, gdy serwer wyśle sygnał ataku).
+## Instrukcje dla Asystenta AI przy generowaniu kodu w tym repo
+1. Nie zakładaj `/client` `/server` `/shared` ani Colyseus — to nie istnieje w tym repo.
+2. Nową mechanikę ruchu/walki/współdzielonego stanu zacznij od typów/stałych w
+   `realtime-server/shared/`, potem logika w `realtime-server/src/server.ts`, na końcu
+   `src/components/RoomStage.tsx` wyłącznie jako prezentacja tego, co przyszło z serwera.
+3. Nic, co dotyczy AI przeciwników/FSM potworów — to nie ma zastosowania w tym repo i nie jest
+   planowane.
+4. Jeśli ktoś poprosi o dodanie HP/ekonomii/AI przeciwników, nie proponuj przy tej okazji migracji
+   na Colyseus — patrz "Decyzja (2026-09-23)" wyżej o tym, kiedy to faktycznie byłoby zasadne.

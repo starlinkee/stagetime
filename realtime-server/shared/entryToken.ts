@@ -1,0 +1,43 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+/**
+ * Proves a WS "join" carries a `userId` that Next.js actually verified against the real
+ * Supabase session (or `null` for a legitimate guest) — not whatever the client itself would
+ * otherwise put in the message. Minted by POST /api/realtime/token (Next.js, has the real
+ * session), verified by realtime-server on `join`. See docs/stateful_server_plan.md, Faza A / A1.
+ *
+ * Lives here (not in src/lib) for the same reason as the rest of this folder — see README.md —
+ * so both sides import the exact same sign/verify logic instead of two implementations drifting.
+ */
+
+const TOKEN_TTL_MS = 30_000;
+
+function sign(secret: string, payload: string): string {
+  return createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+export function mintEntryToken(secret: string, userId: string | null, roomSlug: string): string {
+  const expiresAt = Date.now() + TOKEN_TTL_MS;
+  const payload = `${userId ?? ""}:${roomSlug}:${expiresAt}`;
+  return `${payload}:${sign(secret, payload)}`;
+}
+
+export function verifyEntryToken(
+  secret: string,
+  token: unknown,
+): { userId: string | null; roomSlug: string } | null {
+  if (typeof token !== "string") return null;
+  const parts = token.split(":");
+  if (parts.length !== 4) return null;
+  const [userIdRaw, roomSlug, expiresAtRaw, signature] = parts;
+  if (!roomSlug) return null;
+  const expiresAt = Number(expiresAtRaw);
+  if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) return null;
+
+  const expected = sign(secret, `${userIdRaw}:${roomSlug}:${expiresAtRaw}`);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+
+  return { userId: userIdRaw || null, roomSlug };
+}

@@ -4,12 +4,13 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { DungeonBackground } from "@/components/DungeonBackground";
 import { LevelBadge } from "@/components/LevelBadge";
-import { DIR_DOWN, type Dir, PixelPerson } from "@/components/PixelPerson";
-import { getAdminSettings } from "@/lib/adminSettings";
+import { DIR_DOWN, type Dir } from "@/components/PixelPerson";
+import { PlayerSprite } from "@/components/PlayerSprite";
+import { getAdminSettings, isAdminUiEnabled } from "@/lib/adminSettings";
 import { setHowToPlay } from "@/lib/howToPlay";
 import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
-import { formatMs, getTimerState } from "@/lib/timer";
+import { formatMs, getTimerState, type Phase } from "@/lib/timer";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat } from "@/lib/useChat";
 import { safeColor, useMyProfile } from "@/lib/useProfile";
@@ -18,7 +19,37 @@ import { useSession } from "@/lib/useSession";
 import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
 import { xpForMinutes } from "@/lib/xp";
-import type { ClientMessage, ServerMessage } from "../../realtime-server/shared/types";
+import type { ClientMessage, HitEvent, ServerBall, ServerMessage } from "@realtime-shared/types";
+import {
+  BALL_SPEED,
+  CHARGE_MS,
+  DASH_COOLDOWN_MS,
+  DASH_DISTANCE_MULT,
+  DASH_MS,
+  DASH_TELEPORT_AT_MS,
+  DIRS,
+  DIR_OF,
+  HIT_PAD,
+  ORB_R_MAX,
+  ORB_R_MIN,
+  PERSON_H,
+  PERSON_W,
+  ROLL_COOLDOWN_MS,
+  ROLL_MS,
+  ROLL_SPEED_MULT,
+  SCREEN_H,
+  SCREEN_W,
+  STRIKE_COOLDOWN_MS,
+  STRIKE_MS,
+  STRIKE_R,
+  STRIKE_REACH,
+  TAG_H,
+  TICK_MS,
+  DEFAULT_PLAYER_SPEED,
+  worldH,
+  worldW,
+} from "@realtime-shared/constants";
+import { clampPos } from "@realtime-shared/physics";
 
 /** Kolor etykiety fazy pod kwadratem pokoju: praca na czerwono (nie da się teraz wejść), przerwa na zielono. */
 const PHASE_COLOR = { work: "#ef4444", break: "#22c55e" } as const;
@@ -28,23 +59,21 @@ function isTypingTarget(el: EventTarget | null) {
   return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 }
 
-/** Ekran startowy (jednostki): rozmiar okna kamery — tyle widać naraz, niezależnie od rozmiaru mapy. */
-const SCREEN_W = 1600;
-const SCREEN_H = 900;
 /**
+ * Ekran startowy / rozmiar mapy (SCREEN_W/H, worldW/worldH), rozmiar postaci (PERSON_W/H) i
+ * miejsce na podpis (TAG_H) importowane z realtime-server/shared/constants.ts, jedynego miejsca,
+ * które je definiuje — serwer ruchu liczy nimi clamp granic mapy, więc redefiniowanie ich tu
+ * osobno groziłoby cichym rozjazdem klient/serwer, dokładnie jak przy playerSpeed (patrz
+ * clientSpeed niżej), tylko trudniejszym do zauważenia, bo dotyczyłoby samych granic ruchu, a nie
+ * tylko jego prędkości.
+ *
  * Cała mapa: w lobby 2× szersza i 2× wyższa niż ekran (4 ekrany łącznie, 4× powierzchnia) — reszta
  * poza startowym ekranem jest pusta, chodząc od startu w stronę krawędzi kamera ją odsłania, dopóki
  * nie trafi na koniec mapy (patrz applyCamera niżej). Pojedynczy pokój jest 4× mniejszy (mapa =
  * ekran, jak dawniej) — nie ma tam po co odkrywać pustki dookoła.
  */
-const worldW = (isLobby: boolean) => (isLobby ? SCREEN_W * 2 : SCREEN_W);
-const worldH = (isLobby: boolean) => (isLobby ? SCREEN_H * 2 : SCREEN_H);
 /** Prędkość gracza w jednostkach świata na sekundę — domyślna albo nadpisana z panelu admina, patrz playerSpeed w src/lib/adminSettings.ts. */
 const playerSpeed = () => getAdminSettings().playerSpeed;
-const PERSON_W = 32;
-const PERSON_H = 48;
-/** Miejsce nad postacią na podpis — postać nie wchodzi wyżej, żeby podpis się nie ucinał. */
-const TAG_H = 18;
 /** Minimalny odstęp losowego miejsca startu w pokoju od krawędzi ekranu. */
 const SPAWN_MARGIN = 80;
 const NO_NAME = "[no-name]";
@@ -58,8 +87,24 @@ const SPAWN_FROM_KEY = "stagetime:spawnFrom";
  * realnie puszczone (keyup), zanim znowu policzy się jako wciśnięte.
  */
 let eKeyLockedAcrossRooms = false;
-/** Najczęściej co ile ms wysyłamy własną pozycję. */
-const SEND_EVERY = 60;
+/**
+ * Najczęściej co ile ms wysyłamy własną pozycję/input. Zsynchronizowane z TICK_MS
+ * (realtime-server/shared/constants.ts) — dawniej to było niezależne 60ms, które biło w
+ * nieregularnej fazie z 50ms tickiem serwera i pogłębiało widoczne korekty pozycji (patrz
+ * RECONCILE_HZ niżej).
+ */
+const SEND_EVERY = TICK_MS;
+
+/**
+ * Reconciliation (patrz WS "state" handler i tick() niżej): serwer jest jedynym źródłem prawdy o
+ * naszej pozycji, ale zamiast co broadcast (20/s) twardo nadpisywać lokalną, przewidywaną
+ * pozycję jego wartością — co przy 60 kl/s renderowania wygląda jak drganie/cofanie się co
+ * ~50ms — domykamy różnicę stopniowo, klatka po klatce. Duży błąd (dash, spawn, reconnect)
+ * nadal ląduje natychmiast, bo wygładzanie skoku na drugi koniec mapy wyglądałoby jak ślizganie.
+ */
+const RECONCILE_SNAP_PX = 80;
+/** Jak szybko (1/s) domykamy mały błąd korekty — patrz alpha w tick(). */
+const RECONCILE_HZ = 12;
 
 /**
  * Serwer walidujący ruch (realtime-server/, patrz docs/stateful_server_plan.md) — ustawiony
@@ -67,6 +112,18 @@ const SEND_EVERY = 60;
  * wcześniej: cały kod z nią związany w tym pliku jest wtedy pomijany.
  */
 const REALTIME_SERVER_URL = process.env.NEXT_PUBLIC_REALTIME_SERVER_URL || null;
+
+/**
+ * Prędkość, jaką liczy własna predykcja klienta. Na gałęzi z realtime-server to NIE MOŻE być
+ * `playerSpeed()` (panel admina, localStorage) — panel nadpisuje ją tylko lokalnie w jednej
+ * przeglądarce, a serwer zawsze liczy fizykę stałym `DEFAULT_PLAYER_SPEED`
+ * (realtime-server/src/server.ts). Jeśli ktoś kiedyś ruszył suwak "Prędkość gracza" w panelu
+ * admina na tej przeglądarce, klient i serwer po cichu liczyły ruch dwiema różnymi prędkościami
+ * — rozjazd rósł z każdą sekundą trzymania klawisza i był najbardziej widoczny na końcu ruchu
+ * (patrz reconciliation w tick()), bo to wtedy lokalna predykcja przestawała go maskować.
+ * Bez serwera ruchu (stary tryb peer-to-peer) panel admina nadal działa normalnie.
+ */
+const clientSpeed = () => (REALTIME_SERVER_URL ? DEFAULT_PLAYER_SPEED : playerSpeed());
 
 /** Jak długo wisi dymek z wiadomością nad postacią, zanim zniknie sam. */
 const BUBBLE_MS = 6000;
@@ -77,61 +134,31 @@ const BUBBLE_MS = 6000;
  */
 const REWARD_MS = 1500;
 
+/** Jak długo wisi ekran "Congratulations" po zakończeniu fazy work, zanim wszystkich wyrzuci do lobby. */
+const CONGRATS_MS = 10_000;
+
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
 
-/** Wektory ośmiu kierunków (kolejność jak w Dir: E, SE, S, SW, W, NW, N, NE). */
-const DIRS = [
-  [1, 0],
-  [1, 1],
-  [0, 1],
-  [-1, 1],
-  [-1, 0],
-  [-1, -1],
-  [0, -1],
-  [1, -1],
-];
-/** Kierunek z kierunku ruchu: DIR_OF[dy + 1][dx + 1]. */
-const DIR_OF: Dir[][] = [
-  [5, 6, 7],
-  [4, DIR_DOWN, 0],
-  [3, 2, 1],
-];
-
-/** Tyle trzyma się spacja do pełnego naładowania kuli. */
-const CHARGE_MS = 3000;
+// DIRS/DIR_OF (direction vectors, movement → facing) plus all combat tuning (CHARGE_MS, ROLL_*,
+// DASH_*, ORB_R_*, BALL_SPEED, STRIKE_*, HIT_PAD) live in realtime-server/shared/constants.ts (see
+// docs/combat_sync_plan.md, Faza F1) — imported above, not redefined here, so this client and the
+// server can't silently drift the way movement constants briefly did before that migration's own
+// A2. DIR_OF's cells are typed as plain numbers there (shared with server code that has no
+// dependency on this component's own `Dir` type), so reads of it below are cast `as Dir`.
 /**
- * Przewrót (roll): krótki, szybki skok w kierunku w który patrzy postać (jak kula z launch() —
- * ten sam wektor z DIRS), o tyle szybszy niż zwykły chód. ROLL_MS musi się zgadzać z czasem
- * animacji .pp-roll w globals.css.
+ * Faza F4: once the combat server owns hit decisions, this client no longer judges its own
+ * fire/strike locally — but still shows it immediately (not waiting for a round trip) as a
+ * *predicted* visual, replaced by the server's own broadcast (at most BROADCAST_MS later, see
+ * realtime-server/shared/constants.ts) which is what everyone's flashes/particles actually key
+ * off. See predictedRef below.
+ *
+ * A thrown ball's predicted preview used to be pruned by a short fixed timer instead of flying
+ * under the same out-of-bounds rule ballsRef uses — on a real connection to Fly.io (round trip
+ * routinely slower than localhost) that timer fired before the server's own broadcast of the same
+ * shot ever arrived, reading as the shot stopping short and disappearing. It now flies the same
+ * as a real ball and is handed off to ballsRef (see the "state" handler) once the server confirms
+ * it, so it and the real ball are never both on screen for more than one broadcast.
  */
-const ROLL_SPEED_MULT = 2.5;
-const ROLL_MS = 240;
-/** Ile ms po zakończeniu przewrotu trzeba odczekać, zanim C znów go uruchomi. */
-const ROLL_COOLDOWN_MS = 260;
-/**
- * Unik (dash, V): krótki teleport w kierunku w który patrzy postać — dalej niż przewrót, ale bez
- * pokonywania drogi po drodze. Postać znika (jakby za chmurą) w połowie DASH_MS i w tej samej
- * chwili ląduje w docelowym miejscu, po czym się z powrotem pojawia. Czas musi się zgadzać
- * z animacją .pp-dash w globals.css.
- */
-const DASH_DISTANCE_MULT = 1.8;
-const DASH_MS = 220;
-const DASH_TELEPORT_AT_MS = DASH_MS / 2;
-/** Cooldown unik-u jest 4× dłuższy niż cooldown przewrotu. */
-const DASH_COOLDOWN_MS = ROLL_COOLDOWN_MS * 4;
-const ORB_R_MIN = 5;
-const ORB_R_MAX = 30;
-/** Prędkość lotu kuli w px na sekundę. */
-const BALL_SPEED = 520;
-/**
- * Atak wręcz (Fist swings, klawisz 1): krótki zasięg, bez ładowania — uderza od razu po Space,
- * zamiast lecieć jak kula. Hitbox pojawia się tuż przed postacią i znika po STRIKE_MS.
- */
-const STRIKE_REACH = 22;
-const STRIKE_R = 20;
-const STRIKE_MS = 150;
-/** Cooldown między atakami wręcz, żeby nie dało się spamować Space bez ograniczeń. */
-const STRIKE_COOLDOWN_MS = 260;
 
 type Ball = {
   x: number;
@@ -158,8 +185,6 @@ type Shard = {
 /** Czas trwania animacji uderzenia (ms) i życia odłamków kuli. */
 const HIT_MS = 350;
 const SHARD_MS = 500;
-/** Hitbox postaci: prostokąt sylwetki powiększony o tyle px z każdej strony. */
-const HIT_PAD = 4;
 
 /**
  * Kwadrat na scenie: przytrzymanie E przez ROOM_ENTER_MS stojąc w nim albo przenosi do innego
@@ -229,12 +254,6 @@ const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 const asDir = (d: unknown): Dir =>
   Number.isInteger(d) && (d as number) >= 0 && (d as number) <= 7 ? (d as Dir) : DIR_DOWN;
 
-/** Ogranicza pozycję (np. z sieci) do planszy. */
-const clampPos = (x: number, y: number, isLobby: boolean) => ({
-  x: Math.min(worldW(isLobby) - PERSON_W, Math.max(0, x)),
-  y: Math.min(worldH(isLobby) - PERSON_H, Math.max(TAG_H, y)),
-});
-
 /** Jak często (ms) zapisujemy pozycję w bazie, o ile się zmieniła. */
 const SAVE_EVERY = 2000;
 
@@ -264,6 +283,32 @@ async function savePosition(userId: string, room: string, p: Pos) {
       { onConflict: "user_id,room" },
     ) ?? { error: null };
   if (error) console.warn("player_positions upsert (see supabase/migrations/0004)", error);
+}
+
+/**
+ * Signed token realtime-server requires on WS `join` — proves `userId` to the movement server
+ * instead of the client just asserting it (see /api/realtime/token and
+ * docs/stateful_server_plan.md, Faza A / A1). `null` on any failure (offline, misconfigured
+ * server): the caller then simply skips joining the movement server for this attempt, same as
+ * REALTIME_SERVER_URL being unset.
+ */
+async function fetchRealtimeJoinToken(roomSlug: string, accessToken: string | null): Promise<string | null> {
+  try {
+    const res = await fetch("/api/realtime/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify({ roomSlug }),
+    });
+    if (!res.ok) return null;
+    const data: unknown = await res.json();
+    const token = data && typeof data === "object" && "token" in data ? (data as { token: unknown }).token : null;
+    return typeof token === "string" ? token : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Środek kuli ładowanej nad głową postaci (nie wychodzi poza górną krawędź sceny). */
@@ -453,6 +498,26 @@ export function RoomStage({
   // phase only — no XP/coins while waiting for work to start or during the break. Own XP then
   // updates live via useMyProfile's Realtime sub.
   const xpAccruing = xpRunning && (roomPhase === null || roomPhase === "work");
+  // Work → break transition (this room only, never the lobby itself, which has no `phase`):
+  // shows a "Congratulations" screen for CONGRATS_MS, then sends everyone in the room back to
+  // the lobby. `roomPhase` is a pure function of the server clock (see getTimerState), so every
+  // client watching the same room sees the transition at the same instant without needing a
+  // server broadcast for it.
+  const prevRoomPhaseRef = useRef<Phase | null>(null);
+  const [showCongrats, setShowCongrats] = useState(false);
+  useEffect(() => {
+    const prev = prevRoomPhaseRef.current;
+    prevRoomPhaseRef.current = roomPhase;
+    if (prev === "work" && roomPhase === "break") setShowCongrats(true);
+  }, [roomPhase]);
+  useEffect(() => {
+    if (!showCongrats) return;
+    const timer = setTimeout(() => {
+      window.sessionStorage.setItem(SPAWN_FROM_KEY, roomSlug);
+      router.push("/");
+    }, CONGRATS_MS);
+    return () => clearTimeout(timer);
+  }, [showCongrats, roomSlug, router]);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
@@ -525,6 +590,14 @@ export function RoomStage({
   // Czerwony komunikat po odmowie wejścia (np. trwa faza work) — znika sam po kilku sekundach.
   const [entryError, setEntryError] = useState<string | null>(null);
   const entryErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Stan połączenia z serwerem ruchu (realtime-server/) — tylko gdy REALTIME_SERVER_URL jest
+   * ustawiony (patrz Faza B / B1 w docs/stateful_server_plan.md). "connecting" to pierwsza próba
+   * po zamontowaniu (nie pokazujemy dla niej banera — to nie jest "reconnecting", tylko normalny
+   * start); "reconnecting" to próba po zerwanym połączeniu, z automatycznym retry z backoffem —
+   * to jedyny stan pokazujący baner w UI.
+   */
+  const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const myPos = useRef<Pos>({
     ...clampPos(WORLD_W / 2, WORLD_H / 2, isLobby),
     d: DIR_DOWN,
@@ -537,6 +610,21 @@ export function RoomStage({
   const [walkers, setWalkers] = useState<Record<string, boolean>>({});
   const walkTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const ballsRef = useRef<Ball[]>([]);
+  /** Mirrors the connect effect's local `ws` so the color/nick-change effect below (a separate
+   * effect, doesn't close over that one's local variable) can push a live `profile` update instead
+   * of only sending the color realtime-server saw at the original `join` — otherwise a color
+   * fetched asynchronously after that join (see useProfile's DEFAULT_COLOR fallback) would leave
+   * every ball this player throws stuck showing the placeholder color forever. */
+  const realtimeWsRef = useRef<WebSocket | null>(null);
+  /**
+   * Faza F4 (docs/combat_sync_plan.md): only populated when REALTIME_SERVER_URL is set. Holds the
+   * shooter's own just-fired ball/strike for instant local feedback — never checked against
+   * anyone's position, purely visual, and pruned by `until` (PREDICT_MS/STRIKE_MS) regardless of
+   * whether the server's own broadcast of the same shot has arrived yet. `ballsRef` itself is, in
+   * that mode, replaced wholesale by the server's ball list on every `state` message instead of
+   * being simulated/hit-tested locally — see the WS message handler and tick() below.
+   */
+  const predictedRef = useRef<Ball[]>([]);
   const shardsRef = useRef<Shard[]>([]);
   /** Kiedy (performance.now) dana osoba dostała kulą: klucz → czas; własna pod "me". */
   const hitRef = useRef<Record<string, number>>({});
@@ -694,6 +782,11 @@ export function RoomStage({
     // Zapis pozycji w bazie (tylko zalogowany, aktywna karta, po wczytaniu starej pozycji).
     let saved = { x: NaN, y: NaN, d: -1 };
     const persist = () => {
+      // realtime-server owns saving position on this path (Faza C / C2, see
+      // docs/stateful_server_plan.md) — writing here too would race it, sometimes overwriting
+      // the server's authoritative position with the client's own (possibly pre-reconciliation)
+      // one.
+      if (REALTIME_SERVER_URL) return;
       const uid = userIdRef.current;
       const p = myPos.current;
       if (!uid || !activeRef.current || !spawnLoadedRef.current) return;
@@ -710,32 +803,85 @@ export function RoomStage({
     // Serwer jest źródłem prawdy o własnej pozycji: co event "state" nadpisujemy nią lokalne
     // przewidywanie (patrz reconciliation w tick() niżej) — dzięki temu sfałszowana lokalnie
     // pozycja wraca na miejsce w ciągu jednego rozgłoszenia serwera (patrz BROADCAST_MS).
-    const ws = REALTIME_SERVER_URL ? new WebSocket(REALTIME_SERVER_URL) : null;
-    // Ostatnia znana pozycja z serwera dla nas — czeka tu na najbliższą klatkę tick().
+    //
+    // `ws` jest `let`, nie `const` — reconnect (Faza B / B1) podmienia je na nowy socket pod tym
+    // samym bindingiem, więc `tick()` niżej (który czyta `ws` z tego domknięcia) automatycznie
+    // widzi aktualne połączenie bez własnej logiki reconnect.
+    let ws: WebSocket | null = null;
+    let wsCleanedUp = false;
+    let reconnectAttempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    // Ostatnia znana autorytatywna pozycja z serwera dla nas — NIE jest zerowana po jednym użyciu:
+    // tick() dogania ją co klatkę (patrz RECONCILE_HZ), więc kolejny "state" po prostu przesuwa
+    // cel, do którego lokalna predykcja nadal płynnie dąży.
     let serverMe: { x: number; y: number; d: number } | null = null;
-    if (ws) {
-      ws.addEventListener("open", () => {
-        const join: ClientMessage = {
-          type: "join",
-          id: netKey,
-          roomSlug,
-          userId: userIdRef.current,
-          nick: metaRef.current.nick,
-          color: colorRef.current,
-        };
-        ws.send(JSON.stringify(join));
+    // Kierunek koryguje się jednorazowo, nie płynnie (to dyskretna orientacja sprite'a, nie
+    // pozycja) — osobna flaga, żeby nie stosować go ponownie co klatkę dopóki nie przyjdzie nowy.
+    let serverDirPending = false;
+
+    const scheduleReconnect = () => {
+      if (wsCleanedUp) return;
+      setWsStatus("reconnecting");
+      // Backoff: 500ms, 1s, 2s, 4s, 8s (cap), ±20% jitter to avoid every dropped tab retrying in
+      // lockstep against the same Machine right after a blip.
+      const delayBase = Math.min(8000, 500 * 2 ** reconnectAttempts);
+      reconnectAttempts += 1;
+      const delay = delayBase * (0.8 + Math.random() * 0.4);
+      reconnectTimer = setTimeout(connectWs, delay);
+    };
+
+    function connectWs() {
+      if (wsCleanedUp || !REALTIME_SERVER_URL) return;
+      const socket = new WebSocket(REALTIME_SERVER_URL);
+      ws = socket;
+      realtimeWsRef.current = socket;
+      socket.addEventListener("open", () => {
+        if (socket !== ws) return;
+        reconnectAttempts = 0;
+        setWsStatus("connected");
+        // userId isn't sent directly — the token (minted server-side from the real Supabase
+        // session) is the only thing realtime-server trusts for it, see fetchRealtimeJoinToken.
+        void (async () => {
+          const token = await fetchRealtimeJoinToken(roomSlug, sessionRef.current?.access_token ?? null);
+          if (!token || socket !== ws || socket.readyState !== WebSocket.OPEN) return;
+          // Same `id` (netKey) on every (re)join — this is exactly what lets realtime-server
+          // recognize a reconnect as the same player and resume position instead of respawning
+          // (B2 grace period, see docs/stateful_server_plan.md).
+          // Lobby only: names the room we just left (same value as `effectiveSpawnZoneSlug`
+          // above) so the server can spawn us at that room's own lobby zone instead of guessing —
+          // see `fromRoomSlug` in @realtime-shared/types.
+          const join: ClientMessage = {
+            type: "join",
+            id: netKey,
+            token,
+            nick: metaRef.current.nick,
+            color: colorRef.current,
+            fromRoomSlug: isLobby ? effectiveSpawnZoneSlug ?? null : null,
+          };
+          socket.send(JSON.stringify(join));
+        })();
       });
-      ws.addEventListener("message", (ev) => {
+      socket.addEventListener("message", (ev) => {
+        if (socket !== ws) return;
         let msg: ServerMessage;
         try {
           msg = JSON.parse(ev.data as string);
         } catch {
           return;
         }
+        if (msg.type === "join_rejected") {
+          // No occupancy-aware room picker on this path yet — surfacing this is future UX work,
+          // not required for the server to correctly defend itself (A3 in
+          // docs/stateful_server_plan.md). The player simply doesn't appear to others via this
+          // server; Supabase presence/positions are unaffected.
+          console.warn("realtime-server: join rejected —", msg.reason);
+          return;
+        }
         if (msg.type !== "state") return;
         for (const p of msg.players) {
           if (p.id === netKey) {
             serverMe = { x: p.x, y: p.y, d: p.d };
+            serverDirPending = true;
             continue;
           }
           // Mirrors the Supabase "pos" broadcast handler below (same posRef/setOthers/setWalkers
@@ -752,9 +898,53 @@ export function RoomStage({
             prevOthers[p.id] ? { ...prevOthers, [p.id]: { ...prevOthers[p.id], ...nextPos } } : prevOthers,
           );
         }
+        // Faza F4 (docs/combat_sync_plan.md): the server is the only judge of hits now — replace
+        // ballsRef wholesale with its list (rendering only, no local physics/collision against
+        // it) instead of simulating balls locally the way the pre-migration code did. `predictedRef`
+        // (below, tick()) still gives the shooter's own shot instant local feedback in the
+        // meantime; everyone's hit flash/particles come exclusively from `msg.hits` here.
+        ballsRef.current = msg.balls.map(
+          (b: ServerBall): Ball => ({
+            x: b.x,
+            y: b.y,
+            vx: b.vx,
+            vy: b.vy,
+            r: b.r,
+            color: b.color,
+            owner: b.owner,
+            melee: b.melee,
+            until: b.until,
+          }),
+        );
+        // predictedRef only ever holds this connection's own shots, so the moment the server
+        // confirms at least one of ours is alive, the local preview has done its job — drop it
+        // instead of drawing both side by side (which, before this, is exactly what a slow round
+        // trip would do: show the correctly-colored prediction *and* the server's own ball, the
+        // latter still carrying whatever color/nick this connection's original `join` sent — see
+        // the "profile" message below for why that can lag the real one).
+        const myKey = keyRef.current || "me";
+        if (predictedRef.current.length > 0 && ballsRef.current.some((b) => b.owner === myKey)) {
+          predictedRef.current = [];
+        }
+        const hits: HitEvent[] = msg.hits;
+        for (const h of hits) {
+          const t = performance.now();
+          hitRef.current[h.targetId === netKey ? "me" : h.targetId] = t;
+          burst({ x: h.x, y: h.y, r: h.r, color: h.color }, t);
+        }
+      });
+      socket.addEventListener("close", () => {
+        if (socket !== ws || wsCleanedUp) return;
+        scheduleReconnect();
       });
     }
+    if (REALTIME_SERVER_URL) connectWs();
     let lastInputSent = 0;
+    // Ostatni dx/dy faktycznie wysłany do serwera — patrz edge-triggered send w tick() niżej:
+    // bez tego krótkie stuknięcie strzałki (krócej niż SEND_EVERY) mogło nigdy nie trafić do
+    // serwera, bo wysyłka była tylko na zegarze, nie na zmianie stanu klawiszy.
+    let lastSentDx = 0;
+    let lastSentDy = 0;
 
     const emit = (event: string, payload: object = {}) => {
       if (!activeRef.current) return;
@@ -768,10 +958,27 @@ export function RoomStage({
 
     const release = () => {
       if (chargeStart === null) return;
-      const p = Math.min(1, (performance.now() - chargeStart) / CHARGE_MS);
+      const chargeMs = performance.now() - chargeStart;
+      const p = Math.min(1, chargeMs / CHARGE_MS);
       chargeStart = null;
       if (!activeRef.current) return;
-      launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
+      if (REALTIME_SERVER_URL) {
+        // Faza F4: the server decides the real ball (chargeMs capped to what it actually saw
+        // elapse since our own `charge: { on: true }`, see the "fire" handler in
+        // realtime-server/src/server.ts) — this is only the shooter's own instant, cosmetic
+        // preview. It flies under the same rule as a real ball (out-of-bounds, see tick() below)
+        // rather than a short fixed timer, and gets handed off to ballsRef the moment the server's
+        // own broadcast confirms it — see the "state" handler above.
+        launch(predictedRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const fire: ClientMessage = { type: "fire", chargeMs };
+          ws.send(JSON.stringify(fire));
+        }
+      } else {
+        launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
+      }
+      // Still emitted in both modes — other clients use "fire" only to clear the charging halo
+      // they're drawing for this player (chargingRef), unrelated to who-hit-who.
       emit("fire", { ...myPos.current, p });
       // Every real shot by a signed-in user bumps their all-time count (shown in
       // src/components/ProfileMenu.tsx), server-side via supabase/migrations/0012_balls_shot.sql.
@@ -785,6 +992,13 @@ export function RoomStage({
     const cancelCharge = () => {
       if (chargeStart === null) return;
       chargeStart = null;
+      if (REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
+        // Tell the server charging stopped too — otherwise its recorded chargeStartAt for this
+        // connection would linger and let a later, genuinely-quick fire claim a bogus high
+        // chargeMs (see the "charge"/"fire" handlers in realtime-server/src/server.ts).
+        const off: ClientMessage = { type: "charge", on: false };
+        ws.send(JSON.stringify(off));
+      }
       emit("charge", { on: false });
     };
 
@@ -911,7 +1125,9 @@ export function RoomStage({
         const { r, cx, cy } = orbAt(pos.x, pos.y, p);
         drawOrb(ctx, cx, cy, r * pulse(p), othersRef.current[k]?.color ?? "#ffffff", p);
       }
-      for (const b of ballsRef.current) {
+      // predictedRef is empty in the legacy (no REALTIME_SERVER_URL) branch, so this concat is a
+      // no-op there — see predictedRef's own doc comment.
+      for (const b of [...ballsRef.current, ...predictedRef.current]) {
         if (b.melee) {
           // Zamach pięścią: krótki, gasnący błysk zamiast pływającej kuli.
           const life = b.until !== undefined ? Math.max(0, (b.until - t) / STRIKE_MS) : 1;
@@ -956,7 +1172,7 @@ export function RoomStage({
       ctx.globalAlpha = 0.85;
     };
 
-    const burst = (b: Ball, t: number) => {
+    const burst = (b: { x: number; y: number; r: number; color: string }, t: number) => {
       const n = 8 + Math.round(b.r / 2);
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2 + Math.random() * 0.5;
@@ -985,18 +1201,37 @@ export function RoomStage({
         dir = spawn.d;
         setMyDir(spawn.d);
       }
-      // Korekta z serwera ruchu (patrz WS wyżej) — pomijana w trakcie przewrotu/uniku, żeby ich
-      // krótka, czysto lokalna animacja nie została ucięta w pół; zaraz po niej i tak wróci do
-      // pozycji z serwera przy najbliższym rozgłoszeniu (patrz BROADCAST_MS w realtime-server/).
-      if (serverMe && !rollingNow && !dashingNow) {
-        x = serverMe.x;
-        y = serverMe.y;
-        const newDir = asDir(serverMe.d);
-        if (newDir !== dir) {
-          dir = newDir;
-          setMyDir(newDir);
+      // Korekta z serwera ruchu (patrz WS wyżej). Faza F2 (docs/combat_sync_plan.md): serwer
+      // teraz też liczy przewrót/unik (patrz "roll"/"dash" w realtime-server/src/server.ts) tą
+      // samą matematyką co niżej, więc korekta przestała być pomijana w ich trakcie — wcześniej
+      // pomijano ją tylko dlatego, że serwer o nich nic nie wiedział.
+      //
+      // Reconciliation, nie twardy snap: `serverMe` żyje między broadcastami (nie jest tu
+      // zerowane), więc każda klatka domyka tylko ułamek błędu (`alpha`, zależny od dt — patrz
+      // RECONCILE_HZ). Przy typowym drobnym rozjeździe (kwantyzacja 20Hz ticku, zaokrąglenia)
+      // to wygląda jak płynny ruch; przy dużym skoku (dash, spawn, reconnect po grace period)
+      // przekraczamy RECONCILE_SNAP_PX i wtedy nadal lądujemy tam natychmiast — wygładzanie
+      // takiego skoku wyglądałoby jak ślizganie się przez pół mapy.
+      if (serverMe) {
+        const errX = serverMe.x - x;
+        const errY = serverMe.y - y;
+        const errDist = Math.hypot(errX, errY);
+        if (errDist > RECONCILE_SNAP_PX) {
+          x = serverMe.x;
+          y = serverMe.y;
+        } else if (errDist > 0.05) {
+          const alpha = 1 - Math.exp(-RECONCILE_HZ * dt);
+          x += errX * alpha;
+          y += errY * alpha;
         }
-        serverMe = null;
+        if (serverDirPending) {
+          const newDir = asDir(serverMe.d);
+          if (newDir !== dir) {
+            dir = newDir;
+            setMyDir(newDir);
+          }
+          serverDirPending = false;
+        }
       }
       const on = activeRef.current;
       const dashing = on && t < dashUntil;
@@ -1031,16 +1266,35 @@ export function RoomStage({
           : on
             ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0)
             : 0;
-      // Surowa intencja ruchu (bez przewrotu/uniku — serwer ich jeszcze nie zna, patrz
-      // docs/stateful_server_plan.md) wysyłana do serwera ruchu. Niezależnie od `dirty`
-      // (które dotyczy pozycji, nie intencji) — inaczej puszczenie strzałki nigdy by się nie
-      // wysłało, gdyby akurat ostatnia klatka ruchu nie zmieniła pozycji.
-      if (ws && ws.readyState === WebSocket.OPEN && t - lastInputSent >= SEND_EVERY) {
-        const rawDx = on ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0) : 0;
-        const rawDy = on ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0) : 0;
-        const input: ClientMessage = { type: "input", dx: rawDx as -1 | 0 | 1, dy: rawDy as -1 | 0 | 1 };
+      // Surowa intencja ruchu (bez przewrotu/uniku — te idą przez osobne wiadomości "roll"/"dash",
+      // patrz onKeyDown, Faza F2 w docs/combat_sync_plan.md) wysyłana do serwera ruchu. Niezależnie
+      // od `dirty` (które dotyczy pozycji, nie intencji) — inaczej puszczenie strzałki nigdy by się
+      // nie wysłało, gdyby akurat ostatnia klatka ruchu nie zmieniła pozycji.
+      //
+      // Wysyłka na zmianę (edge-triggered), nie tylko na zegarze: `held` zmienia się na
+      // keydown/keyup (patrz onKeyDown/onKeyUp), ale ta pętla próbkuje je tylko raz na klatkę —
+      // przy starym kodzie (wysyłka wyłącznie co SEND_EVERY) krótkie stuknięcie strzałki mogło w
+      // całości zmieścić się między dwiema wysyłkami i serwer nigdy się o nim nie dowiadywał:
+      // klient lokalnie ruszał się i wracał, po czym reconciliation ściągała go z powrotem, bo
+      // serwer twierdził, że w ogóle się nie ruszył. Heartbeat co SEND_EVERY zostaje jako
+      // zabezpieczenie (np. na wypadek zgubienia stanu przy reconnect), ale to zmiana dx/dy jest
+      // teraz głównym wyzwalaczem wysyłki.
+      const rawDx = on ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0) : 0;
+      const rawDy = on ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0) : 0;
+      const inputChanged = rawDx !== lastSentDx || rawDy !== lastSentDy;
+      if (ws && ws.readyState === WebSocket.OPEN && (inputChanged || t - lastInputSent >= SEND_EVERY)) {
+        const input: ClientMessage = {
+          type: "input",
+          dx: rawDx as -1 | 0 | 1,
+          dy: rawDy as -1 | 0 | 1,
+          // Admin panel debug knob — realtime-server only honors this outside production, see
+          // DEV_OVERRIDES_ENABLED in server.ts.
+          ...(isAdminUiEnabled() ? { speedOverride: getAdminSettings().playerSpeed } : {}),
+        };
         ws.send(JSON.stringify(input));
         lastInputSent = t;
+        lastSentDx = rawDx;
+        lastSentDy = rawDy;
       }
       const moving = !rolling && !dashing && Boolean(dx || dy);
       if (moving !== walkingNow) {
@@ -1048,7 +1302,7 @@ export function RoomStage({
         setMyWalking(moving);
       }
       if (!rolling && !dashing && (dx || dy)) {
-        const nd = DIR_OF[dy + 1][dx + 1];
+        const nd = DIR_OF[dy + 1][dx + 1] as Dir;
         if (nd !== dir) {
           dir = nd;
           setMyDir(nd);
@@ -1056,7 +1310,7 @@ export function RoomStage({
         }
       }
       const norm = !rolling && dx && dy ? Math.SQRT1_2 : 1;
-      const speed = playerSpeed() * (rolling ? ROLL_SPEED_MULT : 1);
+      const speed = clientSpeed() * (rolling ? ROLL_SPEED_MULT : 1);
       const maxX = WORLD_W - PERSON_W;
       const maxY = WORLD_H - PERSON_H;
       const nx = Math.max(0, Math.min(maxX, x + dx * speed * dt * norm));
@@ -1186,35 +1440,64 @@ export function RoomStage({
         lastSent = t;
         dirty = false;
       }
-      // Kule w locie (własne i cudze) znikają po opuszczeniu sceny; hitboxy ataku wręcz stoją
-      // w miejscu i znikają po `until`, niezależnie od tego czy kogoś trafiły.
-      ballsRef.current = ballsRef.current.filter((b) => {
-        if (b.until !== undefined && t > b.until) return false;
-        if (!b.melee) {
+      if (REALTIME_SERVER_URL) {
+        // Faza F4 (docs/combat_sync_plan.md): the server already decided who got hit (see the WS
+        // "state" handler above, which replaces ballsRef wholesale and raises hitRef from
+        // msg.hits) — this only keeps positions moving smoothly between broadcasts
+        // (extrapolation, same per-frame math as the legacy branch below), never re-deciding
+        // anything. predictedRef is the shooter's own instant, purely cosmetic shot/strike —
+        // pruned by its own short `until` regardless of whether the server's real one has
+        // arrived yet, never checked against anyone's position.
+        ballsRef.current = ballsRef.current.filter((b) => {
+          if (b.until !== undefined && t > b.until) return false;
+          if (!b.melee) {
+            b.x += b.vx * dt;
+            b.y += b.vy * dt;
+          }
+          if (b.melee) return true;
+          return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
+        });
+        predictedRef.current = predictedRef.current.filter((b) => {
+          // Melee still expires on its own short `until` (set by strike()) — it doesn't move, so
+          // there's no out-of-bounds moment to prune it on. A thrown ball has no `until` at all:
+          // it flies under the exact same out-of-bounds rule as ballsRef above, and is normally
+          // handed off (removed here) by the "state" handler well before it'd ever reach that edge.
+          if (b.melee) return b.until !== undefined && t <= b.until;
           b.x += b.vx * dt;
           b.y += b.vy * dt;
-        }
-        // Pierwsza trafiona osoba (nie strzelec) zatrzymuje kulę: kula się rozpada, postać dostaje.
-        let target: string | null = null;
-        if (b.owner !== (keyRef.current || "me") && hits(b, x, y)) target = "me";
-        else {
-          for (const [k, o] of Object.entries(othersRef.current)) {
-            if (k === b.owner) continue;
-            const px = posRef.current[k] ?? o;
-            if (hits(b, px.x, px.y)) {
-              target = k;
-              break;
+          return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
+        });
+      } else {
+        // Kule w locie (własne i cudze) znikają po opuszczeniu sceny; hitboxy ataku wręcz stoją
+        // w miejscu i znikają po `until`, niezależnie od tego czy kogoś trafiły.
+        ballsRef.current = ballsRef.current.filter((b) => {
+          if (b.until !== undefined && t > b.until) return false;
+          if (!b.melee) {
+            b.x += b.vx * dt;
+            b.y += b.vy * dt;
+          }
+          // Pierwsza trafiona osoba (nie strzelec) zatrzymuje kulę: kula się rozpada, postać dostaje.
+          let target: string | null = null;
+          if (b.owner !== (keyRef.current || "me") && hits(b, x, y)) target = "me";
+          else {
+            for (const [k, o] of Object.entries(othersRef.current)) {
+              if (k === b.owner) continue;
+              const px = posRef.current[k] ?? o;
+              if (hits(b, px.x, px.y)) {
+                target = k;
+                break;
+              }
             }
           }
-        }
-        if (target) {
-          hitRef.current[target] = t;
-          burst(b, t);
-          return false;
-        }
-        if (b.melee) return true;
-        return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
-      });
+          if (target) {
+            hitRef.current[target] = t;
+            burst(b, t);
+            return false;
+          }
+          if (b.melee) return true;
+          return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
+        });
+      }
       draw(t);
       raf = requestAnimationFrame(tick);
     };
@@ -1237,8 +1520,21 @@ export function RoomStage({
             const now = performance.now();
             if (now >= strikeCooldownUntil) {
               strikeCooldownUntil = now + STRIKE_COOLDOWN_MS;
-              strike(ballsRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
-              emit("strike", { ...myPos.current });
+              if (REALTIME_SERVER_URL) {
+                // Faza F4: own instant, cosmetic preview only — the server decides the real
+                // hitbox/hit (see the "strike" handler in realtime-server/src/server.ts).
+                strike(predictedRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                  const strikeMsg: ClientMessage = { type: "strike" };
+                  ws.send(JSON.stringify(strikeMsg));
+                }
+              } else {
+                strike(ballsRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+                // No longer emitted once the server owns strikes — nothing listens for it there
+                // (see the "strike" broadcast handler above), and other clients in that mode
+                // render melee hits from the server's own ball list/hit events instead.
+                emit("strike", { ...myPos.current });
+              }
               // Every real swing by a signed-in user bumps their all-time count (shown in
               // src/components/ProfileMenu.tsx), server-side via supabase/migrations/0023_fist_swings.sql.
               if (userIdRef.current)
@@ -1253,6 +1549,10 @@ export function RoomStage({
         }
         if (!e.repeat && chargeStart === null) {
           chargeStart = performance.now();
+          if (REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
+            const on: ClientMessage = { type: "charge", on: true };
+            ws.send(JSON.stringify(on));
+          }
           emit("charge", { on: true });
         }
         return;
@@ -1271,6 +1571,14 @@ export function RoomStage({
             rollDy = uy / n;
             rollUntil = now + ROLL_MS;
             rollCooldownUntil = rollUntil + ROLL_COOLDOWN_MS;
+            // Faza F2 (docs/combat_sync_plan.md): request only — the server derives direction
+            // from its own copy of `d` and enforces its own cooldown independently (see the
+            // "roll" handler in realtime-server/src/server.ts); this local state still drives our
+            // own animation/prediction exactly as before.
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              const roll: ClientMessage = { type: "roll" };
+              ws.send(JSON.stringify(roll));
+            }
           }
         }
         return;
@@ -1281,7 +1589,7 @@ export function RoomStage({
           if (now >= dashCooldownUntil && now >= rollUntil) {
             const [ux, uy] = DIRS[dir];
             const n = Math.hypot(ux, uy) || 1;
-            const dashDistance = playerSpeed() * ROLL_SPEED_MULT * (ROLL_MS / 1000) * DASH_DISTANCE_MULT;
+            const dashDistance = clientSpeed() * ROLL_SPEED_MULT * (ROLL_MS / 1000) * DASH_DISTANCE_MULT;
             const maxX = WORLD_W - PERSON_W;
             const maxY = WORLD_H - PERSON_H;
             dashTargetX = Math.max(0, Math.min(maxX, x + (ux / n) * dashDistance));
@@ -1290,6 +1598,12 @@ export function RoomStage({
             dashUntil = now + DASH_MS;
             dashCooldownUntil = dashUntil + DASH_COOLDOWN_MS;
             dashTeleported = false;
+            // Faza F2: same "request, not assertion" pattern as roll above — see the "dash"
+            // handler in realtime-server/src/server.ts.
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              const dash: ClientMessage = { type: "dash" };
+              ws.send(JSON.stringify(dash));
+            }
           }
         }
         return;
@@ -1339,7 +1653,10 @@ export function RoomStage({
     return () => {
       persist();
       clearInterval(saveTimer);
+      wsCleanedUp = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
+      realtimeWsRef.current = null;
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", persist);
       cancelAnimationFrame(raf);
@@ -1404,11 +1721,20 @@ export function RoomStage({
         };
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(p)) return;
         delete chargingRef.current[k];
-        const px = clampPos(x, y, isLobby);
-        const c = othersRef.current[k]?.color ?? "#ffffff";
-        launch(ballsRef.current, px.x, px.y, asDir(d), clamp01(p), c, k);
+        // Faza F4 (docs/combat_sync_plan.md): once the combat server owns hits, this event is
+        // only used above to clear the charging halo — the actual ball comes from realtime-
+        // server's own "state" broadcast instead, so spawning a second, peer-simulated one here
+        // would double-render the same shot.
+        if (!REALTIME_SERVER_URL) {
+          const px = clampPos(x, y, isLobby);
+          const c = othersRef.current[k]?.color ?? "#ffffff";
+          launch(ballsRef.current, px.x, px.y, asDir(d), clamp01(p), c, k);
+        }
       })
       .on("broadcast", { event: "strike" }, ({ payload }) => {
+        // Faza F4: no longer emitted by other clients once REALTIME_SERVER_URL is set (see the
+        // KeyDown handler above) — this listener only still matters for the legacy path.
+        if (REALTIME_SERVER_URL) return;
         const { k, x, y, d } = payload as { k: string; x: number; y: number; d: unknown };
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y)) return;
         const px = clampPos(x, y, isLobby);
@@ -1511,6 +1837,15 @@ export function RoomStage({
     metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId };
     const channel = channelRef.current;
     if (channel?.state === "joined" && activeRef.current) void channel.track({ ...metaRef.current, ...myPos.current });
+    // realtime-server only learns nick/color from the original `join` — this profile fetch
+    // routinely resolves after that join already went out with useProfile's DEFAULT_COLOR
+    // placeholder, so without this every ball this connection ever throws would keep the
+    // placeholder color server-side forever (see realtimeWsRef's own doc comment).
+    const socket = realtimeWsRef.current;
+    if (REALTIME_SERVER_URL && socket && socket.readyState === WebSocket.OPEN) {
+      const profileMsg: ClientMessage = { type: "profile", nick, color };
+      socket.send(JSON.stringify(profileMsg));
+    }
   }, [color, nick, profile.xp, userId]);
 
   useEffect(() => () => {
@@ -1647,12 +1982,26 @@ export function RoomStage({
   // Warstwa na cały ekran, pod treścią strony: postacie są „za” tekstem i czatem, lekko przygaszone.
   return (
     <>
+    {showCongrats && (
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-zinc-950/90 text-center backdrop-blur-sm">
+        <p className="text-4xl font-bold text-amber-400">🎉 Congratulations!</p>
+        <p className="text-lg text-zinc-200">Work session complete — heading back to the lobby…</p>
+      </div>
+    )}
     {entryError && (
       <div
         role="alert"
         className="pointer-events-none fixed left-1/2 top-20 z-20 -translate-x-1/2 rounded-full bg-red-600/90 px-4 py-2 text-sm font-medium text-white shadow-lg"
       >
         {entryError}
+      </div>
+    )}
+    {REALTIME_SERVER_URL && wsStatus === "reconnecting" && (
+      <div
+        role="status"
+        className="pointer-events-none fixed left-1/2 top-20 z-20 -translate-x-1/2 rounded-full bg-zinc-900/90 px-4 py-2 text-sm font-medium text-white shadow-lg dark:bg-zinc-100/95 dark:text-zinc-900"
+      >
+        Reconnecting…
       </div>
     )}
     {superseded && (
@@ -1688,8 +2037,7 @@ export function RoomStage({
             {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
             {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
             <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
-            <PixelPerson
-              color={o.color}
+            <PlayerSprite
               label={o.nick ?? NO_NAME}
               size={PERSON_W / 8}
               dir={o.d}
@@ -1706,8 +2054,7 @@ export function RoomStage({
           {bubbles.me && <ChatBubble text={bubbles.me.text} />}
           {rewards.me && <RewardPopup coins={rewards.me.coins} xp={rewards.me.xp} id={rewards.me.id} />}
           <NameTag name={nick} xp={session ? profile.xp : undefined} />
-          <PixelPerson
-            color={color}
+          <PlayerSprite
             label={nick ?? NO_NAME}
             size={PERSON_W / 8}
             dir={myDir}
