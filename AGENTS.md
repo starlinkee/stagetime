@@ -115,6 +115,34 @@ się dwa razy. Dwie znane przyczyny:
   `realtime-server/` zawsze idzie bezpośrednio na `studyquest`, nie ma tam integracji git ani
   kolizji ID. Fly **nie ma** dziś osobnego env preview/staging — jeden `fly.toml`, jedna appka.
 
+### Branch policy (od 2026-09-23): tylko `main` i `dev`, żadnych branchy feature'owych
+Pracujemy wyłącznie na dwóch branchach — `main` (prod) i `dev` (preview, patrz sekcja Deploy
+wyżej). Nie twórz nowych branchy (`feature/...`, `fix/...` itd.) na potrzeby pojedynczej zmiany —
+commituj bezpośrednio na `dev` (albo na `main`, jeśli zmiana ma od razu iść na prod).
+
+Do tego są dwa skrypty w `scripts/` (`git-push-target.sh` to wspólna logika, `git-push-preview.sh`
+i `git-push-prod.sh` to cienkie wrappery), zarejestrowane jako aliasy gita w tym repo (`.git/config`,
+więc **nie jest to commitowane** — po świeżym `git clone` trzeba je zarejestrować ponownie, patrz
+komendy niżej):
+
+```
+git config alias.push-preview '!bash "$(git rev-parse --show-toplevel)/scripts/git-push-preview.sh"'
+git config alias.push-prod '!bash "$(git rev-parse --show-toplevel)/scripts/git-push-prod.sh"'
+```
+
+Użycie:
+```
+git push-preview "commit message"   # commit + push na dev  → Vercel preview deploy
+git push-prod    "commit message"   # commit + push na main → Vercel production deploy
+```
+
+Oba działają **niezależnie od tego, na którym z tych dwóch branchy aktualnie jesteś** — jeśli masz
+niezacommitowane zmiany na `main`, a wołasz `git push-preview`, skrypt sam je odłoży (`git stash`),
+przełączy na `dev`, przywróci zmiany, zcommituje i wypchnie, po czym wróci Cię z powrotem na `main`.
+Jeśli jesteś już na branchu docelowym, po prostu commituje + pushuje na miejscu. Jeśli nie masz
+żadnych niezacommitowanych zmian, oba komendy tylko przełączają/aktualizują/pushują dany branch.
+Wiadomość commita jest wymagana tylko wtedy, gdy jest faktycznie coś do zacommitowania.
+
 ## Instrukcje dla Asystenta AI przy generowaniu kodu w tym repo
 1. Nie zakładaj `/client` `/server` `/shared` ani Colyseus — to nie istnieje w tym repo.
 2. Nową mechanikę ruchu/walki/współdzielonego stanu zacznij od typów/stałych w
@@ -125,3 +153,6 @@ się dwa razy. Dwie znane przyczyny:
 4. Jeśli ktoś poprosi o zmiany w HP albo o dodanie ekonomii/AI przeciwników, nie proponuj przy tej
    okazji migracji na Colyseus — patrz "Decyzja (2026-09-23)" wyżej o tym, kiedy to faktycznie
    byłoby zasadne.
+5. Nie twórz nowych branchy — patrz "Branch policy" wyżej. Praca zawsze na `main` albo `dev`;
+   do przełączania/commitowania/pushowania używaj `git push-preview` / `git push-prod`, nie
+   ręcznego `git checkout -b ...`.
