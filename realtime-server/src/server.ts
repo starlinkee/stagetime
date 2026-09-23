@@ -71,18 +71,22 @@ const DEV_OVERRIDES_ENABLED = process.env.NODE_ENV !== "production";
 const MIN_DEV_SPEED = 1;
 const MAX_DEV_SPEED = 2000;
 
-// Faza C / C1-C2 (docs/stateful_server_plan.md): unlike REALTIME_SECRET, missing persistence
-// config is NOT fatal — it degrades to today's pre-C2 behavior (every spawn is (200,200),
-// nothing saved), which is a legitimate way to run this server (e.g. local dev without the
-// Next.js app's env wired up), just not the fully-featured one.
-const PERSISTENCE_API_URL = process.env.PERSISTENCE_API_URL || null;
-const REALTIME_INTERNAL_SECRET = process.env.REALTIME_INTERNAL_SECRET || null;
-const PERSISTENCE_ENABLED = Boolean(PERSISTENCE_API_URL && REALTIME_INTERNAL_SECRET);
-if (!PERSISTENCE_ENABLED) {
-  console.warn(
-    "PERSISTENCE_API_URL/REALTIME_INTERNAL_SECRET not set — positions won't be persisted, every spawn is (200,200)",
-  );
-}
+// Faza C / C1-C2 (docs/stateful_server_plan.md): fail loud at boot, same as REALTIME_SECRET —
+// a silent (200,200)-spawn/no-persistence fallback here is exactly what made the missing Vercel
+// deployment-protection bypass on the preview branch invisible for days (no boot warning survives
+// scrolling Fly logs, and per-request failures were swallowed too). Local dev without Next.js
+// wired up now needs these two set (see realtime-server/.env.example) rather than silently
+// degrading.
+const PERSISTENCE_API_URL = (() => {
+  const url = process.env.PERSISTENCE_API_URL;
+  if (!url) throw new Error("PERSISTENCE_API_URL is not set");
+  return url;
+})();
+const REALTIME_INTERNAL_SECRET = (() => {
+  const secret = process.env.REALTIME_INTERNAL_SECRET;
+  if (!secret) throw new Error("REALTIME_INTERNAL_SECRET is not set");
+  return secret;
+})();
 /** How often (and, at minimum, when) each signed-in player's position is saved — see
  * savePositions/persistPosition below. */
 const SAVE_EVERY_MS = 8_000;
@@ -261,38 +265,45 @@ function withinRateLimit(conn: Conn): boolean {
  * Last-known position for a signed-in player joining fresh (no grace-period ghost to resume
  * from instead — see B2) — calls the internal Next.js bridge (POST /api/internal/positions'
  * sibling GET), not Postgres directly (Faza C / C1: one place owns DB access). `null` on any
- * failure just means "spawn at the default point", same as before this existed.
+ * failure means "spawn at the default point" for *this* join (a single bad request shouldn't take
+ * the whole server down), but unlike missing config at boot, every failure is logged loudly —
+ * a non-2xx response (auth mismatch, a Vercel deployment-protection redirect, etc.) used to be
+ * swallowed silently here, which is exactly what hid the preview-branch bug this replaced.
  */
 async function fetchSavedPosition(userId: string, room: string): Promise<{ x: number; y: number; d: Dir } | null> {
-  if (!PERSISTENCE_ENABLED) return null;
   try {
-    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL!);
+    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL);
     url.searchParams.set("userId", userId);
     url.searchParams.set("room", room);
     const res = await fetch(url, { headers: { authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` } });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`fetchSavedPosition: ${res.status} ${res.statusText} from ${url}`);
+      return null;
+    }
     const data = (await res.json()) as { position: { x: number; y: number; d: number } | null };
     if (!data.position) return null;
     return { x: data.position.x, y: data.position.y, d: data.position.d as Dir };
   } catch (err) {
-    console.warn("fetchSavedPosition failed", err);
+    console.error("fetchSavedPosition failed", err);
     return null;
   }
 }
 
-/** Batched write to the same bridge — see fetchSavedPosition. Best-effort: a failed save just
- * means the next periodic sweep (SAVE_EVERY_MS) or the next explicit call tries again. */
+/** Batched write to the same bridge — see fetchSavedPosition. A failed save is logged loudly (see
+ * that doc comment) but not fatal: the next periodic sweep (SAVE_EVERY_MS) or the next explicit
+ * call tries again. */
 async function savePositions(entries: Array<{ userId: string; room: string; x: number; y: number; d: number }>) {
-  if (!PERSISTENCE_ENABLED || entries.length === 0) return;
+  if (entries.length === 0) return;
   try {
-    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL!);
-    await fetch(url, {
+    const url = new URL("/api/internal/positions", PERSISTENCE_API_URL);
+    const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` },
       body: JSON.stringify({ positions: entries }),
     });
+    if (!res.ok) console.error(`savePositions: ${res.status} ${res.statusText} from ${url}`);
   } catch (err) {
-    console.warn("savePositions failed", err);
+    console.error("savePositions failed", err);
   }
 }
 
