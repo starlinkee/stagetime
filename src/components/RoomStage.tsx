@@ -653,6 +653,15 @@ export function RoomStage({
   const [netKey] = useState(() => crypto.randomUUID());
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
+  // Smoothed display position for each remote player, separate from posRef (the raw, stepped
+  // target from the last broadcast/message) — the tick loop below eases toward posRef every
+  // frame with the same reconciliation math (RECONCILE_HZ/RECONCILE_SNAP_PX) already used for
+  // the local player's own server-correction, instead of letting each broadcast (every
+  // BROADCAST_MS) hard-snap the DOM position. Read by both the imperative DOM transform (via
+  // othersDomRef) and the canvas draws that used to read posRef directly (charging orb, hit
+  // flash) — those inherit the smoothing for free by reading this instead.
+  const othersDisplayRef = useRef<Record<string, { x: number; y: number }>>({});
+  const othersDomRef = useRef<Record<string, HTMLDivElement | null>>({});
   const metaRef = useRef<Meta>({ at: 0, color, nick, xp: profile.xp, user: userId });
   // Popupy "+1 🪙 · +XP" nad postaciami po co-minutowym tick-u nagrody (patrz useStudyXp niżej) —
   // `id` rośnie przy każdym tick-u, żeby RewardPopup dostał nowy key i animacja pp-reward wystartowała
@@ -1375,7 +1384,7 @@ export function RoomStage({
         drawOrb(ctx, cx, cy, r * pulse(p), colorRef.current, p);
       }
       for (const [k, start] of Object.entries(chargingRef.current)) {
-        const pos = posRef.current[k];
+        const pos = othersDisplayRef.current[k] ?? posRef.current[k];
         if (!pos) continue;
         const p = Math.min(1, (t - start) / CHARGE_MS);
         const { r, cx, cy } = orbAt(pos.x, pos.y, p);
@@ -1411,7 +1420,7 @@ export function RoomStage({
       };
       flash(x, y, hitRef.current.me);
       for (const [k, o] of Object.entries(othersRef.current)) {
-        const px = posRef.current[k] ?? o;
+        const px = othersDisplayRef.current[k] ?? posRef.current[k] ?? o;
         flash(px.x, px.y, hitRef.current[k]);
       }
       // Odłamki rozpadniętej kuli.
@@ -1823,6 +1832,38 @@ export function RoomStage({
           return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
         });
       }
+      // Ease every remote player's displayed position toward posRef's raw target, same
+      // reconciliation math as serverMe above, instead of the CSS-transition approach this
+      // replaced: BROADCAST_MS (50ms) is shorter than a CSS transition can safely be tuned to
+      // without either stepping (transition too short) or perpetually restarting mid-flight
+      // and never reaching its target (transition too long, the blurry/smeared look this was
+      // written to fix — most visible on the small charging orb above a player's head, which
+      // used to snap straight to posRef's raw, stepped target every broadcast).
+      for (const [k, o] of Object.entries(othersRef.current)) {
+        const raw = posRef.current[k];
+        if (!raw) continue;
+        const dead = Boolean(raw.respawnAt && raw.respawnAt > 0);
+        const targetX = dead ? (raw.gx ?? raw.x) : raw.x;
+        const targetY = dead ? (raw.gy ?? raw.y) : raw.y;
+        const disp = othersDisplayRef.current[k] ?? { x: targetX, y: targetY };
+        const errX = targetX - disp.x;
+        const errY = targetY - disp.y;
+        const errDist = Math.hypot(errX, errY);
+        if (o.dash || errDist > RECONCILE_SNAP_PX) {
+          disp.x = targetX;
+          disp.y = targetY;
+        } else if (errDist > 0.05) {
+          const alpha = 1 - Math.exp(-RECONCILE_HZ * dt);
+          disp.x += errX * alpha;
+          disp.y += errY * alpha;
+        }
+        othersDisplayRef.current[k] = disp;
+        const el = othersDomRef.current[k];
+        if (el) el.style.transform = `translate(${disp.x}px, ${disp.y}px)`;
+      }
+      for (const k of Object.keys(othersDisplayRef.current)) {
+        if (!othersRef.current[k]) delete othersDisplayRef.current[k];
+      }
       draw(t);
       raf = requestAnimationFrame(tick);
     };
@@ -2082,6 +2123,8 @@ export function RoomStage({
     return () => {
       channelRef.current = null;
       posRef.current = {};
+      othersDisplayRef.current = {};
+      othersDomRef.current = {};
       chargingRef.current = {};
       setOthers({});
       sb.removeChannel(channel);
@@ -2425,9 +2468,28 @@ export function RoomStage({
                 </div>
               )}
               <div
-                className={`absolute left-0 top-0 ease-linear ${o.dash ? "" : "transition-transform duration-100"}`}
+                // Position is written imperatively every frame by the tick loop above (see
+                // othersDisplayRef/othersDomRef), not by this style — React re-renders this on
+                // every state broadcast (~BROADCAST_MS) for other reasons (opacity, sprite props),
+                // and setting `transform` here too would fight the per-frame smoothing with a
+                // hard snap back to the raw target on each of those re-renders. The ref callback
+                // only seeds an initial position so the sprite doesn't pop in at (0,0) before the
+                // next animation frame runs.
+                ref={(el) => {
+                  if (!el) {
+                    delete othersDomRef.current[k];
+                    return;
+                  }
+                  othersDomRef.current[k] = el;
+                  if (!othersDisplayRef.current[k]) {
+                    const initX = dead ? (o.gx ?? o.x) : o.x;
+                    const initY = dead ? (o.gy ?? o.y) : o.y;
+                    othersDisplayRef.current[k] = { x: initX, y: initY };
+                    el.style.transform = `translate(${initX}px, ${initY}px)`;
+                  }
+                }}
+                className="absolute left-0 top-0"
                 style={{
-                  transform: `translate(${dead ? (o.gx ?? o.x) : o.x}px, ${dead ? (o.gy ?? o.y) : o.y}px)`,
                   // Lower opacity while immune (post-respawn grace window) or ghost (mid-respawn
                   // countdown, see GHOST_OPACITY) — see IMMUNE_OPACITY in
                   // realtime-server/shared/constants.ts. `others` re-renders every state broadcast
