@@ -1,35 +1,35 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PixelPerson } from "@/components/PixelPerson";
 import { RoomStage, type RoomZone } from "@/components/RoomStage";
-import { COLOR_CHANGE_COST } from "@/lib/coins";
+import { FLOWER_COST, FLOWER_HOURS } from "@/lib/coins";
 import { EXIT_ZONE } from "@/lib/rooms";
-import { COLOR_CHOICES, useMyProfile } from "@/lib/useProfile";
+import { useMyProfile } from "@/lib/useProfile";
 
-const COLOR_ZONE_SLUG = "color-change";
+const FLOWER_SLUG = "flower";
+const FLOWER_ZONE_SLUG = "flower-item";
 
 /**
  * Color Change is disabled: the player character switched to fixed-art rotation sprites
  * (public/characters/player/rotation/*.png), which aren't recolorable, so there's currently
- * nothing to sell here. Only the floor zone is removed — the dialog/purchase logic further down
- * stays, unreachable, so reviving this (for a different purchasable item) just means adding the
- * zone back to SHOP_ZONES.
+ * nothing to sell there. Purely cosmetic items (see supabase/migrations/0027_cosmetic_items.sql)
+ * don't have this problem — they render as an overlay on top of the fixed art (see
+ * PlayerSprite.tsx), so the floor button below is the first thing actually for sale in the Shop.
  */
-const SHOP_ZONES: RoomZone[] = [EXIT_ZONE];
+const FLOWER_ZONE: RoomZone = { slug: FLOWER_ZONE_SLUG, name: "Flower crown", kind: "action", x: 573, y: 320, w: 220, h: 140 };
+const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, FLOWER_ZONE];
 
 /**
  * Pokój-sklep: wejście już wymaga konta (patrz RoomZone.requiresAuth w lobby i sprawdzenie w
- * /api/rooms/enter), więc tu zakładamy zalogowanego gracza. Jedyny przedmiot na start to zmiana
- * koloru postaci — trzymanie E na podłogowym przycisku otwiera duży wybór koloru (większa wersja
- * panelu z ProfileMenu.tsx). Coiny znikają dopiero, gdy zapis w bazie faktycznie się powiedzie
- * (jedno RPC robi obie rzeczy atomowo, patrz useProfile.purchaseColor) — crash przeglądarki w
- * dowolnym momencie przed tym nigdy nie zdejmuje coinów bez zmiany koloru.
+ * /api/rooms/enter), więc tu zakładamy zalogowanego gracza. Jedyny przedmiot na start to kwiatek
+ * na głowę — czysto kosmetyczny, tymczasowy (FLOWER_HOURS) przedmiot bez wpływu na rozgrywkę (patrz
+ * AGENTS.md). Coiny znikają dopiero, gdy zapis w bazie faktycznie się powiedzie (jedno RPC robi obie
+ * rzeczy atomowo, patrz useProfile.purchaseCosmetic) — crash przeglądarki w dowolnym momencie przed
+ * tym nigdy nie zdejmuje coinów bez przyznania przedmiotu.
  */
 export function ShopRoom({ roomSlug }: { roomSlug: string }) {
-  const { ready, color: currentColor, coins, purchaseColor } = useMyProfile();
+  const { ready, coins, cosmetic, purchaseCosmetic } = useMyProfile();
   const [open, setOpen] = useState(false);
-  const [picked, setPicked] = useState(currentColor);
-  const [confirmingSame, setConfirmingSame] = useState(false);
+  const [confirmingRebuy, setConfirmingRebuy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -40,45 +40,44 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     return () => clearTimeout(id);
   }, [toast]);
 
-  const onZoneAction = useCallback(
-    (slug: string) => {
-      if (slug !== COLOR_ZONE_SLUG) return;
-      setPicked(currentColor);
-      setConfirmingSame(false);
-      setError(null);
-      setOpen(true);
-    },
-    [currentColor],
-  );
+  const onZoneAction = useCallback((slug: string) => {
+    if (slug !== FLOWER_ZONE_SLUG) return;
+    setConfirmingRebuy(false);
+    setError(null);
+    setOpen(true);
+  }, []);
 
   const close = useCallback(() => {
     if (busy) return; // W trakcie zapisu nie ma czego anulować — poczekaj na wynik.
     setOpen(false);
-    setConfirmingSame(false);
+    setConfirmingRebuy(false);
     setError(null);
   }, [busy]);
 
+  const owned = cosmetic === FLOWER_SLUG;
+
   const confirm = useCallback(async () => {
     if (busy) return;
-    if (picked === currentColor && !confirmingSame) {
-      // Ten sam kolor: druga, jawna zgoda, bo i tak płaci się pełną cenę.
-      setConfirmingSame(true);
+    if (owned && !confirmingRebuy) {
+      // Już aktywny: druga, jawna zgoda, bo kupno i tak resetuje licznik do pełnych FLOWER_HOURS
+      // zamiast się do niego doliczać (jeden aktywny slot, patrz 0027_cosmetic_items.sql).
+      setConfirmingRebuy(true);
       return;
     }
     setBusy(true);
     setError(null);
-    const result = await purchaseColor(picked);
+    const result = await purchaseCosmetic(FLOWER_SLUG);
     setBusy(false);
     if (!result.ok) {
       setError(result.error);
       return;
     }
     setOpen(false);
-    setConfirmingSame(false);
-    setToast("Color updated!");
-  }, [busy, picked, currentColor, confirmingSame, purchaseColor]);
+    setConfirmingRebuy(false);
+    setToast("Flower crown equipped!");
+  }, [busy, owned, confirmingRebuy, purchaseCosmetic]);
 
-  const canAfford = coins >= COLOR_CHANGE_COST;
+  const canAfford = coins >= FLOWER_COST;
 
   const zones = useMemo(() => SHOP_ZONES, []);
 
@@ -92,25 +91,26 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
         xpRunning={false}
       />
       <div className="flex w-full max-w-2xl flex-col items-center gap-2 text-center">
-        <p className="text-sm text-zinc-500">Nothing for sale right now — check back later.</p>
+        <p className="text-sm text-zinc-500">Hold E on the floor button to browse the flower crown.</p>
         {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
       </div>
       {open && ready && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Character color shop"
+          aria-label="Flower crown shop"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
         >
           <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-zinc-100">Character color</h2>
+              <h2 className="text-lg font-semibold text-zinc-100">Flower crown</h2>
               <span className="flex items-center gap-1 rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-300">
-                {COLOR_CHANGE_COST} copper coins
+                {FLOWER_COST} copper coins
               </span>
             </div>
             <div className="mb-5 flex items-center justify-center gap-8">
-              <PixelPerson color={picked} size={8} />
+              {/* eslint-disable-next-line @next/next/no-img-element -- small cutout, not worth next/image's overhead here */}
+              <img src="/cosmetics/flower.png" alt="Flower crown" className="h-24 w-24 object-contain" style={{ imageRendering: "pixelated" }} />
               <div className="flex flex-col gap-1 text-sm text-zinc-400">
                 <span>Your balance</span>
                 <span className={`text-lg font-semibold ${canAfford ? "text-zinc-100" : "text-rose-400"}`}>
@@ -118,31 +118,20 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
                 </span>
               </div>
             </div>
-            <div className="mb-5 flex flex-wrap justify-center gap-3" role="radiogroup" aria-label="Pick a color">
-              {COLOR_CHOICES.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  role="radio"
-                  aria-checked={c === picked}
-                  aria-label={c}
-                  onClick={() => {
-                    setPicked(c);
-                    setConfirmingSame(false);
-                  }}
-                  style={{ backgroundColor: c }}
-                  className={`h-11 w-11 rounded-lg border-4 transition-colors ${c === picked ? "border-white" : "border-transparent hover:border-zinc-600"}`}
-                />
-              ))}
-            </div>
+            <p className="mb-5 text-center text-sm text-zinc-400">
+              Purely decorative — sits on your head, no effect on gameplay. Lasts {FLOWER_HOURS} hours from purchase.
+            </p>
+            {owned && !confirmingRebuy && (
+              <p className="mb-3 text-center text-sm text-emerald-400">You already have this equipped.</p>
+            )}
             {!canAfford && (
               <p className="mb-3 text-center text-sm text-rose-400">
-                You need {(COLOR_CHANGE_COST - coins).toFixed(1)} more copper coins.
+                You need {(FLOWER_COST - coins).toFixed(1)} more copper coins.
               </p>
             )}
-            {confirmingSame && (
+            {confirmingRebuy && (
               <p className="mb-3 text-center text-sm text-amber-400">
-                That&apos;s already your current color — you&apos;ll still be charged {COLOR_CHANGE_COST} coins. Buy anyway?
+                You&apos;ll still be charged {FLOWER_COST} coins, resetting the timer to a full {FLOWER_HOURS} hours. Buy anyway?
               </p>
             )}
             {error && <p className="mb-3 text-center text-sm text-rose-400">{error}</p>}
@@ -161,7 +150,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
                 disabled={busy || !canAfford}
                 className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {busy ? "Processing…" : confirmingSame ? "Yes, charge me" : "Confirm purchase"}
+                {busy ? "Processing…" : confirmingRebuy ? "Yes, charge me" : "Confirm purchase"}
               </button>
             </div>
           </div>

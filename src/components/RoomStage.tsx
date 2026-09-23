@@ -285,6 +285,10 @@ type Meta = {
   x?: number;
   y?: number;
   d?: unknown;
+  /** Active cosmetic slug (see supabase/migrations/0027_cosmetic_items.sql), or null/undefined for
+   * none — purely decorative (AGENTS.md), so it rides on Presence like color/nick instead of going
+   * through realtime-server. */
+  cosmetic?: string | null;
 };
 /** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek i czy trwa przewrót (roll) / unik (dash). */
 type Pos = {
@@ -560,6 +564,7 @@ export function RoomStage({
   const profile = useMyProfile();
   const color = session ? profile.color : "#ffffff";
   const nick = session ? profile.nickname : null;
+  const cosmetic = session ? profile.cosmetic : null;
   const userId = session?.user.id ?? null;
   // Whether THIS room is currently in its "work" phase — null when the room has no pomodoro
   // phase (stopwatch/shop) or before the server clock is synced, in which case it doesn't gate
@@ -2166,7 +2171,7 @@ export function RoomStage({
   useEffect(() => {
     colorRef.current = color;
     userIdRef.current = userId;
-    metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId };
+    metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId, cosmetic };
     const channel = channelRef.current;
     if (channel?.state === "joined" && activeRef.current) void channel.track({ ...metaRef.current, ...myPos.current });
     // realtime-server only learns nick/color from the original `join` — this profile fetch
@@ -2178,7 +2183,7 @@ export function RoomStage({
       const profileMsg: ClientMessage = { type: "profile", nick, color };
       socket.send(JSON.stringify(profileMsg));
     }
-  }, [color, nick, profile.xp, userId]);
+  }, [color, nick, cosmetic, profile.xp, userId]);
 
   useEffect(() => () => {
     if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
@@ -2464,7 +2469,7 @@ export function RoomStage({
               {dead && (
                 <div className="absolute left-0 top-0" style={{ transform: `translate(${o.x}px, ${o.y}px)`, opacity: GHOST_OPACITY }}>
                   <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
-                  <PlayerSprite label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={false} rolling={false} dashing={false} />
+                  <PlayerSprite label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={false} rolling={false} dashing={false} cosmetic={o.cosmetic} />
                 </div>
               )}
               <div
@@ -2508,6 +2513,7 @@ export function RoomStage({
                   walking={!dead && walkers[k] && !o.r && !o.dash}
                   rolling={o.r}
                   dashing={o.dash}
+                  cosmetic={o.cosmetic}
                 />
               </div>
             </div>
@@ -2519,7 +2525,7 @@ export function RoomStage({
             style={{ transform: `translate(${myCorpse.x}px, ${myCorpse.y}px)` }}
           >
             <NameTag name={nick} xp={session ? profile.xp : undefined} />
-            <PlayerSprite label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myCorpse.d} walking={false} rolling={false} dashing={false} />
+            <PlayerSprite label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myCorpse.d} walking={false} rolling={false} dashing={false} cosmetic={cosmetic} />
           </div>
         )}
         <div
@@ -2536,6 +2542,7 @@ export function RoomStage({
             walking={myWalking}
             rolling={myRolling}
             dashing={myDashing}
+            cosmetic={cosmetic}
           />
         </div>
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />

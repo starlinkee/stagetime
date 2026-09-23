@@ -50,6 +50,15 @@ export type Profile = {
 /** Mapa `user_id → profil`. */
 export type Profiles = Record<string, Profile>;
 
+/** Raw cosmetic columns as stored — `null`/expired means no active item, see `activeCosmetic`. */
+type CosmeticFields = { cosmetic: string | null; cosmeticExpiresAt: string | null };
+
+/** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
+function activeCosmetic(f: CosmeticFields): string | null {
+  if (!f.cosmetic || !f.cosmeticExpiresAt) return null;
+  return new Date(f.cosmeticExpiresAt).getTime() > Date.now() ? f.cosmetic : null;
+}
+
 export type MyProfile = {
   /** false do czasu odczytu profilu (unikamy mignięcia starej nazwy). */
   ready: boolean;
@@ -71,6 +80,10 @@ export type MyProfile = {
   deaths: number;
   /** Copper coin balance (see src/lib/coins.ts) — 0 until loaded or signed out. Private: not shown for other players. */
   coins: number;
+  /** Active cosmetic slug (e.g. "flower"), or null if none owned or the timer ran out — see
+   * supabase/migrations/0027_cosmetic_items.sql. Shown to other players via Presence, same as
+   * color (see Meta in RoomStage.tsx), not through realtime-server: it has no gameplay effect. */
+  cosmetic: string | null;
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -81,6 +94,12 @@ export type MyProfile = {
    * dowolnym momencie przed odpowiedzią nigdy nie zdejmuje coinów bez zapisania koloru (i odwrotnie).
    */
   purchaseColor: (color: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Buys a cosmetic item (see supabase/migrations/0027_cosmetic_items.sql) — same atomic-RPC
+   * pattern as purchaseColor: balance check, coin deduction and the item grant happen in one
+   * transaction, so a crash mid-purchase never lands in a "coins gone, item not granted" state.
+   */
+  purchaseCosmetic: (slug: string) => Promise<{ ok: true } | { ok: false; error: string }>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -102,14 +121,16 @@ export function useMyProfile(): MyProfile {
   // Nazwa od dostawcy OAuth — zapasowa, dopóki (lub gdyby) w bazie nie było profilu.
   const fallback = session ? displayName(session).slice(0, MAX_NICKNAME) : null;
   // Trzymamy id razem z nickiem: po przelogowaniu nie pokazujemy cudzej nazwy.
-  const [loaded, setLoaded] = useState<({ userId: string } & Profile & { coins: number }) | null>(null);
+  const [loaded, setLoaded] = useState<
+    ({ userId: string } & Profile & { coins: number } & CosmeticFields) | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sb || !userId) return;
     let cancelled = false;
     sb.from("profiles")
-      .select("nickname, color, xp, balls_shot, fist_swings, kills, deaths, coins")
+      .select("nickname, color, xp, balls_shot, fist_swings, kills, deaths, coins, cosmetic, cosmetic_expires_at")
       .eq("id", userId)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -126,6 +147,8 @@ export function useMyProfile(): MyProfile {
           kills: data?.kills ?? 0,
           deaths: data?.deaths ?? 0,
           coins: Number(data?.coins ?? 0),
+          cosmetic: data?.cosmetic ?? null,
+          cosmeticExpiresAt: data?.cosmetic_expires_at ?? null,
         });
       });
     return () => {
@@ -135,7 +158,7 @@ export function useMyProfile(): MyProfile {
 
   useEffect(() => {
     const onSaved = (e: Event) => {
-      const next = (e as CustomEvent<{ userId: string } & Profile & { coins: number }>).detail;
+      const next = (e as CustomEvent<{ userId: string } & Profile & { coins: number } & CosmeticFields>).detail;
       if (next.userId === userId) setLoaded(next);
     };
     saved.addEventListener("saved", onSaved);
@@ -161,6 +184,8 @@ export function useMyProfile(): MyProfile {
             kills?: number;
             deaths?: number;
             coins?: number | string;
+            cosmetic?: string | null;
+            cosmetic_expires_at?: string | null;
           };
           if (!p.nickname) return;
           setLoaded({
@@ -173,6 +198,8 @@ export function useMyProfile(): MyProfile {
             kills: p.kills ?? 0,
             deaths: p.deaths ?? 0,
             coins: Number(p.coins ?? 0),
+            cosmetic: p.cosmetic ?? null,
+            cosmeticExpiresAt: p.cosmetic_expires_at ?? null,
           });
         },
       )
@@ -183,12 +210,15 @@ export function useMyProfile(): MyProfile {
   }, [sb, userId, channelId]);
 
   const currentNickname = (loaded?.userId === userId ? loaded.nickname : fallback) ?? "User";
+  const currentColor = loaded?.userId === userId ? safeColor(loaded.color) : DEFAULT_COLOR;
   const currentXp = loaded?.userId === userId ? loaded.xp : 0;
   const currentBallsShot = loaded?.userId === userId ? loaded.ballsShot : 0;
   const currentFistSwings = loaded?.userId === userId ? loaded.fistSwings : 0;
   const currentKills = loaded?.userId === userId ? loaded.kills : 0;
   const currentDeaths = loaded?.userId === userId ? loaded.deaths : 0;
   const currentCoins = loaded?.userId === userId ? loaded.coins : 0;
+  const currentCosmetic = loaded?.userId === userId ? loaded.cosmetic : null;
+  const currentCosmeticExpiresAt = loaded?.userId === userId ? loaded.cosmeticExpiresAt : null;
 
   const save = useCallback(
     async (color: string) => {
@@ -231,12 +261,26 @@ export function useMyProfile(): MyProfile {
             kills: currentKills,
             deaths: currentDeaths,
             coins: currentCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
           },
         }),
       );
       return true;
     },
-    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentKills, currentDeaths, currentCoins],
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
+    ],
   );
 
   const purchaseColor = useCallback(
@@ -271,12 +315,82 @@ export function useMyProfile(): MyProfile {
             kills: currentKills,
             deaths: currentDeaths,
             coins: newCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
           },
         }),
       );
       return { ok: true as const };
     },
-    [sb, userId, currentNickname, currentXp, currentBallsShot, currentFistSwings, currentKills, currentDeaths, currentCoins],
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
+    ],
+  );
+
+  const purchaseCosmetic = useCallback(
+    async (slug: string) => {
+      if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      // Jedno RPC: sprawdza saldo, odejmuje coiny i zapisuje przedmiot w jednej transakcji po
+      // stronie bazy (patrz supabase/migrations/0027_cosmetic_items.sql).
+      const { data, error } = await sb.rpc("purchase_cosmetic", { p_slug: slug });
+      if (error) {
+        console.error("purchase_cosmetic", error);
+        const message =
+          error.message === "insufficient_coins"
+            ? "Not enough copper coins."
+            : error.message === "unknown_item"
+              ? "Unknown item."
+              : `Purchase failed: ${saveHint(error)}`;
+        return { ok: false as const, error: message };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | { cosmetic?: string | null; cosmetic_expires_at?: string | null; coins?: number | string }
+        | null;
+      const newCosmetic = row?.cosmetic ?? slug;
+      const newExpiresAt = row?.cosmetic_expires_at ?? null;
+      const newCoins = Number(row?.coins ?? currentCoins);
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            coins: newCoins,
+            cosmetic: newCosmetic,
+            cosmeticExpiresAt: newExpiresAt,
+          },
+        }),
+      );
+      return { ok: true as const };
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentCoins,
+    ],
   );
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
@@ -294,9 +408,11 @@ export function useMyProfile(): MyProfile {
     kills: mine?.kills ?? 0,
     deaths: mine?.deaths ?? 0,
     coins: mine?.coins ?? 0,
+    cosmetic: mine ? activeCosmetic(mine) : null,
     error,
     save,
     purchaseColor,
+    purchaseCosmetic,
   };
 }
 

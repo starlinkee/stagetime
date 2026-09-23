@@ -17,3 +17,12 @@ export function coinsForMinutes(minutes: number): number {
  * actually charges the player; this copy is only for displaying the price client-side.
  */
 export const COLOR_CHANGE_COST = 100;
+
+/**
+ * Cosmetic items — purely decorative (no gameplay effect, see AGENTS.md), bought in the Shop
+ * (src/components/ShopRoom.tsx) for a timed duration. Cost/duration here are display-only copies;
+ * `purchase_cosmetic` in supabase/migrations/0027_cosmetic_items.sql is what actually charges the
+ * player and is the source of truth.
+ */
+export const FLOWER_COST = 100;
+export const FLOWER_HOURS = 24;

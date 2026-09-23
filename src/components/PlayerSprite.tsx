@@ -18,6 +18,15 @@ const DIR_IMAGE: Record<Dir, string> = {
 const SRC_SIZE = 64;
 
 /**
+ * Cosmetic items — purely decorative (see AGENTS.md), never affect stats/collision. One static
+ * image per slug, no per-direction art (unlike DIR_IMAGE above): it's small enough, and sits
+ * centered near the top of the sprite, to read fine at any facing without one.
+ */
+const COSMETIC_IMAGE: Record<string, string> = {
+  flower: "/cosmetics/flower.png",
+};
+
+/**
  * Character sprite: one static image per direction (no walk-cycle frames), so "walking" is faked
  * with a step bob (.ps-walk) instead of leg animation. Position/collision anchoring still uses
  * PixelPerson's 8x12-cell box (boxW/boxH below), but the art itself is scaled to the box's height
@@ -32,6 +41,7 @@ export function PlayerSprite({
   walking = false,
   rolling = false,
   dashing = false,
+  cosmetic = null,
 }: {
   label?: string;
   /** Size of one PixelPerson pixel-grid cell, in px — same unit callers already use. */
@@ -40,6 +50,9 @@ export function PlayerSprite({
   walking?: boolean;
   rolling?: boolean;
   dashing?: boolean;
+  /** Active cosmetic slug (see supabase/migrations/0027_cosmetic_items.sql), or null/unknown for
+   * none — arrives via Presence "meta" (see Meta in RoomStage.tsx), same path as color/nick. */
+  cosmetic?: string | null;
 }) {
   const boxW = 8 * size;
   const boxH = 12 * size;
@@ -74,6 +87,21 @@ export function PlayerSprite({
           className={walking ? "ps-walk" : undefined}
           style={{ display: "block", width: "100%", height: "100%", imageRendering: "pixelated" }}
         />
+        {cosmetic && COSMETIC_IMAGE[cosmetic] && (
+          <img
+            src={COSMETIC_IMAGE[cosmetic]}
+            alt=""
+            draggable={false}
+            style={{
+              position: "absolute",
+              top: "6%",
+              left: "50%",
+              width: "48%",
+              transform: "translate(-50%, -55%)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
       </div>
       {dashing && <div className="ps-dash-cloud" style={{ position: "absolute", inset: 0 }} />}
     </div>
