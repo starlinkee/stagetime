@@ -734,6 +734,11 @@ export function RoomStage({
   // realtime-server/shared/types.ts), which a future character/item bonus can raise per player.
   const [myStamina, setMyStamina] = useState(STAMINA_MAX);
   const [myStaminaMax, setMyStaminaMax] = useState(STAMINA_MAX);
+  /** Written to directly from tick() every frame (see predictedStamina there) instead of through
+   * setMyStamina, so the fast-changing "12/40" label tracks client-predicted regen without forcing
+   * a React re-render 60x/sec — only the DOM text node changes, and only when the rounded value
+   * actually moves. */
+  const staminaTextRef = useRef<HTMLSpanElement>(null);
   const [myRespawnAt, setMyRespawnAt] = useState(0);
   /** Mirrors PlayerState.immuneUntil for the rAF tick loop below (see its `person.style.opacity`
    * line) — that loop reads refs every frame instead of depending on React state/re-renders. */
@@ -922,6 +927,10 @@ export function RoomStage({
     // spent in release() below, and resynced to the authoritative value on every "state" broadcast
     // (see setMyStamina above) so small drift never accumulates.
     let predictedStamina = STAMINA_MAX;
+    // Mirrors myStaminaMax state for the same reason predictedStamina mirrors myStamina: tick()
+    // below writes the stamina label directly to the DOM every frame and can't wait on a re-render
+    // to see a fresh value.
+    let predictedStaminaMax = STAMINA_MAX;
     // Wejście do pokoju: trzymając E w jego kwadracie przez ROOM_ENTER_MS, wchodzimy na jego stronę.
     let eDown = false;
     // Jeśli E zostało wciśnięte jeszcze w poprzednim pokoju, ignorujemy je, dopóki nie przyjdzie keyup.
@@ -1070,6 +1079,7 @@ export function RoomStage({
             // salvo model: without this, small client/server clock drift over a long session would
             // slowly desync when this player's own fire actually gets refused.
             predictedStamina = p.stamina;
+            predictedStaminaMax = p.staminaMax;
             setMyRespawnAt(p.respawnAt);
             myRespawnAtRef.current = p.respawnAt;
             myDead = p.respawnAt > 0;
@@ -1463,13 +1473,20 @@ export function RoomStage({
       // Continuous local regen mirroring currentStamina() server-side (see STAMINA_REGEN_PER_SEC's
       // doc comment in realtime-shared/constants.ts) — resynced to the authoritative value on
       // every "state" broadcast (see setMyStamina above), so this only ever has to be right for
-      // the ~50ms between broadcasts, not for a whole session. Pushed into React state every frame
-      // too (not just on fire/broadcast) so the visible bar never drifts from the value the fire
-      // gate above actually checks — otherwise a slow frame or a delayed broadcast leaves the bar
-      // showing a stale, higher number than what you can actually spend.
+      // the ~50ms between broadcasts, not for a whole session. Not pushed into React state here —
+      // see the direct DOM write below, which shows this same value without a per-frame re-render.
       if (REALTIME_SERVER_URL && predictedStamina < STAMINA_MAX) {
         predictedStamina = Math.min(STAMINA_MAX, predictedStamina + dt * STAMINA_REGEN_PER_SEC);
-        setMyStamina(predictedStamina);
+      }
+      // Direct DOM write, not setState: predictedStamina changes every frame while regenerating,
+      // and routing that through React would re-render the whole component at 60fps for a single
+      // <span>. Only touches the node when the rounded number actually changed.
+      if (REALTIME_SERVER_URL) {
+        const el = staminaTextRef.current;
+        if (el) {
+          const text = `${Math.max(0, Math.round(predictedStamina))}/${Math.round(predictedStaminaMax)}`;
+          if (el.textContent !== text) el.textContent = text;
+        }
       }
       // Pozycja wczytana z bazy zastępuje losowy start.
       const spawn = spawnRef.current;
@@ -2274,33 +2291,48 @@ export function RoomStage({
       </button>
     )}
     {REALTIME_SERVER_URL && (
-      <div
-        role="meter"
-        aria-label="Health"
-        aria-valuemin={0}
-        aria-valuemax={MAX_HP}
-        aria-valuenow={myHp}
-        className="pointer-events-none fixed bottom-9 right-4 z-20 h-3 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
-      >
+      <div className="pointer-events-none fixed bottom-9 right-4 z-20 flex items-center gap-2">
+        <span className="text-xs font-semibold tabular-nums text-white [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)]">
+          {Math.max(0, myHp)}/{MAX_HP}
+        </span>
         <div
-          className="h-full rounded-full bg-red-600 transition-[width]"
-          style={{ width: `${(Math.max(0, myHp) / MAX_HP) * 100}%` }}
-        />
+          role="meter"
+          aria-label="Health"
+          aria-valuemin={0}
+          aria-valuemax={MAX_HP}
+          aria-valuenow={myHp}
+          className="h-3 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
+        >
+          <div
+            className="h-full rounded-full bg-red-600 transition-[width]"
+            style={{ width: `${(Math.max(0, myHp) / MAX_HP) * 100}%` }}
+          />
+        </div>
       </div>
     )}
     {REALTIME_SERVER_URL && (
-      <div
-        role="meter"
-        aria-label="Stamina"
-        aria-valuemin={0}
-        aria-valuemax={myStaminaMax}
-        aria-valuenow={Math.round(myStamina)}
-        className="pointer-events-none fixed bottom-4 right-4 z-20 h-2 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
-      >
+      <div className="pointer-events-none fixed bottom-4 right-4 z-20 flex items-center gap-2">
+        {/* Text set directly in tick() via staminaTextRef, not React state — see its declaration
+            above for why (stamina can regen/deplete every frame). */}
+        <span
+          ref={staminaTextRef}
+          className="text-xs font-semibold tabular-nums text-white [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)]"
+        >
+          {Math.max(0, Math.round(myStamina))}/{myStaminaMax}
+        </span>
         <div
-          className="h-full rounded-full bg-green-500"
-          style={{ width: `${(Math.max(0, myStamina) / myStaminaMax) * 100}%` }}
-        />
+          role="meter"
+          aria-label="Stamina"
+          aria-valuemin={0}
+          aria-valuemax={myStaminaMax}
+          aria-valuenow={Math.round(myStamina)}
+          className="h-2 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
+        >
+          <div
+            className="h-full rounded-full bg-green-500 transition-[width]"
+            style={{ width: `${(Math.max(0, myStamina) / myStaminaMax) * 100}%` }}
+          />
+        </div>
       </div>
     )}
     {respawnRemainingSec > 0 && (
