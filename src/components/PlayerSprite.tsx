@@ -2,21 +2,52 @@ import type { CSSProperties } from "react";
 import type { Dir } from "@/components/PixelPerson";
 import { ROLL_MS } from "@realtime-shared/constants";
 
-/** Directional rotation art, provided pre-rendered (no walk-cycle frames — see PLAYER_ROTATION_DIR). */
-const PLAYER_ROTATION_DIR = "/characters/player/rotation";
-const DIR_IMAGE: Record<Dir, string> = {
-  0: `${PLAYER_ROTATION_DIR}/east.png`,
-  1: `${PLAYER_ROTATION_DIR}/south-east.png`,
-  2: `${PLAYER_ROTATION_DIR}/south.png`,
-  3: `${PLAYER_ROTATION_DIR}/south-west.png`,
-  4: `${PLAYER_ROTATION_DIR}/west.png`,
-  5: `${PLAYER_ROTATION_DIR}/north-west.png`,
-  6: `${PLAYER_ROTATION_DIR}/north.png`,
-  7: `${PLAYER_ROTATION_DIR}/north-east.png`,
+/**
+ * Directional rotation art, provided pre-rendered (no walk-cycle frames — see below). Two packs
+ * share this same 8-direction layout: "classic" (public/characters/player/rotation/*.png, 24x24
+ * native) and "girl" (public/characters/girl/*.png, 64x64 native, added in
+ * supabase/migrations/0033_girl_character.sql) — src size differs per pack, so it's keyed
+ * alongside the directory below rather than assumed constant.
+ */
+const ROTATION_DIR: Record<"classic" | "girl", string> = {
+  classic: "/characters/player/rotation",
+  girl: "/characters/girl",
 };
+const SRC_SIZE: Record<"classic" | "girl", number> = {
+  classic: 24,
+  girl: 64,
+};
+function dirImage(pack: "classic" | "girl", dir: Dir): string {
+  const base = ROTATION_DIR[pack];
+  const file: Record<Dir, string> = {
+    0: "east",
+    1: "south-east",
+    2: "south",
+    3: "south-west",
+    4: "west",
+    5: "north-west",
+    6: "north",
+    7: "north-east",
+  };
+  return `${base}/${file[dir]}.png`;
+}
 
-/** Native size of every rotation frame (all 8 are 24x24). */
-const SRC_SIZE = 24;
+/**
+ * "girl" has no Jump spritesheet (unlike "classic", see JUMP_DIR below) — roll instead spins the
+ * static rotation frame in place, same trick as PixelPerson's .pp-roll (see CharacterSprite.tsx's
+ * ROLL_SPIN_* comment for the per-direction rotation/squash rationale).
+ */
+const ROLL_SPIN_DEG: Record<Dir, string> = {
+  0: "360deg",
+  1: "360deg",
+  2: "0deg",
+  3: "-360deg",
+  4: "-360deg",
+  5: "-360deg",
+  6: "0deg",
+  7: "360deg",
+};
+const ROLL_SPIN_SQUASH: Record<Dir, number> = { 0: 0, 1: 0.5, 2: 1, 3: 0.5, 4: 0, 5: 0.5, 6: 1, 7: 0.5 };
 
 /**
  * Roll's visual: plays the pack's Jump spritesheet instead of spinning the static rotation frame.
@@ -60,6 +91,7 @@ const COSMETIC_IMAGE: Record<string, string> = {
  * smaller than PixelPerson was and left a gap under the NameTag above it.
  */
 export function PlayerSprite({
+  pack = "classic",
   label,
   size = 4,
   dir = 2,
@@ -67,6 +99,8 @@ export function PlayerSprite({
   rolling = false,
   cosmetic = null,
 }: {
+  /** Which rotation-art pack to render — see ROTATION_DIR above. */
+  pack?: "classic" | "girl";
   label?: string;
   /** Size of one PixelPerson pixel-grid cell, in px — same unit callers already use. */
   size?: number;
@@ -77,12 +111,15 @@ export function PlayerSprite({
    * none — arrives via Presence "meta" (see Meta in RoomStage.tsx), same path as color/nick. */
   cosmetic?: string | null;
 }) {
+  const srcSize = SRC_SIZE[pack];
   const boxW = 8 * size;
   const boxH = 12 * size;
-  const scale = boxH / SRC_SIZE;
-  const imgW = SRC_SIZE * scale;
-  const imgH = SRC_SIZE * scale;
+  const scale = boxH / srcSize;
+  const imgW = srcSize * scale;
+  const imgH = srcSize * scale;
 
+  // Only "classic" has a Jump spritesheet — other packs (e.g. "girl") spin the static rotation
+  // frame instead (.ps-spin, see globals.css), so this branch only ever applies to "classic".
   const jump = JUMP_ROW[dir];
   const jumpW = JUMP_FRAME_W * scale;
   const jumpH = JUMP_FRAME_H * scale;
@@ -90,7 +127,7 @@ export function PlayerSprite({
 
   return (
     <div role="img" aria-label={label ?? "Character"} style={{ position: "relative", width: boxW, height: boxH }}>
-      {rolling ? (
+      {rolling && pack === "classic" ? (
         <div
           className="ps-jump"
           style={
@@ -125,11 +162,25 @@ export function PlayerSprite({
       ) : (
         <div style={{ position: "absolute", left: (boxW - imgW) / 2, bottom: 0, width: imgW, height: imgH }}>
           <img
-            src={DIR_IMAGE[dir]}
+            src={dirImage(pack, dir)}
             alt=""
             draggable={false}
-            className={walking ? "ps-walk" : undefined}
-            style={{ display: "block", width: "100%", height: "100%", imageRendering: "pixelated" }}
+            className={rolling ? "ps-spin" : walking ? "ps-walk" : undefined}
+            style={
+              {
+                display: "block",
+                width: "100%",
+                height: "100%",
+                imageRendering: "pixelated",
+                ...(rolling
+                  ? {
+                      "--roll-rot": ROLL_SPIN_DEG[dir],
+                      "--roll-squash": ROLL_SPIN_SQUASH[dir],
+                      "--ps-jump-ms": `${ROLL_MS}ms`,
+                    }
+                  : {}),
+              } as CSSProperties
+            }
           />
           {cosmetic && COSMETIC_IMAGE[cosmetic] && (
             <img

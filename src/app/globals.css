@@ -67,6 +67,15 @@ body {
   animation: ps-jump-frames var(--ps-jump-ms, 240ms) steps(4) 1 forwards;
 }
 
+/* PlayerSprite roll fallback for packs with no Jump spritesheet ("girl"): reuses pp-roll's
+   spin/squash on the static rotation frame itself, same as PixelPerson's .pp-roll, but timed to
+   --ps-jump-ms (ROLL_MS) instead of pp-roll's fixed 240ms since this is a plain HTML <img>, not
+   the SVG <g> .pp-roll targets. */
+.ps-spin {
+  transform-origin: center;
+  animation: pp-roll var(--ps-jump-ms, 240ms) linear;
+}
+
 /* Popup "+1 coin / +xp" nad postacią po co-minutowym tick-u nagrody (patrz REWARD_MS w
    RoomStage.tsx): pojawia się, chwilę wisi, po czym płynnie znika unosząc się lekko w górę. */
 @keyframes pp-reward {

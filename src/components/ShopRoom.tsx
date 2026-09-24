@@ -19,11 +19,12 @@ const CHARACTER_ZONE_SLUG = "character-select";
  */
 const FLOWER_ZONE: RoomZone = { slug: FLOWER_ZONE_SLUG, name: "Flower crown", kind: "action", x: 573, y: 320, w: 220, h: 140 };
 /**
- * Character look (see supabase/migrations/0031_character_selection.sql) — the two choices that
- * exist today, see CharacterSprite.tsx.
+ * Character look (see supabase/migrations/0031_character_selection.sql,
+ * 0033_girl_character.sql) — the three choices that exist today, see CharacterSprite.tsx.
  */
 const CHARACTER_OPTIONS: { slug: CharacterSlug; name: string }[] = [
   { slug: "classic", name: "Classic" },
+  { slug: "girl", name: "Girl" },
   { slug: "pixel", name: "Pixel" },
 ];
 const CHARACTER_ZONE: RoomZone = { slug: CHARACTER_ZONE_SLUG, name: "Change character", kind: "action", x: 573, y: 500, w: 220, h: 140 };

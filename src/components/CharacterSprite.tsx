@@ -9,6 +9,9 @@ import { PlayerSprite } from "@/components/PlayerSprite";
  * - "classic" (PlayerSprite, public/characters/player/rotation/*.png): every rotation frame's
  *   alpha bounding box starts at y=8 of a 24px source canvas (checked with Pillow across all 8
  *   directions) — 8/24 = 1/3 of the box is empty headroom above the head.
+ * - "girl" (PlayerSprite, public/characters/girl/*.png, see 0033_girl_character.sql): reuses
+ *   "classic"'s 1/3 headroom estimate — same PlayerSprite rendering path and similar proportions,
+ *   not independently measured per-pixel like "classic" was. Adjust here if the crown looks off.
  * - "pixel" (PixelPerson): draws across the full 12-row grid starting at row 0 — no headroom,
  *   the head sits right at the top of the box.
  * PlayerSprite's own cosmetic overlay ("top: 6%", see PLAYER_COSMETIC_TOP below) was tuned by eye
@@ -18,6 +21,7 @@ import { PlayerSprite } from "@/components/PlayerSprite";
  */
 const HEAD_TOP_FRACTION: Record<CharacterSlug, number> = {
   classic: 1 / 3,
+  girl: 1 / 3,
   pixel: 0,
 };
 
@@ -58,7 +62,15 @@ export function CharacterSprite({
 }) {
   if (character !== "pixel") {
     return (
-      <PlayerSprite label={label} size={size} dir={dir} walking={walking} rolling={rolling} cosmetic={cosmetic} />
+      <PlayerSprite
+        pack={character}
+        label={label}
+        size={size}
+        dir={dir}
+        walking={walking}
+        rolling={rolling}
+        cosmetic={cosmetic}
+      />
     );
   }
 

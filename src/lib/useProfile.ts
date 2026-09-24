@@ -28,13 +28,13 @@ export const COLOR_CHOICES = [
 
 const COLOR_RE = /^#[0-9a-f]{6}$/;
 
-/** Character look slugs (see supabase/migrations/0031_character_selection.sql). */
-export type CharacterSlug = "classic" | "pixel";
+/** Character look slugs (see supabase/migrations/0031_character_selection.sql, 0033_girl_character.sql). */
+export type CharacterSlug = "classic" | "pixel" | "girl";
 const DEFAULT_CHARACTER: CharacterSlug = "classic";
 
 /** Character slug from the database, or the default when missing/unrecognized. */
 export function safeCharacter(character: string | null | undefined): CharacterSlug {
-  return character === "pixel" ? "pixel" : DEFAULT_CHARACTER;
+  return character === "pixel" || character === "girl" ? character : DEFAULT_CHARACTER;
 }
 
 /** Kolor z bazy albo domyślny, gdy wartość jest niepoprawna. */
