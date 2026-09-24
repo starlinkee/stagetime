@@ -20,7 +20,7 @@
 import { SCREEN_W, SCREEN_H } from "./constants";
 import { getPhase, type Phase } from "./timer";
 
-export type RoomKind = "pomodoro" | "stopwatch" | "shop";
+export type RoomKind = "pomodoro" | "stopwatch" | "shop" | "arena";
 
 interface RoomMeta {
   slug: string;
@@ -53,6 +53,7 @@ const ROOM_META: RoomMeta[] = [
   ...pomodoroSlugs("50-10", 50, 10),
   { slug: "timer", kind: "stopwatch" },
   { slug: "shop", kind: "shop" },
+  { slug: "arena", kind: "arena" },
 ];
 
 export interface Rect {
@@ -104,6 +105,10 @@ function buildLobbyZoneRects(): ReadonlyMap<string, Rect> {
       rects.set(r.slug, { x: SCREEN_W / 2 - 110 - 150 + CONTENT_OX, y: timerY + CONTENT_OY, w: 220, h: 140 });
     } else if (r.kind === "shop") {
       rects.set(r.slug, { x: SCREEN_W / 2 + 150 - 110 + CONTENT_OX, y: timerY + CONTENT_OY, w: 220, h: 140 });
+    } else if (r.kind === "arena") {
+      // Sits directly to the right of Shop, same row (see AGENTS.md's request: "one extra room
+      // next to the shop") — must match the arenaZones block in src/app/page.tsx exactly.
+      rects.set(r.slug, { x: SCREEN_W / 2 + 150 - 110 + 270 + CONTENT_OX, y: timerY + CONTENT_OY, w: 220, h: 140 });
     }
   }
 

@@ -57,24 +57,6 @@ const SHADES: Record<string, (c: string) => string> = {
   F: (c) => `color-mix(in srgb, ${c} 45%, black)`,
 };
 
-/** Puchata chmurka rysowana w momencie znikania przy uniku (dash) — patrz .pp-dash-cloud w globals.css. */
-const CLOUD_ROWS = ["..CCCC..", ".CCCCCC.", "CCCCCCCC", ".SSSSSS."];
-const CLOUD_SHADES: Record<string, string> = { C: "#f8fafc", S: "#cbd5e1" };
-
-function Cloud({ y0 }: { y0: number }) {
-  return (
-    <>
-      {CLOUD_ROWS.flatMap((row, y) =>
-        [...row].map((cell, x) =>
-          cell === "." ? null : (
-            <rect key={`cloud-${x}-${y}`} x={x} y={y + y0} width={1} height={1} fill={CLOUD_SHADES[cell]} />
-          ),
-        ),
-      )}
-    </>
-  );
-}
-
 function Rows({ rows, color, y0 }: { rows: string[]; color: string; y0: number }) {
   return (
     <>
@@ -97,7 +79,6 @@ export function PixelPerson({
   dir = DIR_DOWN,
   walking = false,
   rolling = false,
-  dashing = false,
 }: {
   color?: string;
   label?: string;
@@ -109,8 +90,6 @@ export function PixelPerson({
   walking?: boolean;
   /** Czy trwa przewrót (roll) — zamiast chodu, całą sylwetka obraca się raz wokół własnej osi. */
   rolling?: boolean;
-  /** Czy trwa unik (dash) — postać znika jak za chmurą i pojawia się z powrotem w nowym miejscu. */
-  dashing?: boolean;
 }) {
   const side = dir === 0 || dir === 4;
   const top = side ? SIDE_TOP : FRONT_TOP;
@@ -144,7 +123,7 @@ export function PixelPerson({
     >
       {label && <title>{label}</title>}
       <g
-        className={rolling ? "pp-roll" : dashing ? "pp-dash" : undefined}
+        className={rolling ? "pp-roll" : undefined}
         style={
           rolling
             ? ({ "--roll-rot": rollRotDeg, "--roll-squash": rollSquash } as CSSProperties)
@@ -165,11 +144,6 @@ export function PixelPerson({
           </>
         )}
       </g>
-      {dashing && (
-        <g className="pp-dash-cloud">
-          <Cloud y0={4} />
-        </g>
-      )}
     </svg>
   );
 }

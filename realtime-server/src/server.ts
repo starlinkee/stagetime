@@ -2,21 +2,31 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { verifyEntryToken } from "../shared/entryToken";
+import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMove } from "../shared/obstacles";
 import { clampPos } from "../shared/physics";
 import { getRoomPhase, LOBBY_ZONE_RECTS } from "../shared/rooms";
 import {
+  ARENA_ROOM_SLUG,
   BALL_SPEED,
   BROADCAST_MS,
   CHARGE_MS,
-  DASH_COOLDOWN_MS,
-  DASH_DISTANCE_MULT,
-  DASH_MS,
-  DASH_TELEPORT_AT_MS,
   DEFAULT_CHARACTER_STATS,
   DIRS,
   DIR_OF,
   DMG_MAX,
   DMG_MIN,
+  ENEMY_AGGRO_RANGE,
+  ENEMY_ATTACK_COOLDOWN_MS,
+  ENEMY_ATTACK_DMG,
+  ENEMY_ATTACK_MS,
+  ENEMY_ATTACK_R,
+  ENEMY_ATTACK_RANGE,
+  ENEMY_H,
+  ENEMY_LEASH_RANGE,
+  ENEMY_MAX_HP,
+  ENEMY_RESPAWN_MS,
+  ENEMY_SPEED,
+  ENEMY_W,
   EXIT_ZONE,
   HITBOX_H,
   HITBOX_OFFSET_X,
@@ -43,7 +53,7 @@ import {
   worldH,
   worldW,
 } from "../shared/constants";
-import type { CharacterStats, ClientMessage, Dir, HitEvent, PlayerState, ServerBall, ServerMessage } from "../shared/types";
+import type { CharacterStats, ClientMessage, Dir, EnemyState, HitEvent, PlayerState, ServerBall, ServerMessage } from "../shared/types";
 
 const PORT = Number(process.env.PORT) || 8080;
 
@@ -117,20 +127,14 @@ type Conn = {
   // Per-connection message-rate window — see withinRateLimit.
   msgWindowStart: number;
   msgCount: number;
-  // Faza F2 (docs/combat_sync_plan.md): roll/dash state the server tracks per connection, so it
-  // can enforce cooldowns and compute position during a roll/dash itself instead of trusting the
+  // Faza F2 (docs/combat_sync_plan.md): roll state the server tracks per connection, so it
+  // can enforce cooldowns and compute position during a roll itself instead of trusting the
   // client — the same reason `inputDx`/`inputDy` exist instead of a client-asserted position.
-  // Direction/facing for both comes from `d` above (set by plain movement, held during roll/dash).
+  // Direction/facing comes from `d` above (set by plain movement, held during roll).
   rollUntil: number;
   rollCooldownUntil: number;
   rollDx: number;
   rollDy: number;
-  dashUntil: number;
-  dashCooldownUntil: number;
-  dashTargetX: number;
-  dashTargetY: number;
-  dashTeleportAt: number;
-  dashTeleported: boolean;
   // Faza F3: when the client last told us it started charging a ball (`{ type: "charge", on:
   // true }`), or null if it isn't charging (or never told us this connection). Caps `fire`'s
   // claimed `chargeMs` to what actually elapsed here, not to what the client claims elapsed.
@@ -167,13 +171,13 @@ type Conn = {
   gd: Dir;
 };
 
-/** Frozen (no movement, no roll/dash/charge/fire/strike) while waiting out RESPAWN_MS. */
+/** Frozen (no movement, no roll/charge/fire/strike) while waiting out RESPAWN_MS. */
 function isDead(conn: Conn): boolean {
   return conn.respawnAt > 0;
 }
 
 /**
- * Frozen (no movement, no roll/dash/charge/fire/strike) while this connection's own room is in
+ * Frozen (no movement, no roll/charge/fire/strike) while this connection's own room is in
  * its "work" phase — the coworking half of the cycle, where nobody should be able to walk around
  * or fight. Thaws automatically the instant `getRoomPhase` flips to "break", same clock every
  * client already renders the countdown against (src/lib/timer.ts's getTimerState), so there's
@@ -202,6 +206,46 @@ const roomBalls = new Map<string, ServerBall[]>();
 /** Hits resolved since the last broadcast, drained into the next `state` message and cleared —
  * not cumulative, see the broadcast loop below. */
 const roomHits = new Map<string, HitEvent[]>();
+
+/**
+ * First room-owned enemy (see ARENA_ROOM_SLUG/ENEMY_* in shared/constants.ts): everyone in the
+ * room can hurt it, and it can hurt everyone back, via the exact same `roomBalls`/`roomHits`
+ * pipeline as a player's own melee swing — no separate hit-resolution path to keep in sync with.
+ * One per room slug, same pattern as `roomBalls`/`roomHits` above; today only `ARENA_ROOM_SLUG`
+ * ever gets an entry (see ensureArenaEnemy).
+ */
+type Enemy = {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
+  /** Currently-chased connection's id, or null while idle/no valid target in range. Kept across
+   * ticks so the enemy commits to one target (within ENEMY_LEASH_RANGE) instead of flickering
+   * between whoever's nearest every tick. */
+  targetId: string | null;
+  attackCooldownUntil: number;
+  /** 0 while alive; otherwise the epoch ms it respawns at (same shape as Conn.respawnAt). */
+  deadUntil: number;
+};
+const roomEnemies = new Map<string, Enemy>();
+
+function spawnEnemy(): Enemy {
+  // Arena is a plain (non-lobby) room, same footprint as EXIT_ZONE's room — center of that
+  // single-screen world, not the 2x lobby world.
+  const spawn = clampPos(worldW(false) / 2 - ENEMY_W / 2, worldH(false) / 2 - ENEMY_H / 2, false);
+  return { id: `enemy:${randomUUID()}`, x: spawn.x, y: spawn.y, hp: ENEMY_MAX_HP, targetId: null, attackCooldownUntil: 0, deadUntil: 0 };
+}
+
+/** Called whenever a connection actually lands in a room (see handleJoin) — spawns this room's
+ * enemy at full HP the moment it stops being empty, per AGENTS.md's request ("always full life"
+ * on entry). A no-op for every room slug except ARENA_ROOM_SLUG, and for an arena that already has
+ * a live-or-dying enemy (leaveRoom below deletes the entry outright once the room empties, so the
+ * next join here always starts fresh). */
+function ensureArenaEnemy(roomSlug: string) {
+  if (roomSlug !== ARENA_ROOM_SLUG) return;
+  if (roomEnemies.has(roomSlug)) return;
+  roomEnemies.set(roomSlug, spawnEnemy());
+}
 /** Live connection count per IP — see MAX_CONNECTIONS_PER_IP. */
 const connectionsByIp = new Map<string, number>();
 /**
@@ -235,21 +279,31 @@ function leaveRoom(conn: Conn) {
     // array per room slug that ever had combat in it.
     roomBalls.delete(conn.roomSlug);
     roomHits.delete(conn.roomSlug);
+    // Same reasoning for the room's own enemy (see ensureArenaEnemy's doc comment) — an empty
+    // arena drops it outright rather than waiting out ENEMY_RESPAWN_MS, so the next person in
+    // always meets it at full HP, per AGENTS.md's request.
+    roomEnemies.delete(conn.roomSlug);
   }
 }
 
 let nextBallId = 0;
 
+/** Shared by pushBall (player) and the enemy's own melee swing — a ball only ever needs a room
+ * slug to land in the right room's array, not necessarily a Conn. */
+function pushBallToRoom(roomSlug: string, ball: ServerBall) {
+  let balls = roomBalls.get(roomSlug);
+  if (!balls) {
+    balls = [];
+    roomBalls.set(roomSlug, balls);
+  }
+  balls.push(ball);
+}
+
 /** Shared by spawnBall/spawnMelee. Stamina (see STAMINA_MAX's doc comment in
  * shared/constants.ts) is the only fire-rate limit — no separate concurrent-in-flight cap here,
  * so there's nothing that can silently disagree with what the stamina bar shows. */
 function pushBall(conn: Conn, ball: ServerBall) {
-  let balls = roomBalls.get(conn.roomSlug);
-  if (!balls) {
-    balls = [];
-    roomBalls.set(conn.roomSlug, balls);
-  }
-  balls.push(ball);
+  pushBallToRoom(conn.roomSlug, ball);
 }
 
 /** Thrown ball above the connection's head, in its current facing direction — same math as
@@ -293,6 +347,82 @@ function spawnMelee(conn: Conn) {
     melee: true,
     until: Date.now() + STRIKE_MS,
     dmg: Math.round(STRIKE_DMG * conn.stats.attackPower),
+  });
+}
+
+/**
+ * One room's enemy for one tick — chase the nearest valid target within ENEMY_AGGRO_RANGE, stick
+ * with it until it dies/goes immune/wanders past ENEMY_LEASH_RANGE, and swing (into the shared
+ * `roomBalls` pipeline, same as a player's own melee) once close enough. This is the entire "AI":
+ * a handful of `if`s in the same per-room tick pass as movement/combat, not a separate FSM/AI
+ * subsystem (see AGENTS.md's 2026-09-23 note) — exactly the pattern HP already set for adding
+ * server-side behavior here.
+ */
+function tickEnemy(slug: string, set: Set<Conn>, now: number, dt: number) {
+  const enemy = roomEnemies.get(slug);
+  if (!enemy) return;
+  if (enemy.deadUntil > 0) {
+    if (now >= enemy.deadUntil) {
+      const spawn = clampPos(worldW(false) / 2 - ENEMY_W / 2, worldH(false) / 2 - ENEMY_H / 2, false);
+      enemy.x = spawn.x;
+      enemy.y = spawn.y;
+      enemy.hp = ENEMY_MAX_HP;
+      enemy.deadUntil = 0;
+      enemy.targetId = null;
+    }
+    return;
+  }
+  const cx = enemy.x + ENEMY_W / 2;
+  const cy = enemy.y + ENEMY_H / 2;
+  let target: Conn | null = null;
+  if (enemy.targetId) {
+    for (const c of set) {
+      if (c.id === enemy.targetId) {
+        target = c;
+        break;
+      }
+    }
+    if (target && (isDead(target) || now < target.immuneUntil)) target = null;
+    if (target && Math.hypot(target.x + PERSON_W / 2 - cx, target.y + PERSON_H / 2 - cy) > ENEMY_LEASH_RANGE) target = null;
+  }
+  if (!target) {
+    let bestDist = ENEMY_AGGRO_RANGE;
+    for (const c of set) {
+      if (isDead(c) || now < c.immuneUntil) continue;
+      const dist = Math.hypot(c.x + PERSON_W / 2 - cx, c.y + PERSON_H / 2 - cy);
+      if (dist <= bestDist) {
+        bestDist = dist;
+        target = c;
+      }
+    }
+  }
+  enemy.targetId = target?.id ?? null;
+  if (!target) return;
+  const tx = target.x + PERSON_W / 2;
+  const ty = target.y + PERSON_H / 2;
+  const dist = Math.hypot(tx - cx, ty - cy);
+  const ux = (tx - cx) / (dist || 1);
+  const uy = (ty - cy) / (dist || 1);
+  if (dist > ENEMY_ATTACK_RANGE) {
+    const clamped = clampPos(enemy.x + ux * ENEMY_SPEED * dt, enemy.y + uy * ENEMY_SPEED * dt, false);
+    enemy.x = clamped.x;
+    enemy.y = clamped.y;
+    return;
+  }
+  if (now < enemy.attackCooldownUntil) return;
+  enemy.attackCooldownUntil = now + ENEMY_ATTACK_COOLDOWN_MS;
+  pushBallToRoom(slug, {
+    id: `${enemy.id}:${nextBallId++}`,
+    x: cx + ux * ENEMY_ATTACK_R,
+    y: cy + uy * ENEMY_ATTACK_R,
+    vx: 0,
+    vy: 0,
+    r: ENEMY_ATTACK_R,
+    color: "#7f1d1d",
+    owner: enemy.id,
+    melee: true,
+    until: now + ENEMY_ATTACK_MS,
+    dmg: ENEMY_ATTACK_DMG,
   });
 }
 
@@ -382,15 +512,19 @@ function persistPosition(conn: Conn) {
  * decided authoritatively here, not by a client with its own Supabase session (unlike
  * increment_balls_shot/increment_fist_swings, which a real shot/swing lets the client call for
  * itself). Either id can be null (a guest killer/victim has nothing to persist) but not both.
+ *
+ * `enemyKill` (see supabase/migrations/0030_mob_kills.sql): the room's own enemy died instead of a
+ * player — same xp/gold reward, but counted as `mob_kills` instead of `kills`, and never paired
+ * with a `victimUserId` (the enemy isn't a player with deaths to persist).
  */
-async function reportCombatEvent(killerUserId: string | null, victimUserId: string | null) {
+async function reportCombatEvent(killerUserId: string | null, victimUserId: string | null, enemyKill = false) {
   if (!PERSISTENCE_ENABLED || (!killerUserId && !victimUserId)) return;
   try {
     const url = new URL("/api/internal/combat", PERSISTENCE_API_URL!);
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` },
-      body: JSON.stringify({ killerUserId, victimUserId }),
+      body: JSON.stringify({ killerUserId, victimUserId, enemyKill }),
     });
     if (!res.ok) console.error(`reportCombatEvent: ${res.status} ${res.statusText} from ${url}`);
   } catch (err) {
@@ -573,6 +707,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.gy = resumeFrom?.gy ?? conn.y;
   conn.gd = resumeFrom?.gd ?? conn.d;
   joinRoom(conn);
+  ensureArenaEnemy(conn.roomSlug);
 }
 
 const wss = new WebSocketServer({ server: httpServer });
@@ -609,12 +744,6 @@ wss.on("connection", (ws, req) => {
     rollCooldownUntil: 0,
     rollDx: 0,
     rollDy: 0,
-    dashUntil: 0,
-    dashCooldownUntil: 0,
-    dashTargetX: 0,
-    dashTargetY: 0,
-    dashTeleportAt: 0,
-    dashTeleported: true,
     chargeStartAt: null,
     meleeCooldownUntil: 0,
     staminaAt: stats.staminaMax,
@@ -657,30 +786,13 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "roll") {
       if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
-      if (now >= conn.rollCooldownUntil && now >= conn.dashUntil) {
+      if (now >= conn.rollCooldownUntil) {
         const [ux, uy] = DIRS[conn.d];
         const n = Math.hypot(ux, uy) || 1;
         conn.rollDx = ux / n;
         conn.rollDy = uy / n;
         conn.rollUntil = now + ROLL_MS;
         conn.rollCooldownUntil = conn.rollUntil + ROLL_COOLDOWN_MS;
-      }
-      return;
-    }
-    if (msg.type === "dash") {
-      if (isDead(conn) || isFrozen(conn)) return;
-      const now = Date.now();
-      if (now >= conn.dashCooldownUntil && now >= conn.rollUntil) {
-        const [ux, uy] = DIRS[conn.d];
-        const n = Math.hypot(ux, uy) || 1;
-        const dashDistance = conn.speed * ROLL_SPEED_MULT * (ROLL_MS / 1000) * DASH_DISTANCE_MULT;
-        const target = clampPos(conn.x + (ux / n) * dashDistance, conn.y + (uy / n) * dashDistance, conn.isLobby);
-        conn.dashTargetX = target.x;
-        conn.dashTargetY = target.y;
-        conn.dashTeleportAt = now + DASH_TELEPORT_AT_MS;
-        conn.dashUntil = now + DASH_MS;
-        conn.dashCooldownUntil = conn.dashUntil + DASH_COOLDOWN_MS;
-        conn.dashTeleported = false;
       }
       return;
     }
@@ -795,7 +907,7 @@ setInterval(() => {
         // Ghost movement: the body (x/y/d) stays frozen at the death spot for the whole respawn
         // countdown (the corpse), but the player still steers something — a ghost, at gx/gy/gd —
         // for the same RESPAWN_MS window (see PlayerState.gx/gy/gd's doc comment in
-        // shared/types.ts). No roll/dash/charge/fire/strike here: those message handlers already
+        // shared/types.ts). No roll/charge/fire/strike here: those message handlers already
         // reject while isDead(conn), so raw input is the only thing that can move a ghost — plain
         // walking, at the connection's normal speed, no cooldowns to respect.
         const gdx = conn.inputDx;
@@ -806,34 +918,25 @@ setInterval(() => {
         const gnx = conn.gx + gdx * conn.speed * dt * gnorm;
         const gny = conn.gy + gdy * conn.speed * dt * gnorm;
         const gclamped = clampPos(gnx, gny, conn.isLobby);
-        conn.gx = gclamped.x;
-        conn.gy = gclamped.y;
+        const gresolved = resolveObstacleMove(conn.gx, conn.gy, gclamped.x, gclamped.y, PERSON_W, PERSON_H, obstaclesFor(conn.isLobby));
+        conn.gx = gresolved.x;
+        conn.gy = gresolved.y;
         continue;
       }
       // Work phase of this connection's own room: nobody moves (see isFrozen's doc comment) —
       // skip movement entirely, same as isDead above but without the ghost, so a stray in-flight
-      // dash/roll just resumes wherever it left off once the room thaws into "break".
+      // roll just resumes wherever it left off once the room thaws into "break".
       if (isFrozen(conn)) continue;
-      // Faza F2 (docs/combat_sync_plan.md): dash is a delayed teleport (see spawnBall/dash
-      // handler above) — the jump happens once, at dashTeleportAt, not gradually like a roll.
-      const dashing = now < conn.dashUntil;
-      if (dashing && !conn.dashTeleported && now >= conn.dashTeleportAt) {
-        const clamped = clampPos(conn.dashTargetX, conn.dashTargetY, conn.isLobby);
-        conn.x = clamped.x;
-        conn.y = clamped.y;
-        conn.dashTeleported = true;
-      }
-      const rolling = !dashing && now < conn.rollUntil;
+      const rolling = now < conn.rollUntil;
       const rawDx = conn.inputDx;
       const rawDy = conn.inputDy;
       // During a roll, movement follows the direction locked in when it started (rollDx/rollDy),
-      // not whatever arrows are currently held; during a dash there's no continuous movement at
-      // all (the teleport above is the only position change). Facing (`d`) only follows raw
-      // arrow input, and only outside of both — matching RoomStage.tsx's tick() exactly, so the
-      // reconciliation below doesn't fight what the player just saw locally.
-      const dx = dashing ? 0 : rolling ? conn.rollDx : rawDx;
-      const dy = dashing ? 0 : rolling ? conn.rollDy : rawDy;
-      if (!rolling && !dashing && (rawDx || rawDy)) {
+      // not whatever arrows are currently held. Facing (`d`) only follows raw arrow input, and
+      // only outside of a roll — matching RoomStage.tsx's tick() exactly, so the reconciliation
+      // below doesn't fight what the player just saw locally.
+      const dx = rolling ? conn.rollDx : rawDx;
+      const dy = rolling ? conn.rollDy : rawDy;
+      if (!rolling && (rawDx || rawDy)) {
         conn.d = DIR_OF[rawDy + 1][rawDx + 1] as Dir;
       }
       if (!dx && !dy) continue;
@@ -842,9 +945,16 @@ setInterval(() => {
       const nx = conn.x + dx * speed * dt * norm;
       const ny = conn.y + dy * speed * dt * norm;
       const clamped = clampPos(nx, ny, conn.isLobby);
-      conn.x = clamped.x;
-      conn.y = clamped.y;
+      const resolved = resolveObstacleMove(conn.x, conn.y, clamped.x, clamped.y, PERSON_W, PERSON_H, obstaclesFor(conn.isLobby));
+      conn.x = resolved.x;
+      conn.y = resolved.y;
     }
+  }
+  // One room-owned enemy's AI (see tickEnemy's doc comment) — after player movement so it always
+  // chases this tick's positions, before the ball-physics pass below so a swing thrown just now
+  // resolves in the same tick, exactly like a player's own strike would.
+  for (const [slug, set] of rooms) {
+    if (slug === ARENA_ROOM_SLUG) tickEnemy(slug, set, now, dt);
   }
   // Faza F3: ball/melee-hitbox physics and the single, authoritative "who got hit" decision —
   // same collision geometry as `hits()` in RoomStage.tsx, just decided once here instead of once
@@ -856,6 +966,7 @@ setInterval(() => {
     const isLobby = slug === "lobby";
     const worldWidth = worldW(isLobby);
     const worldHeight = worldH(isLobby);
+    const obstacles = obstaclesFor(isLobby);
     const survivors: ServerBall[] = [];
     for (const b of balls) {
       if (b.until !== undefined && now > b.until) continue;
@@ -863,6 +974,10 @@ setInterval(() => {
         b.x += b.vx * dt;
         b.y += b.vy * dt;
       }
+      // Large furniture (see LOBBY_OBSTACLES in shared/obstacles.ts) blocks a thrown ball/melee
+      // hitbox exactly like it blocks a player — the ball is simply consumed here, same as flying
+      // out of bounds, instead of passing through to whatever's on the other side.
+      if (circleIntersectsObstacles(b.x, b.y, b.r, obstacles)) continue;
       let target: Conn | null = null;
       for (const conn of set) {
         if (conn.id === b.owner) continue;
@@ -875,6 +990,53 @@ setInterval(() => {
           target = conn;
           break;
         }
+      }
+      // No player in the way: a live room enemy (see roomEnemies' doc comment) is the only other
+      // thing this ball/hitbox can hit — never its own swing, same "skip the owner" rule as above.
+      const enemy = target ? null : roomEnemies.get(slug);
+      const enemyHit =
+        enemy && enemy.deadUntil === 0 && b.owner !== enemy.id
+          ? (() => {
+              const nx = Math.max(enemy.x - HIT_PAD, Math.min(b.x, enemy.x + ENEMY_W + HIT_PAD));
+              const ny = Math.max(enemy.y - HIT_PAD, Math.min(b.y, enemy.y + ENEMY_H + HIT_PAD));
+              return Math.hypot(b.x - nx, b.y - ny) <= b.r;
+            })()
+          : false;
+      if (enemyHit && enemy) {
+        // Decided before mutating enemy.hp below, same "agree with the actual kill" reasoning as
+        // the player-kill path just below — this is what the killer's own client uses to trigger
+        // the "KILL"/reward callout (see the `killed` doc comment in shared/types.ts).
+        const killed = enemy.hp > 0 && enemy.hp - b.dmg <= 0;
+        const hits = roomHits.get(slug) ?? [];
+        hits.push({
+          targetId: enemy.id,
+          ownerId: b.owner,
+          melee: Boolean(b.melee),
+          x: b.x,
+          y: b.y,
+          r: b.r,
+          color: b.color,
+          dmg: b.dmg,
+          killed,
+        });
+        roomHits.set(slug, hits);
+        enemy.hp = Math.max(0, enemy.hp - b.dmg);
+        if (killed) {
+          enemy.deadUntil = now + ENEMY_RESPAWN_MS;
+          enemy.targetId = null;
+          let owner: Conn | null = null;
+          for (const c of set) {
+            if (c.id === b.owner) {
+              owner = c;
+              break;
+            }
+          }
+          // Same KILL_XP_REWARD/KILL_GOLD_REWARD as a PvP kill (see supabase/migrations/
+          // 0030_mob_kills.sql) — counted separately as mob_kills, never paired with a
+          // victimUserId (the enemy isn't a player with deaths to persist).
+          void reportCombatEvent(owner?.userId ?? null, null, true);
+        }
+        continue; // one hit ends the ball/hitbox, same as hitting a player
       }
       if (target) {
         // Decided before mutating target.hp below, so the HitEvent (which the killer's own client
@@ -955,12 +1117,26 @@ setInterval(() => {
     // Drained, not cumulative — each hit is only ever sent once (Faza F3).
     const hits = roomHits.get(slug) ?? [];
     if (hits.length > 0) roomHits.set(slug, []);
+    const roomEnemy = roomEnemies.get(slug);
+    const enemies: EnemyState[] = roomEnemy
+      ? [
+          {
+            id: roomEnemy.id,
+            x: roomEnemy.x,
+            y: roomEnemy.y,
+            hp: roomEnemy.hp,
+            maxHp: ENEMY_MAX_HP,
+            state: roomEnemy.deadUntil > 0 ? "dead" : roomEnemy.targetId ? "chase" : "idle",
+          },
+        ]
+      : [];
     const msg: ServerMessage = {
       type: "state",
       schemaVersion: SCHEMA_VERSION,
       players,
       balls,
       hits,
+      enemies,
       at: Date.now(),
     };
     for (const conn of set) send(conn.ws, msg);

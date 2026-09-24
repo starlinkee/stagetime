@@ -19,6 +19,7 @@ const gridStartY = 220;
 const pomodoroRooms = ROOMS.filter((r) => r.kind === "pomodoro");
 const stopwatchRooms = ROOMS.filter((r) => r.kind === "stopwatch");
 const shopRooms = ROOMS.filter((r) => r.kind === "shop");
+const arenaRooms = ROOMS.filter((r) => r.kind === "arena");
 
 // Grupowanie po typie (slug bez numeru wariantu na końcu, np. "25-5-1" -> "25-5"), w kolejności
 // pierwszego wystąpienia, żeby każdy typ trafił do jednego wiersza.
@@ -70,7 +71,20 @@ const shopZones: RoomZone[] = shopRooms.map((r) => ({
   noReward: true,
 }));
 
-const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones, ...shopZones];
+// Arena sits right next to Shop, same row — a quick test room for a room-owned enemy everyone can
+// fight (see ARENA_ROOM_SLUG in realtime-server/shared/constants.ts). Must match the "arena"
+// branch in realtime-server/shared/rooms.ts's buildLobbyZoneRects exactly.
+const arenaZones: RoomZone[] = arenaRooms.map((r) => ({
+  slug: r.slug,
+  name: "Arena",
+  x: SCREEN_W / 2 + 150 - 110 + 270,
+  y: TIMER_ZONE_Y,
+  w: 220,
+  h: 140,
+  color: r.color,
+}));
+
+const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones, ...shopZones, ...arenaZones];
 
 const ROOM_SLUGS = ROOMS.map((r) => r.slug);
 

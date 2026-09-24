@@ -32,7 +32,8 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
           XP przy wyjściu w trakcie pracy. */}
       <div className="pointer-events-none fixed left-1/2 top-20 z-10 flex -translate-x-1/2 flex-col items-center gap-0.5 text-center">
         <h1 className="text-2xl font-semibold">{room.name}</h1>
-        {room.kind !== "shop" && (
+        {room.kind === "arena" && <p className="font-semibold text-red-400">Watch out — an enemy roams this room</p>}
+        {room.kind !== "shop" && room.kind !== "arena" && (
           <p className="flex flex-col items-center gap-0.5 text-sm">
             {room.kind === "pomodoro" && (
               <span className="text-zinc-400">
@@ -54,6 +55,10 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
       ) : room.kind === "shop" ? (
         <Suspense fallback={null}>
           <ShopRoom roomSlug={room.slug} />
+        </Suspense>
+      ) : room.kind === "arena" ? (
+        <Suspense fallback={null}>
+          <RoomStage roomSlug={room.slug} zones={[exitZone]} spawnZoneSlug={EXIT_ZONE.slug} />
         </Suspense>
       ) : (
         <>

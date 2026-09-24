@@ -41,30 +41,8 @@ body {
 }
 .pp-roll { transform-box: fill-box; transform-origin: center; animation: pp-roll 240ms linear; }
 
-/* Unik (dash): sylwetka znika jak za chmurą (rozmycie + rozjaśnienie) dokładnie w połowie animacji —
-   to właśnie wtedy RoomStage.tsx wykonuje skok pozycji (teleport, bez pokonywania drogi między punktami).
-   Czas musi się zgadzać z DASH_MS w RoomStage.tsx. */
-@keyframes pp-dash {
-  0%, 100% { opacity: 1; filter: blur(0) brightness(1); transform: scale(1); }
-  38% { opacity: 0; filter: blur(3px) brightness(1.6); transform: scale(1.35); }
-  62% { opacity: 0; filter: blur(3px) brightness(1.6); transform: scale(0.7); }
-}
-.pp-dash { transform-box: fill-box; transform-origin: center; animation: pp-dash 220ms ease-in-out; }
-
-/* Chmurka przy uniku: pojawia się tylko przy znikaniu postaci (pierwsza połowa pp-dash) i gaśnie,
-   zanim postać pojawi się z powrotem w nowym miejscu — przy pojawieniu chmurki już nie ma. */
-@keyframes pp-dash-cloud {
-  0% { opacity: 0; transform: scale(0.5); }
-  30% { opacity: 1; transform: scale(1.1); }
-  50% { opacity: 1; transform: scale(1.25); }
-  62%, 100% { opacity: 0; transform: scale(1.5); }
-}
-.pp-dash-cloud { transform-box: fill-box; transform-origin: center; animation: pp-dash-cloud 220ms ease-in-out; }
-
 /* PlayerSprite (image-based character, public/characters/player/rotation/*.png): no walk-cycle
-   frames exist, so walking is faked as a chunky step bob instead of leg movement. Roll/dash reuse
-   the pp-roll/pp-dash keyframes above but with border-box instead of fill-box (the source art is
-   an <img>, not SVG). */
+   frames exist, so walking is faked as a chunky step bob instead of leg movement. */
 @keyframes ps-walk {
   0% { transform: translateY(0); }
   25% { transform: translateY(-2px); }
@@ -73,14 +51,20 @@ body {
   100% { transform: translateY(0); }
 }
 .ps-walk { animation: ps-walk 0.5s steps(1) infinite; }
-.ps-roll { transform-box: border-box; transform-origin: center; animation: pp-roll 240ms linear; }
-.ps-dash { transform-box: border-box; transform-origin: center; animation: pp-dash 220ms ease-in-out; }
-.ps-dash-cloud {
-  border-radius: 9999px;
-  background: radial-gradient(circle, #f8fafc 0%, #cbd5e1 70%, transparent 72%);
-  transform-box: border-box;
-  transform-origin: center;
-  animation: pp-dash-cloud 220ms ease-in-out;
+
+/* PlayerSprite's roll visual: steps once across a 5-frame Jump spritesheet strip (public/
+   characters/player/jump/*.png, background-image set inline per direction) instead of spinning
+   the static rotation frame. --ps-jump-ms is set inline to ROLL_MS (realtime-server/shared/
+   constants.ts) so the animation matches how long the server actually rolls for. */
+@keyframes ps-jump-frames {
+  from { background-position-x: 0; }
+  to { background-position-x: -400%; }
+}
+.ps-jump {
+  background-repeat: no-repeat;
+  background-size: 500% 100%;
+  image-rendering: pixelated;
+  animation: ps-jump-frames var(--ps-jump-ms, 240ms) steps(4) 1 forwards;
 }
 
 /* Popup "+1 coin / +xp" nad postacią po co-minutowym tick-u nagrody (patrz REWARD_MS w

@@ -32,7 +32,17 @@ export interface ShopRoomConfig {
   color?: string;
 }
 
-export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig | ShopRoomConfig;
+/** Arena: no timer/XP here either (like Shop) — one room-owned enemy everyone can fight, spawned
+ * server-side at full HP whenever the room isn't empty (see ARENA_ROOM_SLUG in
+ * realtime-server/shared/constants.ts). */
+export interface ArenaRoomConfig {
+  slug: string;
+  name: string;
+  kind: "arena";
+  color?: string;
+}
+
+export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig | ShopRoomConfig | ArenaRoomConfig;
 
 export interface TimerState {
   phase: Phase;

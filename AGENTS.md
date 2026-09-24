@@ -36,7 +36,7 @@ podział, jaki dziś istnieje w kodzie.
   `tsconfig.json`, nie przez osobny pakiet workspace.
 - **Odpowiada za, jako jedyne źródło prawdy (serwer, nie klient, decyduje):**
   - ruch: pozycję gracza liczy z surowego inputu (`dx`/`dy`), waliduje granice mapy;
-  - roll/dash: serwer sam liczy kierunek i pilnuje cooldownów, klient tylko wysyła żądanie;
+  - roll: serwer sam liczy kierunek i pilnuje cooldownu, klient tylko wysyła żądanie;
   - pociski/uderzenia wręcz (rzut kulą, fist swing): spawn, fizyka, i **jedna** decyzja "kto kogo
     trafił", rozgłaszana identycznie wszystkim graczom w pokoju;
   - reconnect + grace period (12 s) po zerwaniu WebSocketu;

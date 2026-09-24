@@ -28,6 +28,15 @@ export const COLOR_CHOICES = [
 
 const COLOR_RE = /^#[0-9a-f]{6}$/;
 
+/** Character look slugs (see supabase/migrations/0031_character_selection.sql). */
+export type CharacterSlug = "classic" | "pixel";
+const DEFAULT_CHARACTER: CharacterSlug = "classic";
+
+/** Character slug from the database, or the default when missing/unrecognized. */
+export function safeCharacter(character: string | null | undefined): CharacterSlug {
+  return character === "pixel" ? "pixel" : DEFAULT_CHARACTER;
+}
+
 /** Kolor z bazy albo domyślny, gdy wartość jest niepoprawna. */
 export function safeColor(color: string | null | undefined): string {
   return color && COLOR_RE.test(color) ? color : DEFAULT_COLOR;
@@ -45,6 +54,7 @@ export type Profile = {
   fistSwings: number;
   kills: number;
   deaths: number;
+  mobKills: number;
 };
 
 /** Mapa `user_id → profil`. */
@@ -52,6 +62,8 @@ export type Profiles = Record<string, Profile>;
 
 /** Raw cosmetic columns as stored — `null`/expired means no active item, see `activeCosmetic`. */
 type CosmeticFields = { cosmetic: string | null; cosmeticExpiresAt: string | null };
+/** Raw character column as stored. */
+type CharacterFields = { character: string | null };
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
 function activeCosmetic(f: CosmeticFields): string | null {
@@ -78,12 +90,18 @@ export type MyProfile = {
   kills: number;
   /** Total PvP deaths, ever — 0 until loaded or signed out. */
   deaths: number;
+  /** Total Arena enemy kills, ever (see ARENA_ROOM_SLUG in realtime-server/shared/constants.ts) —
+   * separate from `kills` (PvP only) — 0 until loaded or signed out. */
+  mobKills: number;
   /** Copper coin balance (see src/lib/coins.ts) — 0 until loaded or signed out. Private: not shown for other players. */
   coins: number;
   /** Active cosmetic slug (e.g. "flower"), or null if none owned or the timer ran out — see
    * supabase/migrations/0027_cosmetic_items.sql. Shown to other players via Presence, same as
    * color (see Meta in RoomStage.tsx), not through realtime-server: it has no gameplay effect. */
   cosmetic: string | null;
+  /** Character look (see supabase/migrations/0031_character_selection.sql) — same Presence-only
+   * path as cosmetic/color, no gameplay effect. */
+  character: CharacterSlug;
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -100,6 +118,13 @@ export type MyProfile = {
    * transaction, so a crash mid-purchase never lands in a "coins gone, item not granted" state.
    */
   purchaseCosmetic: (slug: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Switches character look (see supabase/migrations/0031_character_selection.sql) — same
+   * atomic-RPC pattern as purchaseColor/purchaseCosmetic: balance check, coin deduction and the
+   * write happen in one transaction. Free (no coin check) when re-picking the character already
+   * equipped, enforced server-side by the same RPC.
+   */
+  purchaseCharacter: (character: CharacterSlug) => Promise<{ ok: true } | { ok: false; error: string }>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -122,7 +147,7 @@ export function useMyProfile(): MyProfile {
   const fallback = session ? displayName(session).slice(0, MAX_NICKNAME) : null;
   // Trzymamy id razem z nickiem: po przelogowaniu nie pokazujemy cudzej nazwy.
   const [loaded, setLoaded] = useState<
-    ({ userId: string } & Profile & { coins: number } & CosmeticFields) | null
+    ({ userId: string } & Profile & { coins: number } & CosmeticFields & CharacterFields) | null
   >(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,7 +155,9 @@ export function useMyProfile(): MyProfile {
     if (!sb || !userId) return;
     let cancelled = false;
     sb.from("profiles")
-      .select("nickname, color, xp, balls_shot, fist_swings, kills, deaths, coins, cosmetic, cosmetic_expires_at")
+      .select(
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug",
+      )
       .eq("id", userId)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -146,9 +173,11 @@ export function useMyProfile(): MyProfile {
           fistSwings: data?.fist_swings ?? 0,
           kills: data?.kills ?? 0,
           deaths: data?.deaths ?? 0,
+          mobKills: data?.mob_kills ?? 0,
           coins: Number(data?.coins ?? 0),
           cosmetic: data?.cosmetic ?? null,
           cosmeticExpiresAt: data?.cosmetic_expires_at ?? null,
+          character: data?.character_slug ?? null,
         });
       });
     return () => {
@@ -158,7 +187,9 @@ export function useMyProfile(): MyProfile {
 
   useEffect(() => {
     const onSaved = (e: Event) => {
-      const next = (e as CustomEvent<{ userId: string } & Profile & { coins: number } & CosmeticFields>).detail;
+      const next = (
+        e as CustomEvent<{ userId: string } & Profile & { coins: number } & CosmeticFields & CharacterFields>
+      ).detail;
       if (next.userId === userId) setLoaded(next);
     };
     saved.addEventListener("saved", onSaved);
@@ -183,9 +214,11 @@ export function useMyProfile(): MyProfile {
             fist_swings?: number;
             kills?: number;
             deaths?: number;
+            mob_kills?: number;
             coins?: number | string;
             cosmetic?: string | null;
             cosmetic_expires_at?: string | null;
+            character_slug?: string | null;
           };
           if (!p.nickname) return;
           setLoaded({
@@ -197,9 +230,11 @@ export function useMyProfile(): MyProfile {
             fistSwings: p.fist_swings ?? 0,
             kills: p.kills ?? 0,
             deaths: p.deaths ?? 0,
+            mobKills: p.mob_kills ?? 0,
             coins: Number(p.coins ?? 0),
             cosmetic: p.cosmetic ?? null,
             cosmeticExpiresAt: p.cosmetic_expires_at ?? null,
+            character: p.character_slug ?? null,
           });
         },
       )
@@ -216,9 +251,11 @@ export function useMyProfile(): MyProfile {
   const currentFistSwings = loaded?.userId === userId ? loaded.fistSwings : 0;
   const currentKills = loaded?.userId === userId ? loaded.kills : 0;
   const currentDeaths = loaded?.userId === userId ? loaded.deaths : 0;
+  const currentMobKills = loaded?.userId === userId ? loaded.mobKills : 0;
   const currentCoins = loaded?.userId === userId ? loaded.coins : 0;
   const currentCosmetic = loaded?.userId === userId ? loaded.cosmetic : null;
   const currentCosmeticExpiresAt = loaded?.userId === userId ? loaded.cosmeticExpiresAt : null;
+  const currentCharacter = loaded?.userId === userId ? safeCharacter(loaded.character) : DEFAULT_CHARACTER;
 
   const save = useCallback(
     async (color: string) => {
@@ -260,9 +297,11 @@ export function useMyProfile(): MyProfile {
             fistSwings: currentFistSwings,
             kills: currentKills,
             deaths: currentDeaths,
+            mobKills: currentMobKills,
             coins: currentCoins,
             cosmetic: currentCosmetic,
             cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
           },
         }),
       );
@@ -277,9 +316,11 @@ export function useMyProfile(): MyProfile {
       currentFistSwings,
       currentKills,
       currentDeaths,
+      currentMobKills,
       currentCoins,
       currentCosmetic,
       currentCosmeticExpiresAt,
+      currentCharacter,
     ],
   );
 
@@ -314,9 +355,11 @@ export function useMyProfile(): MyProfile {
             fistSwings: currentFistSwings,
             kills: currentKills,
             deaths: currentDeaths,
+            mobKills: currentMobKills,
             coins: newCoins,
             cosmetic: currentCosmetic,
             cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
           },
         }),
       );
@@ -331,9 +374,11 @@ export function useMyProfile(): MyProfile {
       currentFistSwings,
       currentKills,
       currentDeaths,
+      currentMobKills,
       currentCoins,
       currentCosmetic,
       currentCosmeticExpiresAt,
+      currentCharacter,
     ],
   );
 
@@ -371,9 +416,11 @@ export function useMyProfile(): MyProfile {
             fistSwings: currentFistSwings,
             kills: currentKills,
             deaths: currentDeaths,
+            mobKills: currentMobKills,
             coins: newCoins,
             cosmetic: newCosmetic,
             cosmeticExpiresAt: newExpiresAt,
+            character: currentCharacter,
           },
         }),
       );
@@ -389,7 +436,70 @@ export function useMyProfile(): MyProfile {
       currentFistSwings,
       currentKills,
       currentDeaths,
+      currentMobKills,
       currentCoins,
+      currentCharacter,
+    ],
+  );
+
+  const purchaseCharacter = useCallback(
+    async (character: CharacterSlug) => {
+      if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      // Jedno RPC: sprawdza saldo, odejmuje coiny i zapisuje wybór postaci w jednej transakcji po
+      // stronie bazy (patrz supabase/migrations/0031_character_selection.sql) — darmowe, gdy to
+      // już aktywna postać.
+      const { data, error } = await sb.rpc("purchase_character", { p_character: character });
+      if (error) {
+        console.error("purchase_character", error);
+        const message =
+          error.message === "insufficient_coins"
+            ? "Not enough copper coins."
+            : error.message === "unknown_character"
+              ? "Unknown character."
+              : `Purchase failed: ${saveHint(error)}`;
+        return { ok: false as const, error: message };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | { character_slug?: string | null; coins?: number | string }
+        | null;
+      const newCharacter = safeCharacter(row?.character_slug ?? character);
+      const newCoins = Number(row?.coins ?? currentCoins);
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            mobKills: currentMobKills,
+            coins: newCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: newCharacter,
+          },
+        }),
+      );
+      return { ok: true as const };
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentMobKills,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
     ],
   );
 
@@ -407,12 +517,15 @@ export function useMyProfile(): MyProfile {
     fistSwings: mine?.fistSwings ?? 0,
     kills: mine?.kills ?? 0,
     deaths: mine?.deaths ?? 0,
+    mobKills: mine?.mobKills ?? 0,
     coins: mine?.coins ?? 0,
     cosmetic: mine ? activeCosmetic(mine) : null,
+    character: mine ? safeCharacter(mine.character) : DEFAULT_CHARACTER,
     error,
     save,
     purchaseColor,
     purchaseCosmetic,
+    purchaseCharacter,
   };
 }
 
@@ -438,7 +551,7 @@ export function useProfiles(userIds: string[]): Profiles {
     for (const id of missing) fetched.current.add(id);
     let cancelled = false;
     sb.from("profiles")
-      .select("id, nickname, color, xp, balls_shot, fist_swings, kills, deaths")
+      .select("id, nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills")
       .in("id", missing)
       // xp is numeric(12,1) — PostgREST may serialize it as a string, so toMap() below parses it.
       .then(({ data, error }) => {
@@ -467,9 +580,10 @@ export function useProfiles(userIds: string[]): Profiles {
             fist_swings?: number;
             kills?: number;
             deaths?: number;
+            mob_kills?: number;
           };
           if (!profile?.id || !profile.nickname) return;
-          const { id, nickname, color, xp, balls_shot, fist_swings, kills, deaths } = profile;
+          const { id, nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills } = profile;
           setProfiles((prev) =>
             // Interesują nas tylko osoby widoczne na stronie (czat, obecni).
             fetched.current.has(id)
@@ -483,6 +597,7 @@ export function useProfiles(userIds: string[]): Profiles {
                     fistSwings: fist_swings ?? 0,
                     kills: kills ?? 0,
                     deaths: deaths ?? 0,
+                    mobKills: mob_kills ?? 0,
                   },
                 }
               : prev,
@@ -518,6 +633,7 @@ function toMap(
     fist_swings: number;
     kills: number;
     deaths: number;
+    mob_kills: number;
   }[],
 ): Profiles {
   return Object.fromEntries(
@@ -531,6 +647,7 @@ function toMap(
         fistSwings: r.fist_swings ?? 0,
         kills: r.kills ?? 0,
         deaths: r.deaths ?? 0,
+        mobKills: r.mob_kills ?? 0,
       },
     ]),
   );

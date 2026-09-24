@@ -71,7 +71,7 @@ export const BROADCAST_MS = 50;
 export const SCHEMA_VERSION = 1;
 
 /**
- * Combat/roll/dash tuning — single source of truth for this server and src/components/
+ * Combat/roll tuning — single source of truth for this server and src/components/
  * RoomStage.tsx (see docs/combat_sync_plan.md, Faza F1). Values must match RoomStage.tsx exactly:
  * this is what let movement drift silently before A2 in docs/stateful_server_plan.md, and the
  * same risk applies here.
@@ -84,12 +84,6 @@ export const ROLL_SPEED_MULT = 2.5;
 export const ROLL_MS = 240;
 /** How long after a roll ends before another one can start. */
 export const ROLL_COOLDOWN_MS = 260;
-/** Dash (V): a further, instant teleport in the facing direction, no distance covered on the way. */
-export const DASH_DISTANCE_MULT = 1.8;
-export const DASH_MS = 220;
-export const DASH_TELEPORT_AT_MS = DASH_MS / 2;
-/** Dash cooldown is 4x the roll cooldown. */
-export const DASH_COOLDOWN_MS = ROLL_COOLDOWN_MS * 4;
 /** Charged-ball radius range — interpolated by charge fraction (0..1). */
 export const ORB_R_MIN = 10;
 export const ORB_R_MAX = 60;
@@ -106,14 +100,19 @@ export const HIT_PAD = 8;
 /**
  * Combat hitbox (ball/melee collision only) — narrower and shorter than the full
  * PERSON_W x PERSON_H box, which stays the movement footprint (world clamp, zone overlap, spawn
- * centering) and sprite scale unchanged. Centered within that box so a thrown ball only connects
- * with the character's visible silhouette instead of its whole walking footprint. Must match
- * RoomStage.tsx's `hits()` exactly, same as PERSON_W/PERSON_H above.
+ * centering) and sprite scale unchanged. Horizontally centered within that box so a thrown ball
+ * only connects with the character's visible silhouette instead of its whole walking footprint.
+ * Vertically it's bottom-anchored, not centered: every character sprite stands on the box's
+ * bottom edge (feet at PERSON_H), with empty headroom above, not a silhouette centered in the
+ * middle of the box — PlayerSprite's fixed art (public/characters/player/rotation/*.png) only
+ * fills the bottom 2/3 of its 24x24 canvas (checked via alpha bbox: visible rows 8-24 of 24), so
+ * a vertically-centered hitbox used to sit mostly in the empty headroom above the head and miss
+ * the feet entirely. Must match RoomStage.tsx's `hits()` exactly, same as PERSON_W/PERSON_H above.
  */
 export const HITBOX_W = PERSON_W / 2;
-export const HITBOX_H = PERSON_H * 0.8;
+export const HITBOX_H = (PERSON_H * 2) / 3;
 export const HITBOX_OFFSET_X = (PERSON_W - HITBOX_W) / 2;
-export const HITBOX_OFFSET_Y = (PERSON_H - HITBOX_H) / 2;
+export const HITBOX_OFFSET_Y = PERSON_H - HITBOX_H;
 /**
  * Stamina (fire-rate) model, replacing the old flat "N shots then a hard 1.8s wait" salvo
  * cooldown: a connection has a pool of `STAMINA_MAX` units that drains by `STAMINA_COST_PER_SHOT`
@@ -183,3 +182,36 @@ export const GHOST_OPACITY = 0.35;
  */
 export const KILL_XP_REWARD = 1;
 export const KILL_GOLD_REWARD = 5;
+
+/**
+ * First test of a room-owned enemy that everyone can hurt and that can hurt everyone back (see
+ * AGENTS.md's 2026-09-23 note: no AI/FSM system is planned here — this is a small per-room state
+ * machine in the same tick loop as movement/combat, exactly like HP was added, not a new
+ * subsystem). Lives only in `ARENA_ROOM_SLUG`, one per room, spawned at full HP the moment the
+ * room stops being empty (see ensureArenaEnemy in server.ts) — never persisted, never shared
+ * across rooms.
+ */
+export const ARENA_ROOM_SLUG = "arena";
+export const ENEMY_MAX_HP = 60;
+/** World units per second — slower than DEFAULT_PLAYER_SPEED so a chased player can outrun it. */
+export const ENEMY_SPEED = 140;
+/** Box used both for its melee-swing hitbox target test and for the client's own sprite footprint. */
+export const ENEMY_W = 96;
+export const ENEMY_H = 96;
+/** Starts chasing the nearest player within this distance (px, from box centers). */
+export const ENEMY_AGGRO_RANGE = 420;
+/** Keeps chasing its current target until it gets this far away, even past ENEMY_AGGRO_RANGE —
+ * without a wider leash than the aggro range, a target orbiting right at the aggro edge would
+ * flicker the enemy between chase and idle every tick. */
+export const ENEMY_LEASH_RANGE = 620;
+/** Switches from chase to attack once this close (px, from box centers). */
+export const ENEMY_ATTACK_RANGE = 70;
+/** Melee hitbox radius/lifetime/cooldown — same shape of numbers as STRIKE_R/STRIKE_MS/
+ * STRIKE_COOLDOWN_MS above, just tuned for one big slow attacker instead of many players. */
+export const ENEMY_ATTACK_R = 46;
+export const ENEMY_ATTACK_MS = 200;
+export const ENEMY_ATTACK_COOLDOWN_MS = 1200;
+export const ENEMY_ATTACK_DMG = 4;
+/** How long the enemy stays dead before respawning at full HP — only while the room isn't empty
+ * (see the tick loop in server.ts); an empty room just deletes it outright instead of waiting. */
+export const ENEMY_RESPAWN_MS = 8000;

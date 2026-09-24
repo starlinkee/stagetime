@@ -2,10 +2,11 @@
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { CharacterSprite } from "@/components/CharacterSprite";
 import { DungeonBackground } from "@/components/DungeonBackground";
+import { LobbyDecor } from "@/components/LobbyDecor";
 import { LevelBadge } from "@/components/LevelBadge";
 import { DIR_DOWN, type Dir } from "@/components/PixelPerson";
-import { PlayerSprite } from "@/components/PlayerSprite";
 import { getAdminSettings, isAdminUiEnabled } from "@/lib/adminSettings";
 import { setHowToPlay } from "@/lib/howToPlay";
 import { roomLabel } from "@/lib/rooms";
@@ -13,22 +14,20 @@ import { getSupabase } from "@/lib/supabase";
 import { formatMs, getTimerState, type Phase } from "@/lib/timer";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
-import { safeColor, useMyProfile } from "@/lib/useProfile";
+import { safeCharacter, safeColor, useMyProfile } from "@/lib/useProfile";
 import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
 import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
 import { xpForMinutes } from "@/lib/xp";
-import type { ClientMessage, HitEvent, ServerBall, ServerMessage } from "@realtime-shared/types";
+import type { ClientMessage, EnemyState, HitEvent, ServerBall, ServerMessage } from "@realtime-shared/types";
 import {
   BALL_SPEED,
   CHARGE_MS,
-  DASH_COOLDOWN_MS,
-  DASH_DISTANCE_MULT,
-  DASH_MS,
-  DASH_TELEPORT_AT_MS,
   DIRS,
   DIR_OF,
+  ENEMY_H,
+  ENEMY_W,
   GHOST_OPACITY,
   HITBOX_H,
   HITBOX_OFFSET_X,
@@ -60,6 +59,7 @@ import {
   worldH,
   worldW,
 } from "@realtime-shared/constants";
+import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMove } from "@realtime-shared/obstacles";
 import { clampPos } from "@realtime-shared/physics";
 
 /** Kolor etykiety fazy pod kwadratem pokoju: praca na czerwono (nie da się teraz wejść), przerwa na zielono. */
@@ -110,7 +110,7 @@ const SEND_EVERY = TICK_MS;
  * Reconciliation (patrz WS "state" handler i tick() niżej): serwer jest jedynym źródłem prawdy o
  * naszej pozycji, ale zamiast co broadcast (20/s) twardo nadpisywać lokalną, przewidywaną
  * pozycję jego wartością — co przy 60 kl/s renderowania wygląda jak drganie/cofanie się co
- * ~50ms — domykamy różnicę stopniowo, klatka po klatce. Duży błąd (dash, spawn, reconnect)
+ * ~50ms — domykamy różnicę stopniowo, klatka po klatce. Duży błąd (roll, spawn, reconnect)
  * nadal ląduje natychmiast, bo wygładzanie skoku na drugi koniec mapy wyglądałoby jak ślizganie.
  */
 const RECONCILE_SNAP_PX = 80;
@@ -151,7 +151,7 @@ const CONGRATS_MS = 10_000;
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
 
 // DIRS/DIR_OF (direction vectors, movement → facing) plus all combat tuning (CHARGE_MS, ROLL_*,
-// DASH_*, ORB_R_*, BALL_SPEED, STRIKE_*, HIT_PAD) live in realtime-server/shared/constants.ts (see
+// ORB_R_*, BALL_SPEED, STRIKE_*, HIT_PAD) live in realtime-server/shared/constants.ts (see
 // docs/combat_sync_plan.md, Faza F1) — imported above, not redefined here, so this client and the
 // server can't silently drift the way movement constants briefly did before that migration's own
 // A2. DIR_OF's cells are typed as plain numbers there (shared with server code that has no
@@ -289,14 +289,17 @@ type Meta = {
    * none — purely decorative (AGENTS.md), so it rides on Presence like color/nick instead of going
    * through realtime-server. */
   cosmetic?: string | null;
+  /** Character look (see supabase/migrations/0031_character_selection.sql) — same Presence-only
+   * path as cosmetic/color, no gameplay effect. Undefined/unrecognized falls back to "classic"
+   * (see CharacterSprite.tsx). */
+  character?: string;
 };
-/** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek i czy trwa przewrót (roll) / unik (dash). */
+/** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek i czy trwa przewrót (roll). */
 type Pos = {
   x: number;
   y: number;
   d: Dir;
   r?: boolean;
-  dash?: boolean;
   /** HP/respawn/immunity — only set on the realtime-server branch (see REALTIME_SERVER_URL), from
    * PlayerState.hp/respawnAt/immuneUntil (realtime-server/shared/types.ts). */
   hp?: number;
@@ -565,6 +568,7 @@ export function RoomStage({
   const color = session ? profile.color : "#ffffff";
   const nick = session ? profile.nickname : null;
   const cosmetic = session ? profile.cosmetic : null;
+  const character = session ? profile.character : "classic";
   const userId = session?.user.id ?? null;
   // Whether THIS room is currently in its "work" phase — null when the room has no pomodoro
   // phase (stopwatch/shop) or before the server clock is synced, in which case it doesn't gate
@@ -667,6 +671,16 @@ export function RoomStage({
   // flash) — those inherit the smoothing for free by reading this instead.
   const othersDisplayRef = useRef<Record<string, { x: number; y: number }>>({});
   const othersDomRef = useRef<Record<string, HTMLDivElement | null>>({});
+  // Room-owned enemy (see ARENA_ROOM_SLUG in realtime-server/shared/constants.ts) — only ever
+  // non-empty on the realtime-server branch, only ever one entry today, but keyed by id like
+  // `others` above in case a future room ever spawns more than one. `enemies` (React state) drives
+  // the JSX below; enemyPosRef/enemyDisplayRef/enemyDomRef are the same raw-target/smoothed-
+  // display/imperative-transform trio as posRef/othersDisplayRef/othersDomRef, reused here instead
+  // of re-deriving a second smoothing scheme for one more moving thing.
+  const [enemies, setEnemies] = useState<Record<string, EnemyState>>({});
+  const enemyPosRef = useRef<Record<string, { x: number; y: number }>>({});
+  const enemyDisplayRef = useRef<Record<string, { x: number; y: number }>>({});
+  const enemyDomRef = useRef<Record<string, HTMLDivElement | null>>({});
   const metaRef = useRef<Meta>({ at: 0, color, nick, xp: profile.xp, user: userId });
   // Popupy "+1 🪙 · +XP" nad postaciami po co-minutowym tick-u nagrody (patrz useStudyXp niżej) —
   // `id` rośnie przy każdym tick-u, żeby RewardPopup dostał nowy key i animacja pp-reward wystartowała
@@ -741,7 +755,6 @@ export function RoomStage({
   const [myDir, setMyDir] = useState<Dir>(DIR_DOWN);
   const [myWalking, setMyWalking] = useState(false);
   const [myRolling, setMyRolling] = useState(false);
-  const [myDashing, setMyDashing] = useState(false);
   // HP/respawn/immunity — updated from the server's own "state" broadcast (see the WS message
   // handler below), never predicted locally: unlike movement, there's nothing useful to predict
   // here, and the server is broadcasting at BROADCAST_MS anyway.
@@ -928,15 +941,6 @@ export function RoomStage({
     let rollDy = 0;
     let rollUntil = 0;
     let rollCooldownUntil = 0;
-    let dashingNow = false;
-    /** Cel teleportu unik-u, chwila (performance.now) w której ma nastąpić skok pozycji, koniec
-     * animacji unik-u i koniec jego cooldownu. dashTeleported pilnuje, żeby skok wykonał się raz. */
-    let dashTargetX = 0;
-    let dashTargetY = 0;
-    let dashTeleportAt = 0;
-    let dashUntil = 0;
-    let dashCooldownUntil = 0;
-    let dashTeleported = false;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
     // Mirrors the server's own stamina state (see currentStamina()/Conn.staminaAt in
@@ -999,14 +1003,14 @@ export function RoomStage({
     // tick() dogania ją co klatkę (patrz RECONCILE_HZ), więc kolejny "state" po prostu przesuwa
     // cel, do którego lokalna predykcja nadal płynnie dąży.
     let serverMe: { x: number; y: number; d: number; gx: number; gy: number; gd: number } | null = null;
-    // Mirrors myRespawnAtRef, read by the roll/dash/charge key handlers below (a ghost can move
+    // Mirrors myRespawnAtRef, read by the roll/charge key handlers below (a ghost can move
     // but not attack — the server already rejects those messages while isDead(conn), this just
     // avoids the wasted message and the locally-predicted preview it would otherwise show).
     let myDead = false;
     // Kierunek koryguje się jednorazowo, nie płynnie (to dyskretna orientacja sprite'a, nie
     // pozycja) — osobna flaga, żeby nie stosować go ponownie co klatkę dopóki nie przyjdzie nowy.
     let serverDirPending = false;
-    // Czy TEN pokój jest teraz w fazie "work" — realtime-server odrzuca ruch/roll/dash/charge/fire
+    // Czy TEN pokój jest teraz w fazie "work" — realtime-server odrzuca ruch/roll/charge/fire
     // przez cały ten czas (patrz isFrozen w realtime-server/src/server.ts), więc lokalna predykcja
     // musi się zatrzymać w tej samej chwili, inaczej trzymanie strzałki wygląda jak ruch, dopóki
     // reconciliation nie ściągnie z powrotem na miejsce. Ta sama, czysta funkcja zegara co
@@ -1135,6 +1139,16 @@ export function RoomStage({
             prevOthers[p.id] ? { ...prevOthers, [p.id]: { ...prevOthers[p.id], ...nextPos } } : prevOthers,
           );
         }
+        // Room-owned enemy (see ARENA_ROOM_SLUG) — same raw-target/smoothed-display split as
+        // players above (enemyPosRef feeds the tick loop's per-frame easing into enemyDisplayRef).
+        const nextEnemyIds = new Set(msg.enemies.map((e) => e.id));
+        for (const e of msg.enemies) {
+          enemyPosRef.current[e.id] = { x: e.x, y: e.y };
+        }
+        for (const id of Object.keys(enemyPosRef.current)) {
+          if (!nextEnemyIds.has(id)) delete enemyPosRef.current[id];
+        }
+        setEnemies(Object.fromEntries(msg.enemies.map((e) => [e.id, e])));
         // Faza F4 (docs/combat_sync_plan.md): the server is the only judge of hits now — replace
         // ballsRef wholesale with its list (rendering only, no local physics/collision against
         // it) instead of simulating balls locally the way the pre-migration code did. `predictedRef`
@@ -1516,14 +1530,14 @@ export function RoomStage({
         setMyDir(spawn.d);
       }
       // Korekta z serwera ruchu (patrz WS wyżej). Faza F2 (docs/combat_sync_plan.md): serwer
-      // teraz też liczy przewrót/unik (patrz "roll"/"dash" w realtime-server/src/server.ts) tą
-      // samą matematyką co niżej, więc korekta przestała być pomijana w ich trakcie — wcześniej
-      // pomijano ją tylko dlatego, że serwer o nich nic nie wiedział.
+      // teraz też liczy przewrót (patrz "roll" w realtime-server/src/server.ts) tą
+      // samą matematyką co niżej, więc korekta przestała być pomijana w jego trakcie — wcześniej
+      // pomijano ją tylko dlatego, że serwer o nim nic nie wiedział.
       //
       // Reconciliation, nie twardy snap: `serverMe` żyje między broadcastami (nie jest tu
       // zerowane), więc każda klatka domyka tylko ułamek błędu (`alpha`, zależny od dt — patrz
       // RECONCILE_HZ). Przy typowym drobnym rozjeździe (kwantyzacja 20Hz ticku, zaokrąglenia)
-      // to wygląda jak płynny ruch; przy dużym skoku (dash, spawn, reconnect po grace period)
+      // to wygląda jak płynny ruch; przy dużym skoku (roll, spawn, reconnect po grace period)
       // przekraczamy RECONCILE_SNAP_PX i wtedy nadal lądujemy tam natychmiast — wygładzanie
       // takiego skoku wyglądałoby jak ślizganie się przez pół mapy.
       if (serverMe) {
@@ -1559,39 +1573,22 @@ export function RoomStage({
       // wejścia/wyjścia (E) niżej nadal używa samego `on`, bo wyjście podczas pracy ma zostać
       // możliwe (z ostrzeżeniem o utracie XP), tylko ruch/przewrót/unik mają zamarznąć.
       const canAct = on && !frozenByWork();
-      const dashing = canAct && t < dashUntil;
-      if (dashing !== dashingNow) {
-        dashingNow = dashing;
-        setMyDashing(dashing);
-      }
-      // W połowie animacji unik-u postać znika w starym miejscu i w tej samej klatce ląduje w celu —
-      // dashTeleported pilnuje, żeby skok wykonał się dokładnie raz na jeden unik.
-      if (dashing && !dashTeleported && t >= dashTeleportAt) {
-        dashTeleported = true;
-        x = dashTargetX;
-        y = dashTargetY;
-        dirty = true;
-      }
-      const rolling = !dashing && canAct && t < rollUntil;
+      const rolling = canAct && t < rollUntil;
       if (rolling !== rollingNow) {
         rollingNow = rolling;
         setMyRolling(rolling);
       }
-      const dx = dashing
-        ? 0
-        : rolling
-          ? rollDx
-          : canAct
-            ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0)
-            : 0;
-      const dy = dashing
-        ? 0
-        : rolling
-          ? rollDy
-          : canAct
-            ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0)
-            : 0;
-      // Surowa intencja ruchu (bez przewrotu/uniku — te idą przez osobne wiadomości "roll"/"dash",
+      const dx = rolling
+        ? rollDx
+        : canAct
+          ? (held.has("ArrowRight") ? 1 : 0) - (held.has("ArrowLeft") ? 1 : 0)
+          : 0;
+      const dy = rolling
+        ? rollDy
+        : canAct
+          ? (held.has("ArrowDown") ? 1 : 0) - (held.has("ArrowUp") ? 1 : 0)
+          : 0;
+      // Surowa intencja ruchu (bez przewrotu — ten idzie przez osobną wiadomość "roll",
       // patrz onKeyDown, Faza F2 w docs/combat_sync_plan.md) wysyłana do serwera ruchu. Niezależnie
       // od `dirty` (które dotyczy pozycji, nie intencji) — inaczej puszczenie strzałki nigdy by się
       // nie wysłało, gdyby akurat ostatnia klatka ruchu nie zmieniła pozycji.
@@ -1621,12 +1618,12 @@ export function RoomStage({
         lastSentDx = rawDx;
         lastSentDy = rawDy;
       }
-      const moving = !rolling && !dashing && Boolean(dx || dy);
+      const moving = !rolling && Boolean(dx || dy);
       if (moving !== walkingNow) {
         walkingNow = moving;
         setMyWalking(moving);
       }
-      if (!rolling && !dashing && (dx || dy)) {
+      if (!rolling && (dx || dy)) {
         const nd = DIR_OF[dy + 1][dx + 1] as Dir;
         if (nd !== dir) {
           dir = nd;
@@ -1638,8 +1635,13 @@ export function RoomStage({
       const speed = clientSpeed() * (rolling ? ROLL_SPEED_MULT : 1);
       const maxX = WORLD_W - PERSON_W;
       const maxY = WORLD_H - PERSON_H;
-      const nx = Math.max(0, Math.min(maxX, x + dx * speed * dt * norm));
-      const ny = Math.max(TAG_H, Math.min(maxY, y + dy * speed * dt * norm));
+      const clampedNx = Math.max(0, Math.min(maxX, x + dx * speed * dt * norm));
+      const clampedNy = Math.max(TAG_H, Math.min(maxY, y + dy * speed * dt * norm));
+      // Large furniture (see LOBBY_OBSTACLES in realtime-server/shared/obstacles.ts) blocks
+      // movement here too, not just server-side — otherwise this client-side prediction would
+      // visibly slide the player through it for up to one broadcast (BROADCAST_MS) before the
+      // server's own correction snapped it back out.
+      const { x: nx, y: ny } = resolveObstacleMove(x, y, clampedNx, clampedNy, PERSON_W, PERSON_H, obstaclesFor(isLobby));
       if (nx !== x || ny !== y) dirty = true;
       x = nx;
       y = ny;
@@ -1663,7 +1665,7 @@ export function RoomStage({
               : "0.7";
         person.style.filter = myRespawnAtRef.current > 0 ? "grayscale(1) brightness(1.3)" : "";
       }
-      myPos.current = { x, y, d: dir, r: rolling, dash: dashing };
+      myPos.current = { x, y, d: dir, r: rolling };
       // Wejście do pokoju: E trzeba trzymać nieprzerwanie, stojąc w jego kwadracie.
       const zone = on ? zonesRef.current.find((z) => inZone(x, y, z)) : undefined;
       if (!zone) {
@@ -1793,6 +1795,10 @@ export function RoomStage({
             b.x += b.vx * dt;
             b.y += b.vy * dt;
           }
+          // Purely cosmetic here too (see comment above) — the server already stopped this ball
+          // for real (LOBBY_OBSTACLES, realtime-server/shared/obstacles.ts); this just keeps the
+          // brief between-broadcast extrapolation from visibly flying through the same furniture.
+          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby))) return false;
           if (b.melee) return true;
           return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
         });
@@ -1804,6 +1810,7 @@ export function RoomStage({
           if (b.melee) return b.until !== undefined && t <= b.until;
           b.x += b.vx * dt;
           b.y += b.vy * dt;
+          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby))) return false;
           return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
         });
       } else {
@@ -1814,6 +1821,13 @@ export function RoomStage({
           if (!b.melee) {
             b.x += b.vx * dt;
             b.y += b.vy * dt;
+          }
+          // Large furniture (see LOBBY_OBSTACLES in realtime-server/shared/obstacles.ts) stops a
+          // ball/melee hitbox dead, same as a player would — this client is the sole authority in
+          // this (no realtime-server) mode, so there's no server-side check backing this one up.
+          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby))) {
+            burst(b, t);
+            return false;
           }
           // Pierwsza trafiona osoba (nie strzelec) zatrzymuje kulę: kula się rozpada, postać dostaje.
           let target: string | null = null;
@@ -1844,7 +1858,7 @@ export function RoomStage({
       // and never reaching its target (transition too long, the blurry/smeared look this was
       // written to fix — most visible on the small charging orb above a player's head, which
       // used to snap straight to posRef's raw, stepped target every broadcast).
-      for (const [k, o] of Object.entries(othersRef.current)) {
+      for (const k of Object.keys(othersRef.current)) {
         const raw = posRef.current[k];
         if (!raw) continue;
         const dead = Boolean(raw.respawnAt && raw.respawnAt > 0);
@@ -1854,7 +1868,7 @@ export function RoomStage({
         const errX = targetX - disp.x;
         const errY = targetY - disp.y;
         const errDist = Math.hypot(errX, errY);
-        if (o.dash || errDist > RECONCILE_SNAP_PX) {
+        if (errDist > RECONCILE_SNAP_PX) {
           disp.x = targetX;
           disp.y = targetY;
         } else if (errDist > 0.05) {
@@ -1869,6 +1883,29 @@ export function RoomStage({
       for (const k of Object.keys(othersDisplayRef.current)) {
         if (!othersRef.current[k]) delete othersDisplayRef.current[k];
       }
+      // Same easing as remote players above, for the room's own enemy (see enemyPosRef's doc
+      // comment) — always alive, never a corpse/ghost, so there's no dead-branch to mirror here.
+      for (const k of Object.keys(enemyPosRef.current)) {
+        const raw = enemyPosRef.current[k];
+        const disp = enemyDisplayRef.current[k] ?? { x: raw.x, y: raw.y };
+        const errX = raw.x - disp.x;
+        const errY = raw.y - disp.y;
+        const errDist = Math.hypot(errX, errY);
+        if (errDist > RECONCILE_SNAP_PX) {
+          disp.x = raw.x;
+          disp.y = raw.y;
+        } else if (errDist > 0.05) {
+          const alpha = 1 - Math.exp(-RECONCILE_HZ * dt);
+          disp.x += errX * alpha;
+          disp.y += errY * alpha;
+        }
+        enemyDisplayRef.current[k] = disp;
+        const el = enemyDomRef.current[k];
+        if (el) el.style.transform = `translate(${disp.x}px, ${disp.y}px)`;
+      }
+      for (const k of Object.keys(enemyDisplayRef.current)) {
+        if (!enemyPosRef.current[k]) delete enemyDisplayRef.current[k];
+      }
       draw(t);
       raf = requestAnimationFrame(tick);
     };
@@ -1876,10 +1913,10 @@ export function RoomStage({
     const onKeyDown = (e: KeyboardEvent) => {
       if (!activeRef.current || document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey)
         return;
-      // A ghost can move but not attack (roll/dash/charge/fire) — see myDead's doc comment above.
-      // Same for a room currently in its "work" phase (see frozenByWork): nobody rolls/dashes/
+      // A ghost can move but not attack (roll/charge/fire) — see myDead's doc comment above.
+      // Same for a room currently in its "work" phase (see frozenByWork): nobody rolls/
       // fires while frozen, the server would reject it anyway (isFrozen in server.ts).
-      if ((myDead || frozenByWork()) && (e.code === "Space" || e.code === "KeyC" || e.code === "KeyV")) return;
+      if ((myDead || frozenByWork()) && (e.code === "Space" || e.code === "KeyC")) return;
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
         if (!e.repeat && chargeStart === null) {
@@ -1899,7 +1936,7 @@ export function RoomStage({
       if (e.code === "KeyC") {
         if (!e.repeat) {
           const now = performance.now();
-          if (now >= rollCooldownUntil && now >= dashUntil) {
+          if (now >= rollCooldownUntil) {
             const [ux, uy] = DIRS[dir];
             const n = Math.hypot(ux, uy) || 1;
             rollDx = ux / n;
@@ -1913,31 +1950,6 @@ export function RoomStage({
             if (ws && ws.readyState === WebSocket.OPEN) {
               const roll: ClientMessage = { type: "roll" };
               ws.send(JSON.stringify(roll));
-            }
-          }
-        }
-        return;
-      }
-      if (e.code === "KeyV") {
-        if (!e.repeat) {
-          const now = performance.now();
-          if (now >= dashCooldownUntil && now >= rollUntil) {
-            const [ux, uy] = DIRS[dir];
-            const n = Math.hypot(ux, uy) || 1;
-            const dashDistance = clientSpeed() * ROLL_SPEED_MULT * (ROLL_MS / 1000) * DASH_DISTANCE_MULT;
-            const maxX = WORLD_W - PERSON_W;
-            const maxY = WORLD_H - PERSON_H;
-            dashTargetX = Math.max(0, Math.min(maxX, x + (ux / n) * dashDistance));
-            dashTargetY = Math.max(TAG_H, Math.min(maxY, y + (uy / n) * dashDistance));
-            dashTeleportAt = now + DASH_TELEPORT_AT_MS;
-            dashUntil = now + DASH_MS;
-            dashCooldownUntil = dashUntil + DASH_COOLDOWN_MS;
-            dashTeleported = false;
-            // Faza F2: same "request, not assertion" pattern as roll above — see the "dash"
-            // handler in realtime-server/src/server.ts.
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              const dash: ClientMessage = { type: "dash" };
-              ws.send(JSON.stringify(dash));
             }
           }
         }
@@ -1970,7 +1982,6 @@ export function RoomStage({
       held.clear();
       cancelCharge();
       rollUntil = 0;
-      dashUntil = 0;
       eDown = false;
       eHoldStart = null;
       eHoldSlug = null;
@@ -2022,17 +2033,16 @@ export function RoomStage({
 
     channel
       .on("broadcast", { event: "pos" }, ({ payload }) => {
-        const { k, x, y, d, r, dash } = payload as {
+        const { k, x, y, d, r } = payload as {
           k: string;
           x: number;
           y: number;
           d: unknown;
           r?: boolean;
-          dash?: boolean;
         };
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y)) return;
         const prev = posRef.current[k];
-        posRef.current[k] = { ...clampPos(x, y, isLobby), d: asDir(d), r: Boolean(r), dash: Boolean(dash) };
+        posRef.current[k] = { ...clampPos(x, y, isLobby), d: asDir(d), r: Boolean(r) };
         if (!prev || prev.x !== posRef.current[k].x || prev.y !== posRef.current[k].y) {
           setWalkers((w) => (w[k] ? w : { ...w, [k]: true }));
           clearTimeout(walkTimers.current[k]);
@@ -2132,6 +2142,10 @@ export function RoomStage({
       othersDomRef.current = {};
       chargingRef.current = {};
       setOthers({});
+      enemyPosRef.current = {};
+      enemyDisplayRef.current = {};
+      enemyDomRef.current = {};
+      setEnemies({});
       sb.removeChannel(channel);
     };
   }, [roomSlug, ready, spawned, netKey]);
@@ -2171,7 +2185,7 @@ export function RoomStage({
   useEffect(() => {
     colorRef.current = color;
     userIdRef.current = userId;
-    metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId, cosmetic };
+    metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId, cosmetic, character };
     const channel = channelRef.current;
     if (channel?.state === "joined" && activeRef.current) void channel.track({ ...metaRef.current, ...myPos.current });
     // realtime-server only learns nick/color from the original `join` — this profile fetch
@@ -2183,7 +2197,7 @@ export function RoomStage({
       const profileMsg: ClientMessage = { type: "profile", nick, color };
       socket.send(JSON.stringify(profileMsg));
     }
-  }, [color, nick, cosmetic, profile.xp, userId]);
+  }, [color, nick, cosmetic, character, profile.xp, userId]);
 
   useEffect(() => () => {
     if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
@@ -2212,7 +2226,7 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking) · tap V to dash further away in a puff of cloud (longer cooldown)";
+      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
@@ -2458,6 +2472,7 @@ export function RoomStage({
         style={{ width: WORLD_W, height: WORLD_H }}
       >
         {isLobby && <DungeonBackground width={WORLD_W} height={WORLD_H} />}
+        {isLobby && <LobbyDecor width={WORLD_W} height={WORLD_H} />}
         {Object.entries(others).map(([k, o]) => {
           // respawnAt > 0: this player just died — o.x/o.y/o.d is their corpse, frozen where it
           // dropped, and o.gx/o.gy/o.gd is the ghost they're still steering (see
@@ -2469,7 +2484,16 @@ export function RoomStage({
               {dead && (
                 <div className="absolute left-0 top-0" style={{ transform: `translate(${o.x}px, ${o.y}px)`, opacity: GHOST_OPACITY }}>
                   <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
-                  <PlayerSprite label={o.nick ?? NO_NAME} size={PERSON_W / 8} dir={o.d} walking={false} rolling={false} dashing={false} cosmetic={o.cosmetic} />
+                  <CharacterSprite
+                    character={safeCharacter(o.character)}
+                    color={o.color}
+                    label={o.nick ?? NO_NAME}
+                    size={PERSON_W / 8}
+                    dir={o.d}
+                    walking={false}
+                    rolling={false}
+                    cosmetic={o.cosmetic}
+                  />
                 </div>
               )}
               <div
@@ -2506,15 +2530,51 @@ export function RoomStage({
                 {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
                 {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
                 <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
-                <PlayerSprite
+                <CharacterSprite
+                  character={safeCharacter(o.character)}
+                  color={o.color}
                   label={o.nick ?? NO_NAME}
                   size={PERSON_W / 8}
                   dir={dead ? (o.gd ?? o.d) : o.d}
-                  walking={!dead && walkers[k] && !o.r && !o.dash}
+                  walking={!dead && walkers[k] && !o.r}
                   rolling={o.r}
-                  dashing={o.dash}
                   cosmetic={o.cosmetic}
                 />
+              </div>
+            </div>
+          );
+        })}
+        {Object.entries(enemies).map(([k, e]) => {
+          // Mid-respawn (see ENEMY_RESPAWN_MS in realtime-server/shared/constants.ts): just gone
+          // from view, same as it disappearing on the killing blow — it reappears at full HP
+          // (state flips back to "idle"/"chase") the moment the server respawns it.
+          if (e.state === "dead") return null;
+          const hpFrac = Math.max(0, Math.min(1, e.hp / e.maxHp));
+          return (
+            <div
+              key={k}
+              ref={(el) => {
+                if (!el) {
+                  delete enemyDomRef.current[k];
+                  return;
+                }
+                enemyDomRef.current[k] = el;
+                if (!enemyDisplayRef.current[k]) {
+                  enemyDisplayRef.current[k] = { x: e.x, y: e.y };
+                  el.style.transform = `translate(${e.x}px, ${e.y}px)`;
+                }
+              }}
+              className="absolute left-0 top-0 flex flex-col items-center opacity-90"
+              style={{ width: ENEMY_W }}
+            >
+              <div className="mb-1 h-2 w-16 overflow-hidden rounded-full bg-zinc-900/80 outline outline-1 outline-black/40">
+                <div className="h-full rounded-full bg-red-600 transition-[width]" style={{ width: `${hpFrac * 100}%` }} />
+              </div>
+              <div
+                className="flex items-center justify-center rounded-full bg-red-900/60 text-5xl shadow-lg"
+                style={{ width: ENEMY_W, height: ENEMY_H }}
+              >
+                👹
               </div>
             </div>
           );
@@ -2525,7 +2585,16 @@ export function RoomStage({
             style={{ transform: `translate(${myCorpse.x}px, ${myCorpse.y}px)` }}
           >
             <NameTag name={nick} xp={session ? profile.xp : undefined} />
-            <PlayerSprite label={nick ?? NO_NAME} size={PERSON_W / 8} dir={myCorpse.d} walking={false} rolling={false} dashing={false} cosmetic={cosmetic} />
+            <CharacterSprite
+              character={safeCharacter(character)}
+              color={color}
+              label={nick ?? NO_NAME}
+              size={PERSON_W / 8}
+              dir={myCorpse.d}
+              walking={false}
+              rolling={false}
+              cosmetic={cosmetic}
+            />
           </div>
         )}
         <div
@@ -2535,13 +2604,14 @@ export function RoomStage({
           {bubbles.me && <ChatBubble text={bubbles.me.text} />}
           {rewards.me && <RewardPopup coins={rewards.me.coins} xp={rewards.me.xp} id={rewards.me.id} />}
           <NameTag name={nick} xp={session ? profile.xp : undefined} />
-          <PlayerSprite
+          <CharacterSprite
+            character={safeCharacter(character)}
+            color={color}
             label={nick ?? NO_NAME}
             size={PERSON_W / 8}
             dir={myDir}
             walking={myWalking}
             rolling={myRolling}
-            dashing={myDashing}
             cosmetic={cosmetic}
           />
         </div>

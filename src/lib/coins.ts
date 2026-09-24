@@ -26,3 +26,11 @@ export const COLOR_CHANGE_COST = 100;
  */
 export const FLOWER_COST = 100;
 export const FLOWER_HOURS = 24;
+
+/**
+ * Price of switching character look (src/components/CharacterSprite.tsx) in the Shop — must match
+ * `v_cost` in supabase/migrations/0031_character_selection.sql, which is the one that actually
+ * charges the player; this copy is only for displaying the price client-side. Switching back to
+ * the character already equipped is free (also enforced server-side by that migration).
+ */
+export const CHARACTER_CHANGE_COST = 10;

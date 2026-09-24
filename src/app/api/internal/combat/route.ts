@@ -4,10 +4,10 @@ import { KILL_GOLD_REWARD, KILL_XP_REWARD } from "@realtime-shared/constants";
 
 /**
  * Internal bridge realtime-server uses to persist kill/death counters after it resolves a PvP hit
- * that kills someone (damage only happens outside the lobby — see AGENTS.md). Kills/deaths are
- * decided authoritatively by realtime-server, which has no per-user Supabase session to rely on
- * RLS with — mirrors /api/internal/positions: service-role writes gated on a static bearer secret
- * that only Next.js and realtime-server know, never reachable from a browser.
+ * that kills someone, or the Arena's own enemy dying (damage only happens outside the lobby — see
+ * AGENTS.md). Both are decided authoritatively by realtime-server, which has no per-user Supabase
+ * session to rely on RLS with — mirrors /api/internal/positions: service-role writes gated on a
+ * static bearer secret that only Next.js and realtime-server know, never reachable from a browser.
  */
 function authorized(request: Request): boolean {
   const secret = process.env.REALTIME_INTERNAL_SECRET;
@@ -22,6 +22,10 @@ export async function POST(request: Request) {
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const killerUserId = typeof record.killerUserId === "string" ? record.killerUserId : null;
   const victimUserId = typeof record.victimUserId === "string" ? record.victimUserId : null;
+  // Arena enemy kill (see ARENA_ROOM_SLUG in realtime-server/shared/constants.ts): same xp/gold
+  // reward as a PvP kill, but counted separately (mob_kills, 0030) rather than bumping the PvP
+  // `kills` stat — it never has a victimUserId (the enemy isn't a player).
+  const enemyKill = record.enemyKill === true;
   if (!killerUserId && !victimUserId) return NextResponse.json({ error: "bad request" }, { status: 400 });
 
   const sb = getSupabaseAdmin();
@@ -29,7 +33,7 @@ export async function POST(request: Request) {
 
   const calls: PromiseLike<{ error: { message: string } | null }>[] = [];
   if (killerUserId) {
-    calls.push(sb.rpc("increment_kills", { p_user_id: killerUserId }));
+    calls.push(sb.rpc(enemyKill ? "increment_mob_kills" : "increment_kills", { p_user_id: killerUserId }));
     calls.push(sb.rpc("award_kill_reward", { p_user_id: killerUserId, p_xp: KILL_XP_REWARD, p_coins: KILL_GOLD_REWARD }));
   }
   if (victimUserId) calls.push(sb.rpc("increment_deaths", { p_user_id: victimUserId }));

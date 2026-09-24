@@ -59,12 +59,12 @@ export interface PlayerState {
 }
 
 /**
- * The four player-triggered combat/movement actions the server decides on, per
+ * The player-triggered combat/movement actions the server decides on, per
  * docs/combat_sync_plan.md (Faza F1) — not consumed by any single generic dispatcher today (the
  * cooldown rules differ too much per kind for that), but named here so `ClientMessage`'s combat
  * variants and any future per-kind bookkeeping share one vocabulary instead of drifting.
  */
-export type AttackKind = "roll" | "dash" | "fire" | "strike";
+export type AttackKind = "roll" | "fire" | "strike";
 
 /**
  * A live projectile (thrown ball) or melee hitbox, decided and simulated server-side (Faza F3).
@@ -126,12 +126,12 @@ export interface HitEvent {
  * `join` carries a signed `token` (see entryToken.ts) instead of a client-asserted `userId`/
  * `roomSlug` — the server derives both from the token it verifies, never from the client
  * directly (Faza A / A1 in docs/stateful_server_plan.md). `fromRoomSlug` is a request, not an
- * assertion, exactly like `roll`/`dash` below: when joining "lobby" fresh (no reconnect ghost),
+ * assertion, exactly like `roll` below: when joining "lobby" fresh (no reconnect ghost),
  * it names the room this player just left, so the server can spawn them at that room's own lobby
  * zone (see LOBBY_ZONE_RECTS in rooms.ts) instead of a generic default. An unrecognized or absent
  * value just falls back to that default — it's never trusted as raw coordinates.
  *
- * `roll`/`dash` carry no coordinates or direction — the server derives both from the connection's
+ * `roll` carries no coordinates or direction — the server derives both from the connection's
  * own last-known facing (`conn.d`) and position, exactly like `input`'s dx/dy are a request, not
  * an assertion (Faza F2 in docs/combat_sync_plan.md). `charge` marks when charging started/
  * stopped so the server can independently cap `fire`'s claimed `chargeMs`; `strike` needs no
@@ -151,7 +151,6 @@ export type ClientMessage =
       speedOverride?: number;
     }
   | { type: "roll" }
-  | { type: "dash" }
   | { type: "charge"; on: boolean }
   | { type: "fire"; chargeMs: number }
   | { type: "strike" }
@@ -163,6 +162,22 @@ export type ClientMessage =
    */
   | { type: "profile"; nick: string | null; color: string };
 
+/**
+ * One room-owned enemy (see ARENA_ROOM_SLUG/ENEMY_* in shared/constants.ts) — everyone in the
+ * room can hurt it (its own melee swings go through the same `ServerBall`/hit pipeline as a
+ * player's) and it can hurt everyone back (spawns its own melee `ServerBall`, owner set to its
+ * own `id`). `state` is purely a rendering hint (idle/chase spins no animation today, but a future
+ * sprite easily could); the server alone decides targeting/movement/attacks.
+ */
+export interface EnemyState {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  state: "idle" | "chase" | "attack" | "dead";
+}
+
 export type ServerMessage =
   | { type: "welcome"; id: string }
   | {
@@ -171,6 +186,7 @@ export type ServerMessage =
       players: PlayerState[];
       balls: ServerBall[];
       hits: HitEvent[];
+      enemies: EnemyState[];
       at: number;
     }
   | { type: "join_rejected"; reason: "room_full" }
