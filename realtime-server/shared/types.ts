@@ -19,7 +19,7 @@ export interface CharacterStats {
   /** Stamina regenerated per second, continuously (not per-tick) — see STAMINA_REGEN_PER_SEC's
    * doc comment in constants.ts. */
   staminaRegenPerSec: number;
-  /** Multiplier applied to a shot's/strike's base damage (see spawnBall/spawnMelee in
+  /** Multiplier applied to a shot's/slash's base damage (see spawnBall/spawnSlash in
    * server.ts). 1 = base damage, unmodified. */
   attackPower: number;
 }
@@ -64,7 +64,7 @@ export interface PlayerState {
  * cooldown rules differ too much per kind for that), but named here so `ClientMessage`'s combat
  * variants and any future per-kind bookkeeping share one vocabulary instead of drifting.
  */
-export type AttackKind = "roll" | "fire" | "strike";
+export type AttackKind = "roll" | "fire" | "slash";
 
 /**
  * A live projectile (thrown ball) or melee hitbox, decided and simulated server-side (Faza F3).
@@ -83,9 +83,14 @@ export interface ServerBall {
   color: string;
   owner: string;
   melee?: boolean;
+  /** Facing angle (radians) the melee hitbox was spawned at — only set when `melee` is true. Lets
+   * the client draw a directional slash swipe instead of a symmetric orb, without having to look
+   * up the owner's current facing (which may have turned since the swing was spawned). Never used
+   * for hit-testing/physics, purely a rendering hint (STU-61). */
+  angle?: number;
   until?: number;
-  /** Damage this ball/hitbox deals on impact — fixed for melee (STRIKE_DMG), scaled by charge
-   * fraction for a thrown ball (DMG_MIN..DMG_MAX), decided once at spawn (see spawnBall/spawnMelee
+  /** Damage this ball/hitbox deals on impact — fixed for melee (SLASH_DMG), scaled by charge
+   * fraction for a thrown ball (DMG_MIN..DMG_MAX), decided once at spawn (see spawnBall/spawnSlash
    * in server.ts) rather than recomputed from `r` at hit time. */
   dmg: number;
 }
@@ -134,7 +139,7 @@ export interface HitEvent {
  * `roll` carries no coordinates or direction — the server derives both from the connection's
  * own last-known facing (`conn.d`) and position, exactly like `input`'s dx/dy are a request, not
  * an assertion (Faza F2 in docs/combat_sync_plan.md). `charge` marks when charging started/
- * stopped so the server can independently cap `fire`'s claimed `chargeMs`; `strike` needs no
+ * stopped so the server can independently cap `fire`'s claimed `chargeMs`; `slash` needs no
  * payload beyond the request itself (Faza F3).
  */
 export type ClientMessage =
@@ -149,13 +154,19 @@ export type ClientMessage =
        * can't otherwise change its own speed, that would defeat the entire point of this server.
        */
       speedOverride?: number;
+      /**
+       * Admin-panel `staminaRegenPerSec` debug override (see src/lib/adminSettings.ts), same gate
+       * (DEV_OVERRIDES_ENABLED) and shape as `speedOverride` above — mutates this connection's own
+       * `stats.staminaRegenPerSec` instead of the global STAMINA_REGEN_PER_SEC constant.
+       */
+      staminaRegenOverride?: number;
     }
   | { type: "roll" }
   | { type: "charge"; on: boolean }
   | { type: "fire"; chargeMs: number }
-  | { type: "strike" }
+  | { type: "slash" }
   /**
-   * STU-45: one of EMOJI_EMOTES (shared/constants.ts). Unlike roll/charge/fire/strike this is
+   * STU-45: one of EMOJI_EMOTES (shared/constants.ts). Unlike roll/charge/fire/slash this is
    * accepted during the work phase too — see isFrozen's doc comment in server.ts — so it never
    * moves anything and only needs a cooldown, not position/physics validation.
    */

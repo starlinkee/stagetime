@@ -54,6 +54,7 @@ import {
   ROLL_COOLDOWN_MS,
   ROLL_MS,
   ROLL_SPEED_MULT,
+  ROLL_STAMINA_COST,
   SCREEN_H,
   SCREEN_W,
   DESPERATE_HP,
@@ -61,11 +62,12 @@ import {
   STAMINA_MAX,
   STAMINA_REGEN_PER_SEC,
   START_HOLD_MS,
-  STRIKE_COOLDOWN_MS,
-  STRIKE_DMG,
-  STRIKE_MS,
-  STRIKE_R,
-  STRIKE_REACH,
+  SLASH_COOLDOWN_MS,
+  SLASH_DMG,
+  SLASH_MS,
+  SLASH_R,
+  SLASH_REACH,
+  SLASH_STAMINA_COST,
   TAG_H,
   TICK_MS,
   DEFAULT_PLAYER_SPEED,
@@ -180,14 +182,14 @@ const CONGRATS_MS = 10_000;
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
 
 // DIRS/DIR_OF (direction vectors, movement → facing) plus all combat tuning (CHARGE_MS, ROLL_*,
-// ORB_R_*, BALL_SPEED, STRIKE_*, HIT_PAD) live in realtime-server/shared/constants.ts (see
+// ORB_R_*, BALL_SPEED, SLASH_*, HIT_PAD) live in realtime-server/shared/constants.ts (see
 // docs/combat_sync_plan.md, Faza F1) — imported above, not redefined here, so this client and the
 // server can't silently drift the way movement constants briefly did before that migration's own
 // A2. DIR_OF's cells are typed as plain numbers there (shared with server code that has no
 // dependency on this component's own `Dir` type), so reads of it below are cast `as Dir`.
 /**
  * Faza F4: once the combat server owns hit decisions, this client no longer judges its own
- * fire/strike locally — but still shows it immediately (not waiting for a round trip) as a
+ * fire/slash locally — but still shows it immediately (not waiting for a round trip) as a
  * *predicted* visual, replaced by the server's own broadcast (at most BROADCAST_MS later, see
  * realtime-server/shared/constants.ts) which is what everyone's flashes/particles actually key
  * off. See predictedRef below.
@@ -210,7 +212,16 @@ type Ball = {
   owner: string;
   /** Atak wręcz zamiast rzuconej kuli: stoi w miejscu i znika po `until` zamiast po opuszczeniu sceny. */
   melee?: boolean;
+  /** Facing angle (radians) a melee hitbox was spawned at — see ServerBall.angle's doc comment in
+   * realtime-shared/types. Only meaningful when `melee` is true. */
+  angle?: number;
   until?: number;
+  /** STU-61: identifies one melee swing across frames so `slashClockRef` can time its fade-out
+   * off this client's own render clock instead of `until` (server epoch ms) — see that ref's doc
+   * comment. Real balls carry the server's `ServerBall.id`; the local predicted preview makes up
+   * its own (`local:...`), since the server hasn't assigned one yet. Never used for anything but
+   * that timing lookup — never sent back to the server. */
+  id?: string;
   /** STU-41: which of BALL_SKINS this ball renders as — the shooter's own equipped skin at fire
    * time, stamped onto the ball once (a skin change mid-flight doesn't retroactively repaint
    * already-fired balls, same as color already works). */
@@ -446,20 +457,26 @@ function launch(balls: Ball[], x: number, y: number, d: Dir, p: number, color: s
   });
 }
 
-/** Wypuszcza krótkozasięgowy hitbox ataku wręcz tuż przed postacią stojącą w (x, y), patrzącą w d. */
-function strike(balls: Ball[], x: number, y: number, d: Dir, color: string, owner: string) {
+let nextLocalSlashId = 0;
+
+/** Wypuszcza krótkozasięgowy hitbox ataku wręcz (slash) tuż przed postacią stojącą w (x, y),
+ * patrzącą w d — purely a local/predicted preview (see spawnSlash's own doc comment in
+ * realtime-server/src/server.ts for the authoritative, server-side version). */
+function spawnSlash(balls: Ball[], x: number, y: number, d: Dir, color: string, owner: string) {
   const [ux, uy] = DIRS[d];
   const n = Math.hypot(ux, uy) || 1;
   balls.push({
-    x: x + PERSON_W / 2 + (ux / n) * STRIKE_REACH,
-    y: y + PERSON_H / 2 + (uy / n) * STRIKE_REACH,
+    x: x + PERSON_W / 2 + (ux / n) * SLASH_REACH,
+    y: y + PERSON_H / 2 + (uy / n) * SLASH_REACH,
     vx: 0,
     vy: 0,
-    r: STRIKE_R,
+    r: SLASH_R,
     color,
     owner,
     melee: true,
-    until: performance.now() + STRIKE_MS,
+    angle: Math.atan2(uy, ux),
+    until: performance.now() + SLASH_MS,
+    id: `local:${owner}:${nextLocalSlashId++}`,
   });
 }
 
@@ -478,15 +495,20 @@ function chargeTint(p: number): string {
 
 /**
  * STU-23: no real multi-weapon system yet (see AGENTS.md) — this is a client-only input router
- * picking which existing attack Space triggers (charge-and-throw vs. the fist swing, which was
- * already fully wired server-side via ClientMessage "strike"/spawnMelee in server.ts, just never
- * fired by any client input until now). Slot 3 is a deliberate placeholder for a future real
- * weapon, not a bug — rendered disabled below.
+ * picking which existing attack Space triggers (charge-and-throw vs. the melee slash, wired
+ * server-side via ClientMessage "slash"/spawnSlash in server.ts). Slot 3 is a deliberate
+ * placeholder for a future real weapon, not a bug — rendered disabled below.
+ * STU-61: this slot used to be a fist swing rendered as a glowing orb (same shape as the thrown
+ * ball, just stationary) — replaced by a slash (see drawSlash below) both because it now looks
+ * distinct from the ball and because the orb's radius/glow scaled off a life fraction computed by
+ * mixing the server's `ServerBall.until` (epoch ms) with this client's own `performance.now()`-
+ * based render clock, which could blow the on-screen radius up to cover the whole canvas for a
+ * frame — see slashClockRef's doc comment for the actual fix.
  */
-type WeaponId = "ball" | "fist";
+type WeaponId = "ball" | "slash";
 const WEAPON_SLOTS: readonly { key: string; id: WeaponId | null; icon: string; label: string }[] = [
   { key: "1", id: "ball", icon: "\u{1F534}", label: "Throw" },
-  { key: "2", id: "fist", icon: "\u{1F94A}", label: "Fist" },
+  { key: "2", id: "slash", icon: "\u{2694}\u{FE0F}", label: "Slash" },
   { key: "3", id: null, icon: "", label: "Empty" },
 ] as const;
 
@@ -558,6 +580,40 @@ function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: numbe
     ctx.arc(cx, cy, r + 6, 0, Math.PI * 2);
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/**
+ * STU-61: melee slash swipe — an arc facing `angle`, widening then fading out over `life` (1 at
+ * spawn, 0 at the end of its short life), deliberately not drawOrb (that's the thrown ball's own
+ * look: a round, glowing, always-symmetric orb). Directional and sword-shaped instead, so a swing
+ * reads as an attack in a facing, not just "a light flashed here." `r` is the hitbox radius
+ * (SLASH_R/ENEMY_ATTACK_R) — the arc is drawn at roughly that radius from `cx`/`cy`, not `r` itself
+ * as a fill radius, so it never scales into a filled circle the way the old orb-based melee did.
+ */
+function drawSlash(ctx: CanvasRenderingContext2D, cx: number, cy: number, angle: number, r: number, life: number, color: string) {
+  const clampedLife = Math.max(0, Math.min(1, life));
+  if (clampedLife <= 0) return;
+  const spread = (Math.PI / 2.4) * (0.4 + 0.6 * clampedLife);
+  const arcR = r * (0.55 + 0.45 * (1 - clampedLife));
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.globalAlpha = 0.9 * clampedLife;
+  ctx.lineCap = "round";
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 10;
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.arc(0, 0, arcR, -spread / 2, spread / 2);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, arcR, -spread / 2, spread / 2);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -669,12 +725,12 @@ function CharacterInfoPanel({
         <span className="font-semibold text-zinc-200">{DMG_MIN}–{DMG_MAX}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
-        <span className="text-zinc-400">Fist damage</span>
-        <span className="font-semibold text-zinc-200">{STRIKE_DMG}</span>
+        <span className="text-zinc-400">Slash damage</span>
+        <span className="font-semibold text-zinc-200">{SLASH_DMG}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
-        <span className="text-zinc-400">Fist reach</span>
-        <span className="font-semibold text-zinc-200">{STRIKE_REACH}</span>
+        <span className="text-zinc-400">Slash reach</span>
+        <span className="font-semibold text-zinc-200">{SLASH_REACH}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
         <span className="text-zinc-400">Roll cooldown</span>
@@ -697,7 +753,7 @@ function CharacterInfoPanel({
         <span className="font-semibold text-zinc-200">{ballsShot}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
-        <span className="text-zinc-400">Fist swings</span>
+        <span className="text-zinc-400">Melee swings</span>
         <span className="font-semibold text-zinc-200">{fistSwings}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
@@ -1154,13 +1210,25 @@ export function RoomStage({
   const realtimeWsRef = useRef<WebSocket | null>(null);
   /**
    * Faza F4 (docs/combat_sync_plan.md): only populated when REALTIME_SERVER_URL is set. Holds the
-   * shooter's own just-fired ball/strike for instant local feedback — never checked against
-   * anyone's position, purely visual, and pruned by `until` (PREDICT_MS/STRIKE_MS) regardless of
+   * shooter's own just-fired ball/slash for instant local feedback — never checked against
+   * anyone's position, purely visual, and pruned by `until` (PREDICT_MS/SLASH_MS) regardless of
    * whether the server's own broadcast of the same shot has arrived yet. `ballsRef` itself is, in
    * that mode, replaced wholesale by the server's ball list on every `state` message instead of
    * being simulated/hit-tested locally — see the WS message handler and tick() below.
    */
   const predictedRef = useRef<Ball[]>([]);
+  /**
+   * STU-61: first-seen timestamp (this client's own `performance.now()`/rAF clock) per melee
+   * hitbox `Ball.id`, populated the first frame each one is drawn. The old melee animation instead
+   * computed its life fraction as `(b.until - t) / SLASH_MS` — `b.until` is `Date.now()` (epoch ms)
+   * for any hitbox that came from the server, while `t` is this client's `performance.now()`-based
+   * render clock (unrelated epoch, small since page load); that subtraction was routinely huge and
+   * *never clamped to 1*, so a real (non-predicted) melee hit rendered with an enormous radius for
+   * its ~150ms life — the "whole screen flashes" bug. Timing the fade off a purely client-local
+   * clock instead (this map) sidesteps that whole class of bug: it never compares the two clocks.
+   * Entries are pruned every draw pass for ids no longer present in ballsRef/predictedRef.
+   */
+  const slashClockRef = useRef<Map<string, number>>(new Map());
   const shardsRef = useRef<Shard[]>([]);
   const dmgTextRef = useRef<DmgText[]>([]);
   const killTextRef = useRef<KillText[]>([]);
@@ -1299,10 +1367,10 @@ export function RoomStage({
     let rollCooldownUntil = 0;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
-    /** STU-23: client-side mirror of Conn.meleeCooldownUntil in server.ts — same "don't even try"
+    /** STU-23: client-side mirror of Conn.slashCooldownUntil in server.ts — same "don't even try"
      * shortcut as the stamina mirror below, purely to skip a doomed send; the server's own
-     * meleeCooldownUntil check is what actually gates spawnMelee. */
-    let meleeCooldownUntilLocal = 0;
+     * slashCooldownUntil check is what actually gates spawnSlash. */
+    let slashCooldownUntilLocal = 0;
     // Mirrors the server's own stamina state (see currentStamina()/Conn.staminaAt in
     // realtime-server/src/server.ts) — without this, our own predicted preview kept showing shots
     // the server would actually refuse. Regenerated every frame in tick() (STAMINA_REGEN_PER_SEC),
@@ -1596,7 +1664,9 @@ export function RoomStage({
             color: dmgTint(b.dmg),
             owner: b.owner,
             melee: b.melee,
+            angle: b.angle,
             until: b.until,
+            id: b.id,
             skin: b.owner === netKey ? ballSkinRef.current : othersRef.current[b.owner]?.ballSkin,
           }),
         );
@@ -1730,31 +1800,39 @@ export function RoomStage({
       emit("charge", { on: false });
     };
     /**
-     * STU-23: fires immediately on Space keydown when "fist" is the selected weapon (see the
-     * onKeyDown handler below) — unlike release() above there's no charge-up, so no separate
-     * press/release pair. meleeCooldownUntilLocal only skips a doomed send; the server's own
-     * conn.meleeCooldownUntil (server.ts) is the real gate, same relationship as predictedStamina
+     * STU-23/STU-61: fires immediately on Space keydown when "slash" is the selected weapon (see
+     * the onKeyDown handler below) — unlike release() above there's no charge-up, so no separate
+     * press/release pair. slashCooldownUntilLocal only skips a doomed send; the server's own
+     * conn.slashCooldownUntil (server.ts) is the real gate, same relationship as predictedStamina
      * vs. the server's stamina check in release().
      */
-    const doStrike = () => {
+    const doSlash = () => {
       const now = performance.now();
-      if (now < meleeCooldownUntilLocal) return;
-      meleeCooldownUntilLocal = now + STRIKE_COOLDOWN_MS;
+      if (now < slashCooldownUntilLocal) return;
+      // Same stamina rule the server enforces (see currentStamina()/the "slash" handler in
+      // realtime-server/src/server.ts) mirrored here the same way release()/the roll handler
+      // above mirror it for fire/roll — once our own predicted pool can't cover the cost, no
+      // predicted swing, no message, no stamina spent.
+      if (REALTIME_SERVER_URL && predictedStamina < SLASH_STAMINA_COST) return;
+      slashCooldownUntilLocal = now + SLASH_COOLDOWN_MS;
       playAttackSound();
       if (REALTIME_SERVER_URL) {
         // Instant local swing, same "predictedRef, not ballsRef" reasoning as release()'s own
         // predicted ball above — ballsRef is replaced wholesale by the server's next "state".
-        strike(predictedRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+        spawnSlash(predictedRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
         if (ws && ws.readyState === WebSocket.OPEN) {
-          const msg: ClientMessage = { type: "strike" };
+          const msg: ClientMessage = { type: "slash" };
           ws.send(JSON.stringify(msg));
+          predictedStamina -= SLASH_STAMINA_COST;
+          setMyStamina(predictedStamina);
         }
       } else {
-        strike(ballsRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
-        emit("strike", { ...myPos.current });
+        spawnSlash(ballsRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+        emit("slash", { ...myPos.current });
       }
       // Same "server-verified count, not a client-claimed one" reasoning as increment_balls_shot
-      // in release() above — see migration 0023_fist_swings.sql.
+      // in release() above — see migration 0023_fist_swings.sql (name predates this attack's
+      // redesign into a slash, still the same "melee attack thrown" counter/RPC underneath).
       if (userIdRef.current)
         void getSupabase()
           ?.rpc("increment_fist_swings")
@@ -1894,14 +1972,25 @@ export function RoomStage({
       }
       // predictedRef is empty in the legacy (no REALTIME_SERVER_URL) branch, so this concat is a
       // no-op there — see predictedRef's own doc comment.
+      const liveSlashIds = new Set<string>();
       for (const b of [...ballsRef.current, ...predictedRef.current]) {
         if (b.melee) {
-          // Zamach pięścią: krótki, gasnący błysk zamiast pływającej kuli.
-          const life = b.until !== undefined ? Math.max(0, (b.until - t) / STRIKE_MS) : 1;
-          drawOrb(ctx, b.x, b.y, b.r * (0.6 + 0.4 * life), b.color, 0.9 * life);
+          // Zamach: kierunkowy błysk zamiast pływającej kuli — patrz slashClockRef/drawSlash.
+          let born = t;
+          if (b.id) {
+            liveSlashIds.add(b.id);
+            const seen = slashClockRef.current.get(b.id);
+            if (seen === undefined) slashClockRef.current.set(b.id, t);
+            else born = seen;
+          }
+          const life = 1 - (t - born) / SLASH_MS;
+          drawSlash(ctx, b.x, b.y, b.angle ?? 0, b.r, life, b.color);
         } else {
           drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6, b.skin);
         }
+      }
+      for (const id of slashClockRef.current.keys()) {
+        if (!liveSlashIds.has(id)) slashClockRef.current.delete(id);
       }
       // Błysk uderzenia na trafionych postaciach.
       const flash = (px: number, py: number, at: number | undefined) => {
@@ -2092,9 +2181,14 @@ export function RoomStage({
           type: "input",
           dx: rawDx as -1 | 0 | 1,
           dy: rawDy as -1 | 0 | 1,
-          // Admin panel debug knob — realtime-server only honors this outside production, see
+          // Admin panel debug knobs — realtime-server only honors these outside production, see
           // DEV_OVERRIDES_ENABLED in server.ts.
-          ...(isAdminUiEnabled() ? { speedOverride: getAdminSettings().playerSpeed } : {}),
+          ...(isAdminUiEnabled()
+            ? {
+                speedOverride: getAdminSettings().playerSpeed,
+                staminaRegenOverride: getAdminSettings().staminaRegenPerSec,
+              }
+            : {}),
         };
         ws.send(JSON.stringify(input));
         lastInputSent = t;
@@ -2282,7 +2376,7 @@ export function RoomStage({
         // "state" handler above, which replaces ballsRef wholesale and raises hitRef from
         // msg.hits) — this only keeps positions moving smoothly between broadcasts
         // (extrapolation, same per-frame math as the legacy branch below), never re-deciding
-        // anything. predictedRef is the shooter's own instant, purely cosmetic shot/strike —
+        // anything. predictedRef is the shooter's own instant, purely cosmetic shot/slash —
         // pruned by its own short `until` regardless of whether the server's real one has
         // arrived yet, never checked against anyone's position.
         ballsRef.current = ballsRef.current.filter((b) => {
@@ -2299,7 +2393,7 @@ export function RoomStage({
           return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
         });
         predictedRef.current = predictedRef.current.filter((b) => {
-          // Melee still expires on its own short `until` (set by strike()) — it doesn't move, so
+          // Melee still expires on its own short `until` (set by spawnSlash()) — it doesn't move, so
           // there's no out-of-bounds moment to prune it on. A thrown ball has no `until` at all:
           // it flies under the exact same out-of-bounds rule as ballsRef above, and is normally
           // handed off (removed here) by the "state" handler well before it'd ever reach that edge.
@@ -2419,10 +2513,10 @@ export function RoomStage({
       if ((myDead || frozenByWork()) && (e.code === "Space" || e.code === "KeyC")) return;
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
-        // STU-23: which attack Space triggers depends on the selected weapon slot. Fist has no
+        // STU-23: which attack Space triggers depends on the selected weapon slot. Slash has no
         // charge-up — it fires right here on keydown, unlike ball's press-and-hold-then-release.
-        if (selectedWeaponRef.current === "fist") {
-          if (!e.repeat) doStrike();
+        if (selectedWeaponRef.current === "slash") {
+          if (!e.repeat) doSlash();
           return;
         }
         if (!e.repeat && chargeStart === null) {
@@ -2491,7 +2585,12 @@ export function RoomStage({
       if (e.code === "KeyC") {
         if (!e.repeat) {
           const now = performance.now();
-          if (now >= rollCooldownUntil) {
+          // Same stamina rule the server enforces (see currentStamina()/the "roll" handler in
+          // realtime-server/src/server.ts) mirrored here the same way `release()` mirrors it for
+          // fire above — once our own predicted pool can't cover the cost, no local roll state,
+          // no message, no stamina spent.
+          const canAfford = !REALTIME_SERVER_URL || predictedStamina >= ROLL_STAMINA_COST;
+          if (now >= rollCooldownUntil && canAfford) {
             const [ux, uy] = DIRS[dir];
             const n = Math.hypot(ux, uy) || 1;
             rollDx = ux / n;
@@ -2505,6 +2604,8 @@ export function RoomStage({
             if (ws && ws.readyState === WebSocket.OPEN) {
               const roll: ClientMessage = { type: "roll" };
               ws.send(JSON.stringify(roll));
+              predictedStamina -= ROLL_STAMINA_COST;
+              setMyStamina(predictedStamina);
             }
           }
         }
@@ -2633,7 +2734,7 @@ export function RoomStage({
           launch(ballsRef.current, px.x, px.y, asDir(d), clamp01(p), c, k, skin);
         }
       })
-      .on("broadcast", { event: "strike" }, ({ payload }) => {
+      .on("broadcast", { event: "slash" }, ({ payload }) => {
         // Faza F4: no longer emitted by other clients once REALTIME_SERVER_URL is set (see the
         // KeyDown handler above) — this listener only still matters for the legacy path.
         if (REALTIME_SERVER_URL) return;
@@ -2641,7 +2742,7 @@ export function RoomStage({
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y)) return;
         const px = clampPos(x, y, isLobby);
         const c = othersRef.current[k]?.color ?? "#ffffff";
-        strike(ballsRef.current, px.x, px.y, asDir(d), c, k);
+        spawnSlash(ballsRef.current, px.x, px.y, asDir(d), c, k);
       })
       .on("broadcast", { event: "reward" }, ({ payload }) => {
         const { k, coins, xp } = payload as { k: string; coins: number; xp: number };
@@ -3007,8 +3108,8 @@ export function RoomStage({
       </div>
     )}
     {REALTIME_SERVER_URL && (
-      <div className="pointer-events-none fixed bottom-9 right-4 z-20 flex items-center gap-2">
-        <span className="text-xs font-semibold tabular-nums text-white [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)]">
+      <div className="pointer-events-none fixed bottom-12 right-4 z-20 flex items-center gap-3">
+        <span className="text-base font-semibold tabular-nums text-white [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)]">
           {Math.max(0, myHp)}/{MAX_HP}
         </span>
         <div
@@ -3017,7 +3118,7 @@ export function RoomStage({
           aria-valuemin={0}
           aria-valuemax={MAX_HP}
           aria-valuenow={myHp}
-          className="h-3 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
+          className="h-6 w-72 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-2 outline-black/40"
         >
           <div
             className="h-full rounded-full bg-red-600 transition-[width]"
@@ -3027,12 +3128,12 @@ export function RoomStage({
       </div>
     )}
     {REALTIME_SERVER_URL && (
-      <div className="pointer-events-none fixed bottom-4 right-4 z-20 flex items-center gap-2">
+      <div className="pointer-events-none fixed bottom-4 right-4 z-20 flex items-center gap-3">
         {/* Text set directly in tick() via staminaTextRef, not React state — see its declaration
             above for why (stamina can regen/deplete every frame). */}
         <span
           ref={staminaTextRef}
-          className="text-xs font-semibold tabular-nums text-white [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)]"
+          className="text-base font-semibold tabular-nums text-white [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)]"
         >
           {Math.max(0, Math.round(myStamina))}/{myStaminaMax}
         </span>
@@ -3042,7 +3143,7 @@ export function RoomStage({
           aria-valuemin={0}
           aria-valuemax={myStaminaMax}
           aria-valuenow={Math.round(myStamina)}
-          className="h-2 w-40 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-1 outline-black/40"
+          className="h-5 w-72 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-2 outline-black/40"
         >
           <div
             className="h-full rounded-full bg-green-500 transition-[width]"

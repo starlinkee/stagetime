@@ -53,12 +53,14 @@ import {
   ROLL_COOLDOWN_MS,
   ROLL_MS,
   ROLL_SPEED_MULT,
+  ROLL_STAMINA_COST,
   SCHEMA_VERSION,
-  STRIKE_COOLDOWN_MS,
-  STRIKE_DMG,
-  STRIKE_MS,
-  STRIKE_R,
-  STRIKE_REACH,
+  SLASH_COOLDOWN_MS,
+  SLASH_DMG,
+  SLASH_MS,
+  SLASH_R,
+  SLASH_REACH,
+  SLASH_STAMINA_COST,
   TICK_MS,
   worldH,
   worldW,
@@ -112,6 +114,10 @@ const DEV_OVERRIDES_ENABLED = process.env.NODE_ENV !== "production";
  * collision assumptions elsewhere on the tick. */
 const MIN_DEV_SPEED = 1;
 const MAX_DEV_SPEED = 2000;
+/** Sanity bounds for `staminaRegenOverride`, same reasoning as MIN_DEV_SPEED/MAX_DEV_SPEED —
+ * 0 is allowed (regen fully off), the upper bound just keeps the pool from refilling instantly. */
+const MIN_DEV_STAMINA_REGEN = 0;
+const MAX_DEV_STAMINA_REGEN = 2000;
 
 // Faza C / C1-C2 (docs/stateful_server_plan.md): unlike REALTIME_SECRET, missing persistence
 // config is NOT fatal — movement/combat (the thing players actually feel) works fine without it,
@@ -162,9 +168,9 @@ type Conn = {
   // true }`), or null if it isn't charging (or never told us this connection). Caps `fire`'s
   // claimed `chargeMs` to what actually elapsed here, not to what the client claims elapsed.
   chargeStartAt: number | null;
-  meleeCooldownUntil: number;
+  slashCooldownUntil: number;
   // Cooldown for the "emote" message — see EMOTE_COOLDOWN_MS in shared/constants.ts. Unlike
-  // roll/charge/fire/strike this is intentionally never gated by isFrozen(): emotes must work
+  // roll/charge/fire/slash this is intentionally never gated by isFrozen(): emotes must work
   // during the work phase too (STU-45), only isDead(conn) blocks them.
   emoteCooldownUntil: number;
   // STU-35: same shape as emoteCooldownUntil, for the "useItem" flash-grenade broadcast — see
@@ -201,13 +207,13 @@ type Conn = {
   gd: Dir;
 };
 
-/** Frozen (no movement, no roll/charge/fire/strike) while waiting out RESPAWN_MS. */
+/** Frozen (no movement, no roll/charge/fire/slash) while waiting out RESPAWN_MS. */
 function isDead(conn: Conn): boolean {
   return conn.respawnAt > 0;
 }
 
 /**
- * Frozen (no movement, no roll/charge/fire/strike) while this connection's own pomodoro room
+ * Frozen (no movement, no roll/charge/fire/slash) while this connection's own pomodoro room
  * instance is in its "work" state — the coworking half of the session, where nobody should be
  * able to walk around or fight. `waiting` (nobody's started it yet) and `break` are both free.
  * STU-58: this used to be a pure function of the server's own clock (getRoomPhase against a
@@ -481,7 +487,7 @@ function pushBallToRoom(roomSlug: string, ball: ServerBall) {
   balls.push(ball);
 }
 
-/** Shared by spawnBall/spawnMelee. Stamina (see STAMINA_MAX's doc comment in
+/** Shared by spawnBall/spawnSlash. Stamina (see STAMINA_MAX's doc comment in
  * shared/constants.ts) is the only fire-rate limit — no separate concurrent-in-flight cap here,
  * so there's nothing that can silently disagree with what the stamina bar shows. */
 function pushBall(conn: Conn, ball: ServerBall) {
@@ -512,23 +518,26 @@ function spawnBall(conn: Conn, p: number) {
 }
 
 /** Melee hitbox just in front of the connection, facing its current direction — same math as
- * `strike()` in src/components/RoomStage.tsx. Disappears at `until` regardless of whether it hit
- * anything, exactly like the client-side version did before this migration. */
-function spawnMelee(conn: Conn) {
+ * `spawnSlash()` in src/components/RoomStage.tsx. Disappears at `until` regardless of whether it
+ * hit anything, exactly like the client-side version did before this migration. `angle` is stamped
+ * once here (never recomputed client-side from `conn.d`, which may have changed by render time) so
+ * the client can draw a directional slash swipe instead of a symmetric blob. */
+function spawnSlash(conn: Conn) {
   const [ux, uy] = DIRS[conn.d];
   const n = Math.hypot(ux, uy) || 1;
   pushBall(conn, {
     id: `${conn.id}:${nextBallId++}`,
-    x: conn.x + PERSON_W / 2 + (ux / n) * STRIKE_REACH,
-    y: conn.y + PERSON_H / 2 + (uy / n) * STRIKE_REACH,
+    x: conn.x + PERSON_W / 2 + (ux / n) * SLASH_REACH,
+    y: conn.y + PERSON_H / 2 + (uy / n) * SLASH_REACH,
     vx: 0,
     vy: 0,
-    r: STRIKE_R,
+    r: SLASH_R,
     color: conn.color,
     owner: conn.id,
     melee: true,
-    until: Date.now() + STRIKE_MS,
-    dmg: Math.round(STRIKE_DMG * conn.stats.attackPower),
+    angle: Math.atan2(uy, ux),
+    until: Date.now() + SLASH_MS,
+    dmg: Math.round(SLASH_DMG * conn.stats.attackPower),
   });
 }
 
@@ -603,6 +612,7 @@ function tickEnemy(slug: string, set: Set<Conn>, now: number, dt: number) {
     color: "#7f1d1d",
     owner: enemy.id,
     melee: true,
+    angle: Math.atan2(uy, ux),
     until: now + ENEMY_ATTACK_MS,
     dmg: ENEMY_ATTACK_DMG,
   });
@@ -955,7 +965,7 @@ wss.on("connection", (ws, req) => {
     rollDx: 0,
     rollDy: 0,
     chargeStartAt: null,
-    meleeCooldownUntil: 0,
+    slashCooldownUntil: 0,
     emoteCooldownUntil: 0,
     flashGrenadeCooldownUntil: 0,
     staminaAt: stats.staminaMax,
@@ -990,6 +1000,24 @@ wss.on("connection", (ws, req) => {
       if (DEV_OVERRIDES_ENABLED && typeof msg.speedOverride === "number" && Number.isFinite(msg.speedOverride)) {
         conn.speed = Math.max(MIN_DEV_SPEED, Math.min(MAX_DEV_SPEED, msg.speedOverride));
       }
+      if (
+        DEV_OVERRIDES_ENABLED &&
+        typeof msg.staminaRegenOverride === "number" &&
+        Number.isFinite(msg.staminaRegenOverride)
+      ) {
+        // Snapshot the projected value *before* swapping the rate — currentStamina() projects
+        // forward from staminaAt/staminaUpdatedAt using whatever rate is live *now*, so changing
+        // the rate without first collapsing the pending elapsed time onto the old rate would
+        // silently apply the new rate retroactively to time that already regenerated under the
+        // old one.
+        const now = Date.now();
+        conn.staminaAt = currentStamina(conn, now);
+        conn.staminaUpdatedAt = now;
+        conn.stats.staminaRegenPerSec = Math.max(
+          MIN_DEV_STAMINA_REGEN,
+          Math.min(MAX_DEV_STAMINA_REGEN, msg.staminaRegenOverride),
+        );
+      }
       return;
     }
     // Faza F2 (docs/combat_sync_plan.md): a request, not an assertion — the server derives
@@ -998,14 +1026,17 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "roll") {
       if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
-      if (now >= conn.rollCooldownUntil) {
-        const [ux, uy] = DIRS[conn.d];
-        const n = Math.hypot(ux, uy) || 1;
-        conn.rollDx = ux / n;
-        conn.rollDy = uy / n;
-        conn.rollUntil = now + ROLL_MS;
-        conn.rollCooldownUntil = conn.rollUntil + ROLL_COOLDOWN_MS;
-      }
+      if (now < conn.rollCooldownUntil) return;
+      const stamina = currentStamina(conn, now);
+      if (stamina < ROLL_STAMINA_COST) return;
+      const [ux, uy] = DIRS[conn.d];
+      const n = Math.hypot(ux, uy) || 1;
+      conn.rollDx = ux / n;
+      conn.rollDy = uy / n;
+      conn.rollUntil = now + ROLL_MS;
+      conn.rollCooldownUntil = conn.rollUntil + ROLL_COOLDOWN_MS;
+      conn.staminaAt = stamina - ROLL_STAMINA_COST;
+      conn.staminaUpdatedAt = now;
       return;
     }
     // Faza F3: marks when charging actually started here, so `fire` below can't claim more than
@@ -1038,12 +1069,16 @@ wss.on("connection", (ws, req) => {
       }
       return;
     }
-    if (msg.type === "strike") {
+    if (msg.type === "slash") {
       if (isDead(conn) || isFrozen(conn)) return;
       const now = Date.now();
-      if (now < conn.meleeCooldownUntil) return;
-      conn.meleeCooldownUntil = now + STRIKE_COOLDOWN_MS;
-      spawnMelee(conn);
+      if (now < conn.slashCooldownUntil) return;
+      const stamina = currentStamina(conn, now);
+      if (stamina < SLASH_STAMINA_COST) return;
+      conn.slashCooldownUntil = now + SLASH_COOLDOWN_MS;
+      conn.staminaAt = stamina - SLASH_STAMINA_COST;
+      conn.staminaUpdatedAt = now;
+      spawnSlash(conn);
       return;
     }
     // STU-45: deliberately only isDead(conn), not isFrozen(conn) — emotes must keep working
@@ -1215,7 +1250,7 @@ setInterval(() => {
         // Ghost movement: the body (x/y/d) stays frozen at the death spot for the whole respawn
         // countdown (the corpse), but the player still steers something — a ghost, at gx/gy/gd —
         // for the same RESPAWN_MS window (see PlayerState.gx/gy/gd's doc comment in
-        // shared/types.ts). No roll/charge/fire/strike here: those message handlers already
+        // shared/types.ts). No roll/charge/fire/slash here: those message handlers already
         // reject while isDead(conn), so raw input is the only thing that can move a ghost — plain
         // walking, at the connection's normal speed, no cooldowns to respect.
         const gdx = conn.inputDx;
@@ -1260,7 +1295,7 @@ setInterval(() => {
   }
   // One room-owned enemy's AI (see tickEnemy's doc comment) — after player movement so it always
   // chases this tick's positions, before the ball-physics pass below so a swing thrown just now
-  // resolves in the same tick, exactly like a player's own strike would.
+  // resolves in the same tick, exactly like a player's own slash would.
   for (const [slug, set] of rooms) {
     if (slug === ARENA_ROOM_SLUG) {
       tickEnemy(slug, set, now, dt);
@@ -1269,7 +1304,7 @@ setInterval(() => {
   }
   // Faza F3: ball/melee-hitbox physics and the single, authoritative "who got hit" decision —
   // same collision geometry as `hits()` in RoomStage.tsx, just decided once here instead of once
-  // per client. `roomBalls`/`roomHits` are seeded lazily by spawnBall/spawnMelee, so a room with
+  // per client. `roomBalls`/`roomHits` are seeded lazily by spawnBall/spawnSlash, so a room with
   // no combat yet simply isn't in either map.
   for (const [slug, balls] of roomBalls) {
     const set = rooms.get(slug);

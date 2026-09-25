@@ -163,3 +163,16 @@ Wiadomość commita jest wymagana tylko wtedy, gdy jest faktycznie coś do zacom
    `git push-prod`, nie ręcznego `git checkout -b ...`. Wyjątek: automatyczne przetwarzanie zadań
    z Linear może użyć krótkotrwałego brancha per zadanie utworzonego z `dev`, zmergowanego z
    powrotem do `dev` i usuniętego zaraz po zakończeniu tego zadania.
+6. Nigdy nie usuwaj żadnych assetów (grafik, spriteów, dźwięków itp.), nawet jeśli wyglądają na
+   nieużywane w kodzie — mogą się jeszcze przydać do legacy skinów. Jeśli asset trzeba usunąć z
+   aktywnego użycia, przenieś go do katalogu `archive/` (zachowując strukturę podkatalogów
+   źródła, np. `public/sprites/foo.png` → `archive/public/sprites/foo.png`) zamiast go kasować.
+   Dotyczy to też czyszczenia repo/porządków — `git rm`/`rm` na assetach jest niedozwolone, chyba
+   że użytkownik wprost poprosi o trwałe usunięcie konkretnego pliku.
+
+   `archive/raw-assets/` (od 2026-09-25): surowe źródła sprite'ów/tilesetów, które trafiły do
+   korzenia repo poza `public/` (arkusze `.aseprite`, wygenerowane rotacje kierunków, wycięty
+   tileset `Interiors_free_16x16.png` ze slice'ami, `sprites.png`/`sprites.xml`) — przeniesione
+   tu z korzenia repo, nie z `public/`, więc nie zachowują pełnej ścieżki źródłowej jak w
+   przykładzie wyżej. Trzymane jako materiał wejściowy do (re)generowania spriteów w grze, nie
+   jako aktywne assety gry.

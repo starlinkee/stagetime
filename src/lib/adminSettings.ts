@@ -12,11 +12,16 @@ export type AdminSettings = {
   roomEnterSec: number;
   /** Prędkość postaci gracza w jednostkach świata na sekundę (patrz SPEED w RoomStage.tsx). */
   playerSpeed: number;
+  /** Regeneracja staminy (pula pod fire/roll/slash) na sekundę — patrz STAMINA_REGEN_PER_SEC
+   * w realtime-server/shared/constants.ts. Wysyłane do realtime-server jako staminaRegenOverride
+   * (patrz DEV_OVERRIDES_ENABLED w server.ts), dokładnie tym samym mechanizmem co playerSpeed. */
+  staminaRegenPerSec: number;
 };
 
 export const DEFAULT_ADMIN_SETTINGS: AdminSettings = {
   roomEnterSec: 0.75,
   playerSpeed: 220,
+  staminaRegenPerSec: 100,
 };
 
 /** Opisuje jedno ustawienie do automatycznego wyrenderowania w panelu admina. */
@@ -33,6 +38,7 @@ export type AdminSettingDef = {
 export const ADMIN_SETTINGS_SCHEMA: AdminSettingDef[] = [
   { key: "roomEnterSec", label: "Czas otwarcia pokoju (przytrzymanie E)", min: 0, step: 0.05, suffix: "s" },
   { key: "playerSpeed", label: "Prędkość gracza", min: 0, step: 10, suffix: " px/s" },
+  { key: "staminaRegenPerSec", label: "Regeneracja staminy", min: 0, step: 5, suffix: " /s" },
 ];
 
 const STORAGE_KEY = "stagetime:admin-settings";

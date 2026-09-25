@@ -89,12 +89,21 @@ export const ORB_R_MIN = 10;
 export const ORB_R_MAX = 60;
 /** Thrown-ball flight speed, px/s. */
 export const BALL_SPEED = 520;
-/** Melee (fist swing, key 1): short reach, no charge, hits immediately on press. */
-export const STRIKE_REACH = 44;
-export const STRIKE_R = 40;
-export const STRIKE_MS = 150;
-/** Cooldown between melee swings. */
-export const STRIKE_COOLDOWN_MS = 260;
+/** Melee (slash, weapon slot 2): short reach, no charge, hits immediately on press. Replaces the
+ * old "strike"/fist swing (STU-61) — same short-range-hitbox shape, new name/visual, and the
+ * client-side animation no longer mixes the server's `ServerBall.until` (epoch ms, `Date.now()`)
+ * with its own `performance.now()`-based render clock the way the old one briefly did (that
+ * mismatch could blow a hitbox's on-screen radius up to cover the whole canvas for a frame — see
+ * the `slashClockRef` doc comment in RoomStage.tsx). */
+export const SLASH_REACH = 44;
+export const SLASH_R = 40;
+export const SLASH_MS = 150;
+/** Cooldown between slashes — kept short since stamina (SLASH_STAMINA_COST), not this timer, is
+ * now the main brake on melee spam. */
+export const SLASH_COOLDOWN_MS = 80;
+/** Melee stamina cost — drawn from the same pool as `fire`/roll, refused outright (not queued)
+ * when the pool can't cover it, same gate shape as STAMINA_COST_PER_SHOT/ROLL_STAMINA_COST. */
+export const SLASH_STAMINA_COST = 15;
 /** Character hitbox padding used by ball/melee collision checks. */
 export const HIT_PAD = 8;
 
@@ -153,6 +162,9 @@ export const HITBOX_OFFSET_Y = PERSON_H - HITBOX_H;
 export const STAMINA_MAX = 180;
 export const STAMINA_COST_PER_SHOT = 60;
 export const STAMINA_REGEN_PER_SEC = STAMINA_MAX / 1.8;
+/** Roll (dash) stamina cost — drawn from the same pool as `fire`, refused outright (not queued)
+ * when the pool can't cover it, same gate shape as STAMINA_COST_PER_SHOT above. */
+export const ROLL_STAMINA_COST = 40;
 
 /**
  * Every connection's stats until character selection exists (see AGENTS.md's 2026-09-23 note:
@@ -170,7 +182,7 @@ export const DEFAULT_CHARACTER_STATS: CharacterStats = {
 
 /**
  * HP/damage/respawn — combat only deals damage outside the lobby (a decision made when this was
- * added: the lobby stays a safe social space, balls/melee still fly and visually hit there, but
+ * added: the lobby stays a safe social space, balls/slashes still fly and visually hit there, but
  * `isLobbyRoom` in server.ts skips the HP subtraction). Every connection starts and respawns at
  * `MAX_HP`.
  */
@@ -188,7 +200,7 @@ export const DESPERATE_HP = 5;
 export const DMG_MIN = 1;
 export const DMG_MAX = 5;
 /** Melee has no charge to scale off of, so it deals a fixed, mid-range hit. */
-export const STRIKE_DMG = 3;
+export const SLASH_DMG = 4;
 /** Charge feedback with no extra art: steps the orb through a fixed color per damage tier (not a
  * smooth blend) so a jump from e.g. dmg 1 to dmg 2 reads as a sharp color change, matching the
  * discrete dmg the server actually deals (`dmg = round(DMG_MIN + (DMG_MAX-DMG_MIN)*p)` in
@@ -197,7 +209,7 @@ export const STRIKE_DMG = 3;
  * splash should look like the ball that caused it, not like whatever color that player happens to
  * have equipped. */
 export const CHARGE_TIER_COLORS = ["#e4e4e7", "#facc15", "#fb923c", "#f87171", "#dc2626"];
-/** Tier color for a *known* dmg value (a thrown ball's real `dmg`, or `STRIKE_DMG` for melee) —
+/** Tier color for a *known* dmg value (a thrown ball's real `dmg`, or `SLASH_DMG` for melee) —
  * lets a flying ball, and the splash/`HitEvent` it produces on impact, share one color instead of
  * drifting apart. */
 export function dmgTint(dmg: number): string {
@@ -258,8 +270,8 @@ export const ENEMY_AGGRO_RANGE = 420;
 export const ENEMY_LEASH_RANGE = 620;
 /** Switches from chase to attack once this close (px, from box centers). */
 export const ENEMY_ATTACK_RANGE = 70;
-/** Melee hitbox radius/lifetime/cooldown — same shape of numbers as STRIKE_R/STRIKE_MS/
- * STRIKE_COOLDOWN_MS above, just tuned for one big slow attacker instead of many players. */
+/** Melee hitbox radius/lifetime/cooldown — same shape of numbers as SLASH_R/SLASH_MS/
+ * SLASH_COOLDOWN_MS above, just tuned for one big slow attacker instead of many players. */
 export const ENEMY_ATTACK_R = 46;
 export const ENEMY_ATTACK_MS = 200;
 export const ENEMY_ATTACK_COOLDOWN_MS = 1200;

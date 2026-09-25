@@ -90,6 +90,7 @@ export function ProfileMenu({ session }: { session: Session }) {
             className="relative flex h-1.5 w-10 overflow-hidden rounded-full bg-zinc-700/60"
           >
             <span
+              title={xpLevelTableText()}
               className="h-full rounded-full bg-amber-400 transition-[width]"
               style={{ width: `${Math.min(100, (intoLevel / forNextLevel) * 100)}%` }}
             />
@@ -173,10 +174,14 @@ function ProfileForm({
           className="relative h-3.5 w-full overflow-hidden rounded-full bg-zinc-800"
         >
           <div
+            title={xpLevelTableText()}
             className="h-full rounded-full bg-amber-500 transition-[width]"
             style={{ width: `${Math.min(100, (intoLevel / forNextLevel) * 100)}%` }}
           />
-          <span className="absolute inset-0 flex items-center justify-center text-[9px] font-medium text-zinc-100">
+          <span
+            title={xpLevelTableText()}
+            className="absolute inset-0 flex items-center justify-center text-[9px] font-medium text-zinc-100"
+          >
             {intoLevel.toFixed(1)}/{forNextLevel} XP
           </span>
         </div>
@@ -188,7 +193,7 @@ function ProfileForm({
         <span className="font-semibold text-zinc-200">{ballsShot}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
-        <span className="text-zinc-400">Fist swings</span>
+        <span className="text-zinc-400">Melee swings</span>
         <span className="font-semibold text-zinc-200">{fistSwings}</span>
       </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
