@@ -3,6 +3,7 @@ import { Fredoka, Geist, Geist_Mono } from "next/font/google";
 import { AdminPanel } from "@/components/AdminPanel";
 import { AuthButton } from "@/components/AuthButton";
 import { HowToPlayButton } from "@/components/HowToPlayButton";
+import { FirstVisitGuideOverlay } from "@/components/FirstVisitGuideOverlay";
 import { AllIdeasLink, IdeaBox } from "@/components/IdeaBox";
 import { PresenceBar } from "@/components/PresenceBar";
 import { SoundToggleButton } from "@/components/SoundToggleButton";
@@ -53,6 +54,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </div>
         </header>
         {children}
+        <FirstVisitGuideOverlay />
         <VersionWatcher />
       </body>
     </html>
