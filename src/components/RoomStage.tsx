@@ -1469,9 +1469,9 @@ export function RoomStage({
         // w pokoju, ale tylko gdy ktoś tam jest.
         const occupants = occupancyRef.current?.[z.slug];
         const isExitHere = roomSlug !== "lobby" && z.slug === "lobby";
-        // Pokój zamknięty (trwa faza work): kłódka, czerwone odliczanie pod kwadratem (patrz
-        // niżej, phaseState) i liczba osób w środku (STU-26) — bez nagrody i tekstów wejścia,
-        // bo i tak nie można teraz wejść.
+        // Pokój zamknięty (trwa faza work): kłódka, bez nagrody i tekstów wejścia (bo i tak nie
+        // można teraz wejść), ale nadal liczba osób w środku (STU-39) — patrz warunek niżej,
+        // `isExitHere || !workClosed`, który przepuszcza occupants-branch mimo workClosed.
         const workClosed = phaseState?.phase === "work";
         // Nagroda XP tego pokoju i długość faz: pod numerem/kłódką, zawsze widoczna (nie tylko
         // stojąc na kwadracie) — dla pomodoro to praca+przerwa w minutach i nagroda za całą sesję
@@ -1491,7 +1491,7 @@ export function RoomStage({
             z.y + z.h / 2 + 30,
           );
         }
-        if (inZone(x, y, z) && (z.kind ?? "nav") === "nav" && !workClosed) {
+        if (inZone(x, y, z) && (z.kind ?? "nav") === "nav" && (isExitHere || !workClosed)) {
           if (isExitHere) {
             ctx.fillStyle = "#22c55e";
             ctx.font = "700 16px sans-serif";
