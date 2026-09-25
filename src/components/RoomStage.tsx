@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { CharacterSprite } from "@/components/CharacterSprite";
 import { CoinBadge } from "@/components/CoinBadge";
 import { DungeonBackground } from "@/components/DungeonBackground";
+import { ArenaDecor } from "@/components/ArenaDecor";
 import { LobbyDecor } from "@/components/LobbyDecor";
 import { LevelBadge } from "@/components/LevelBadge";
 import { DIR_DOWN, type Dir } from "@/components/PixelPerson";
@@ -2042,7 +2043,7 @@ export function RoomStage({
       // movement here too, not just server-side — otherwise this client-side prediction would
       // visibly slide the player through it for up to one broadcast (BROADCAST_MS) before the
       // server's own correction snapped it back out.
-      const { x: nx, y: ny } = resolveObstacleMoveHitbox(x, y, clampedNx, clampedNy, obstaclesFor(isLobby));
+      const { x: nx, y: ny } = resolveObstacleMoveHitbox(x, y, clampedNx, clampedNy, obstaclesFor(isLobby, roomSlug));
       if (nx !== x || ny !== y) dirty = true;
       x = nx;
       y = ny;
@@ -2212,7 +2213,7 @@ export function RoomStage({
           // Purely cosmetic here too (see comment above) — the server already stopped this ball
           // for real (LOBBY_OBSTACLES, realtime-server/shared/obstacles.ts); this just keeps the
           // brief between-broadcast extrapolation from visibly flying through the same furniture.
-          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby))) return false;
+          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby, roomSlug))) return false;
           if (b.melee) return true;
           return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
         });
@@ -2224,7 +2225,7 @@ export function RoomStage({
           if (b.melee) return b.until !== undefined && t <= b.until;
           b.x += b.vx * dt;
           b.y += b.vy * dt;
-          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby))) return false;
+          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby, roomSlug))) return false;
           return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
         });
       } else {
@@ -2239,7 +2240,7 @@ export function RoomStage({
           // Large furniture (see LOBBY_OBSTACLES in realtime-server/shared/obstacles.ts) stops a
           // ball/melee hitbox dead, same as a player would — this client is the sole authority in
           // this (no realtime-server) mode, so there's no server-side check backing this one up.
-          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby))) {
+          if (circleIntersectsObstacles(b.x, b.y, b.r, obstaclesFor(isLobby, roomSlug))) {
             burst(b, t);
             return false;
           }
@@ -3009,6 +3010,7 @@ export function RoomStage({
       >
         <DungeonBackground width={WORLD_W} height={WORLD_H} />
         {isLobby && <LobbyDecor width={WORLD_W} height={WORLD_H} />}
+        {roomSlug === "arena" && <ArenaDecor />}
         {Object.entries(others).map(([k, o]) => {
           // respawnAt > 0: this player just died — o.x/o.y/o.d is their corpse, frozen where it
           // dropped, and o.gx/o.gy/o.gd is the ghost they're still steering (see

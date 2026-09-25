@@ -1226,7 +1226,7 @@ setInterval(() => {
         const gnx = conn.gx + gdx * conn.speed * dt * gnorm;
         const gny = conn.gy + gdy * conn.speed * dt * gnorm;
         const gclamped = clampPos(gnx, gny, conn.isLobby);
-        const gresolved = resolveObstacleMoveHitbox(conn.gx, conn.gy, gclamped.x, gclamped.y, obstaclesFor(conn.isLobby));
+        const gresolved = resolveObstacleMoveHitbox(conn.gx, conn.gy, gclamped.x, gclamped.y, obstaclesFor(conn.isLobby, conn.roomSlug));
         conn.gx = gresolved.x;
         conn.gy = gresolved.y;
         continue;
@@ -1253,7 +1253,7 @@ setInterval(() => {
       const nx = conn.x + dx * speed * dt * norm;
       const ny = conn.y + dy * speed * dt * norm;
       const clamped = clampPos(nx, ny, conn.isLobby);
-      const resolved = resolveObstacleMoveHitbox(conn.x, conn.y, clamped.x, clamped.y, obstaclesFor(conn.isLobby));
+      const resolved = resolveObstacleMoveHitbox(conn.x, conn.y, clamped.x, clamped.y, obstaclesFor(conn.isLobby, conn.roomSlug));
       conn.x = resolved.x;
       conn.y = resolved.y;
     }
@@ -1277,7 +1277,7 @@ setInterval(() => {
     const isLobby = slug === "lobby";
     const worldWidth = worldW(isLobby);
     const worldHeight = worldH(isLobby);
-    const obstacles = obstaclesFor(isLobby);
+    const obstacles = obstaclesFor(isLobby, slug);
     const survivors: ServerBall[] = [];
     for (const b of balls) {
       if (b.until !== undefined && now > b.until) continue;

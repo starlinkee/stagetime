@@ -14,7 +14,7 @@
  */
 
 import type { Rect } from "./rooms";
-import { HITBOX_H, HITBOX_OFFSET_X, HITBOX_OFFSET_Y, HITBOX_W, worldH, worldW } from "./constants";
+import { ARENA_ROOM_SLUG, HITBOX_H, HITBOX_OFFSET_X, HITBOX_OFFSET_Y, HITBOX_W, worldH, worldW } from "./constants";
 
 export type Quadrant = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -140,11 +140,41 @@ function buildLobbyObstacles(): Rect[] {
 
 export const LOBBY_OBSTACLES: ReadonlyArray<Rect> = buildLobbyObstacles();
 
-/** Obstacles only exist in the lobby (see LOBBY_OBSTACLES' doc comment) — every other room passes
- * an empty array through the same collision helpers below, so callers don't need a second,
- * obstacle-free code path. */
-export function obstaclesFor(isLobby: boolean): ReadonlyArray<Rect> {
-  return isLobby ? LOBBY_OBSTACLES : [];
+/**
+ * STU-34: cover in the arena so a fight isn't just standing in the open trading shots — same
+ * furniture sprites as the lobby's solid decor (see QUADRANT_ITEMS above), reused here rather than
+ * commissioning new art. `x`/`y` are native pixels relative to the arena world's own top-left
+ * corner (no quadrant split like the lobby — the arena is one plain SCREEN_W x SCREEN_H room, see
+ * worldW/worldH(false) in constants.ts), scaled by DECOR_SCALE the same way QUADRANT_ITEMS is.
+ * Kept clear of the world's center — that's where the arena's enemy/dummy spawn (ensureArenaEnemy/
+ * ensureArenaDummy in server.ts) and where a fresh connection first appears.
+ */
+export const ARENA_OBSTACLE_ITEMS: DecorItem[] = [
+  { file: "bookshelf", w: 46, h: 47, x: 30, y: 20, solid: true },
+  { file: "desk", w: 46, h: 30, x: 270, y: 20, solid: true },
+  { file: "armchair", w: 22, h: 55, x: 30, y: 120, solid: true },
+  { file: "grandfather-clock", w: 21, h: 46, x: 290, y: 120, solid: true },
+];
+
+function buildArenaObstacles(): Rect[] {
+  return ARENA_OBSTACLE_ITEMS.filter((item) => item.solid).map((item) => ({
+    x: item.x * DECOR_SCALE,
+    y: item.y * DECOR_SCALE,
+    w: item.w * DECOR_SCALE,
+    h: item.h * DECOR_SCALE,
+  }));
+}
+
+export const ARENA_OBSTACLES: ReadonlyArray<Rect> = buildArenaObstacles();
+
+/** Obstacles only exist in the lobby and the arena (see LOBBY_OBSTACLES/ARENA_OBSTACLES' doc
+ * comments) — every other room passes an empty array through the same collision helpers below, so
+ * callers don't need a second, obstacle-free code path. `roomSlug` is only consulted when
+ * `isLobby` is false — a lobby connection has no room slug of its own that matters here. */
+export function obstaclesFor(isLobby: boolean, roomSlug?: string): ReadonlyArray<Rect> {
+  if (isLobby) return LOBBY_OBSTACLES;
+  if (roomSlug === ARENA_ROOM_SLUG) return ARENA_OBSTACLES;
+  return [];
 }
 
 function aabbOverlaps(x: number, y: number, w: number, h: number, r: Rect): boolean {
