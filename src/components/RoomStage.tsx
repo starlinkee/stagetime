@@ -30,6 +30,7 @@ import {
   DIR_OF,
   DMG_MAX,
   DMG_MIN,
+  dmgTint,
   DUMMY_H,
   DUMMY_W,
   EMOJI_EMOTES,
@@ -466,6 +467,13 @@ function strike(balls: Ball[], x: number, y: number, d: Dir, color: string, owne
  * other skin still draws it first, then layers its own extra shapes on top, so a ball never looks
  * broken if `skin` is an old/unrecognized value (falls through to the base look only).
  */
+/** `dmgTint` now lives in @realtime-shared/constants (see its doc comment) so the server can stamp
+ * the same tier color onto a `HitEvent`'s splash — this just adds the charge-fraction -> dmg step
+ * on top for the charging orb's own preview. */
+function chargeTint(p: number): string {
+  return dmgTint(DMG_MIN + (DMG_MAX - DMG_MIN) * Math.max(0, Math.min(1, p)));
+}
+
 function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, glow: number, skin?: string) {
   ctx.save();
   ctx.shadowColor = color;
@@ -1547,7 +1555,9 @@ export function RoomStage({
             vx: b.vx,
             vy: b.vy,
             r: b.r,
-            color: b.color,
+            // Tier color from the real dmg the server decided, not the shooter's cosmetic color —
+            // same tier scale as the charging orb (see dmgTint's doc comment).
+            color: dmgTint(b.dmg),
             owner: b.owner,
             melee: b.melee,
             until: b.until,
@@ -1645,7 +1655,7 @@ export function RoomStage({
           // preview. It flies under the same rule as a real ball (out-of-bounds, see tick()
           // below) rather than a short fixed timer, and gets handed off to ballsRef the moment
           // the server's own broadcast confirms it — see the "state" handler above.
-          launch(predictedRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me", ballSkinRef.current);
+          launch(predictedRef.current, x, y, dir, p, chargeTint(p), keyRef.current || "me", ballSkinRef.current);
           if (ws && ws.readyState === WebSocket.OPEN) {
             const fire: ClientMessage = { type: "fire", chargeMs };
             ws.send(JSON.stringify(fire));
@@ -1655,7 +1665,7 @@ export function RoomStage({
             setMyStamina(predictedStamina);
           }
         } else {
-          launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me", ballSkinRef.current);
+          launch(ballsRef.current, x, y, dir, p, chargeTint(p), keyRef.current || "me", ballSkinRef.current);
         }
       }
       // Still emitted in both modes (and even when the cooldown blocked the shot above) — other
@@ -1791,14 +1801,14 @@ export function RoomStage({
       if (chargeStart !== null) {
         const p = Math.min(1, (t - chargeStart) / CHARGE_MS);
         const { r, cx, cy } = orbAt(x, y, p);
-        drawOrb(ctx, cx, cy, r * pulse(p), colorRef.current, p, ballSkinRef.current);
+        drawOrb(ctx, cx, cy, r * pulse(p), chargeTint(p), p, ballSkinRef.current);
       }
       for (const [k, start] of Object.entries(chargingRef.current)) {
         const pos = othersDisplayRef.current[k] ?? posRef.current[k];
         if (!pos) continue;
         const p = Math.min(1, (t - start) / CHARGE_MS);
         const { r, cx, cy } = orbAt(pos.x, pos.y, p);
-        drawOrb(ctx, cx, cy, r * pulse(p), othersRef.current[k]?.color ?? "#ffffff", p, othersRef.current[k]?.ballSkin);
+        drawOrb(ctx, cx, cy, r * pulse(p), chargeTint(p), p, othersRef.current[k]?.ballSkin);
       }
       // predictedRef is empty in the legacy (no REALTIME_SERVER_URL) branch, so this concat is a
       // no-op there — see predictedRef's own doc comment.
@@ -2252,7 +2262,11 @@ export function RoomStage({
             return false;
           }
           if (b.melee) return true;
-          return b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
+          const inBounds = b.x > -b.r && b.x < WORLD_W + b.r && b.y > -b.r && b.y < WORLD_H + b.r;
+          // Leaving the room: same splash as an obstacle hit, clamped onto the room's edge so it
+          // bursts at the wall instead of somewhere off-screen the camera never shows.
+          if (!inBounds) burst({ x: Math.max(0, Math.min(b.x, WORLD_W)), y: Math.max(0, Math.min(b.y, WORLD_H)), r: b.r, color: b.color }, t);
+          return inBounds;
         });
       }
       // Ease every remote player's displayed position toward posRef's raw target, same

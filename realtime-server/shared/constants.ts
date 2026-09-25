@@ -189,6 +189,21 @@ export const DMG_MIN = 1;
 export const DMG_MAX = 5;
 /** Melee has no charge to scale off of, so it deals a fixed, mid-range hit. */
 export const STRIKE_DMG = 3;
+/** Charge feedback with no extra art: steps the orb through a fixed color per damage tier (not a
+ * smooth blend) so a jump from e.g. dmg 1 to dmg 2 reads as a sharp color change, matching the
+ * discrete dmg the server actually deals (`dmg = round(DMG_MIN + (DMG_MAX-DMG_MIN)*p)` in
+ * spawnBall, server.ts). Shared (not just RoomStage.tsx's own copy) so the server can stamp the
+ * exact same tier color onto a `HitEvent` instead of the shooter's cosmetic `conn.color` — a hit's
+ * splash should look like the ball that caused it, not like whatever color that player happens to
+ * have equipped. */
+export const CHARGE_TIER_COLORS = ["#e4e4e7", "#facc15", "#fb923c", "#f87171", "#dc2626"];
+/** Tier color for a *known* dmg value (a thrown ball's real `dmg`, or `STRIKE_DMG` for melee) —
+ * lets a flying ball, and the splash/`HitEvent` it produces on impact, share one color instead of
+ * drifting apart. */
+export function dmgTint(dmg: number): string {
+  const idx = Math.max(0, Math.min(CHARGE_TIER_COLORS.length - 1, Math.round(dmg) - DMG_MIN));
+  return CHARGE_TIER_COLORS[idx];
+}
 /** How long a dead connection is frozen (no movement/actions) before respawning. */
 export const RESPAWN_MS = 5000;
 /** Grace window after respawning during which a connection can't be damaged or targeted. */

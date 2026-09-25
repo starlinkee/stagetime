@@ -15,6 +15,7 @@ import {
   DIR_OF,
   DMG_MAX,
   DMG_MIN,
+  dmgTint,
   DOOR_REOPEN_MS,
   DUMMY_H,
   DUMMY_MAX_HP,
@@ -320,6 +321,23 @@ const roomBalls = new Map<string, ServerBall[]>();
 /** Hits resolved since the last broadcast, drained into the next `state` message and cleared —
  * not cumulative, see the broadcast loop below. */
 const roomHits = new Map<string, HitEvent[]>();
+
+/**
+ * A ball/melee hitbox consumed by the environment (solid furniture, or the room's own edge)
+ * instead of a player/enemy/dummy — still worth a `HitEvent` so the shooter (and everyone else)
+ * sees the same particle burst as a real hit, just with no HP/kill/damage-number side effects
+ * (`dmg: 0`, `killed: false`, same as a lobby hit). `targetId` uses the `env:` prefix so it can
+ * never collide with a real `Conn.id` (`randomUUID()`, see the top of this file) or the `enemy:`/
+ * `dummy:` ids those hits already use — the client only compares `targetId` against `netKey` to
+ * decide "did *I* get hit", which an `env:` id can never match.
+ */
+function pushEnvHit(slug: string, b: ServerBall, targetId: "env:obstacle" | "env:wall", x: number, y: number) {
+  const hits = roomHits.get(slug) ?? [];
+  // Tier color for the ball's real dmg, same as every other HitEvent push — not `b.color`
+  // (the shooter's cosmetic conn.color), so the splash matches the ball's actual on-screen color.
+  hits.push({ targetId, ownerId: b.owner, melee: Boolean(b.melee), x, y, r: b.r, color: dmgTint(b.dmg), dmg: 0, killed: false });
+  roomHits.set(slug, hits);
+}
 
 /**
  * First room-owned enemy (see ARENA_ROOM_SLUG/ENEMY_* in shared/constants.ts): everyone in the
@@ -1268,9 +1286,13 @@ setInterval(() => {
         b.y += b.vy * dt;
       }
       // Large furniture (see LOBBY_OBSTACLES in shared/obstacles.ts) blocks a thrown ball/melee
-      // hitbox exactly like it blocks a player — the ball is simply consumed here, same as flying
-      // out of bounds, instead of passing through to whatever's on the other side.
-      if (circleIntersectsObstacles(b.x, b.y, b.r, obstacles)) continue;
+      // hitbox exactly like it blocks a player — the ball is consumed here, same as flying out of
+      // bounds below, except this one also fires a splash (pushEnvHit) at the point of impact so
+      // it reads as hitting something solid instead of just vanishing.
+      if (circleIntersectsObstacles(b.x, b.y, b.r, obstacles)) {
+        pushEnvHit(slug, b, "env:obstacle", b.x, b.y);
+        continue;
+      }
       let target: Conn | null = null;
       for (const conn of set) {
         if (conn.id === b.owner) continue;
@@ -1308,7 +1330,9 @@ setInterval(() => {
           x: b.x,
           y: b.y,
           r: b.r,
-          color: b.color,
+          // Tier color for the real dmg this hit deals, not the shooter's cosmetic conn.color —
+          // same rule dmgTint's doc comment gives, so the splash matches the ball that caused it.
+          color: dmgTint(b.dmg),
           dmg: b.dmg,
           killed,
         });
@@ -1354,7 +1378,7 @@ setInterval(() => {
           x: b.x,
           y: b.y,
           r: b.r,
-          color: b.color,
+          color: dmgTint(b.dmg),
           dmg: b.dmg,
           killed,
         });
@@ -1391,7 +1415,10 @@ setInterval(() => {
           x: b.x,
           y: b.y,
           r: b.r,
-          color: b.color,
+          // Tier color for the ball's real dmg, same as the enemy/dummy hits above — kept even in
+          // the lobby (where `dmg` below is zeroed for gameplay) so the splash still matches
+          // whatever tier color the ball was flying with.
+          color: dmgTint(b.dmg),
           dmg: isLobby ? 0 : b.dmg,
           killed,
         });
@@ -1426,7 +1453,14 @@ setInterval(() => {
         survivors.push(b); // stays in place until `until`, checked again next tick
         continue;
       }
-      if (b.x > -b.r && b.x < worldWidth + b.r && b.y > -b.r && b.y < worldHeight + b.r) survivors.push(b);
+      if (b.x > -b.r && b.x < worldWidth + b.r && b.y > -b.r && b.y < worldHeight + b.r) {
+        survivors.push(b);
+        continue;
+      }
+      // Leaving the room: same splash as an obstacle hit, clamped onto the room's edge (not the
+      // ball's actual, already-off-screen x/y) so it renders as hitting the wall instead of
+      // bursting somewhere the camera can't see.
+      pushEnvHit(slug, b, "env:wall", Math.max(0, Math.min(b.x, worldWidth)), Math.max(0, Math.min(b.y, worldHeight)));
     }
     roomBalls.set(slug, survivors);
   }
