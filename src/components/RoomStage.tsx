@@ -12,7 +12,7 @@ import { getAdminSettings, isAdminUiEnabled } from "@/lib/adminSettings";
 import { setHowToPlay } from "@/lib/howToPlay";
 import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
-import { formatMs, getTimerState, type Phase } from "@/lib/timer";
+import { formatMs, getTimerState } from "@/lib/timer";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
 import { safeCharacter, safeColor, useMyProfile } from "@/lib/useProfile";
@@ -728,15 +728,30 @@ export function RoomStage({
   // pure function of the server clock (see getTimerState), so every client watching the same room
   // sees the transition — and computes the same `cycle` number — at the same instant, without
   // needing a server broadcast for either.
-  const prevRoomPhaseRef = useRef<Phase | null>(null);
+  //
+  // Detecting the edge off the immediately-previous sample (instead of "have we handled this
+  // room's current work cycle yet") missed it for a backgrounded tab (STU-46): the 250ms tick
+  // driving `roomPhase` (useServerNow) gets throttled or fully paused by the browser while
+  // hidden, so the effect can go a whole cycle without running and, when it finally wakes back
+  // up, sees `roomPhase` already past "break" with no "work" sample in between to compare against
+  // — same client, same mount, still present the whole time, just never got to observe the exact
+  // instant. `seenWorkCycleRef` latches the cycle we were actually watching during "work" so the
+  // very next "break" we observe for that same cycle still fires, no matter how coarse the tick
+  // that catches it was; `handledCycleRef` then keeps that one shot from firing twice.
+  const seenWorkCycleRef = useRef<number | null>(null);
+  const handledCycleRef = useRef<number | null>(null);
   const [showCongrats, setShowCongrats] = useState(false);
   useEffect(() => {
-    const prev = prevRoomPhaseRef.current;
-    prevRoomPhaseRef.current = roomPhase;
-    if (prev !== "work" || roomPhase !== "break") return;
+    if (!isSharedTick || !phase || serverNow === null) return;
+    const cycle = getTimerState(serverNow, phase).cycle;
+    if (roomPhase === "work") {
+      seenWorkCycleRef.current = cycle;
+      return;
+    }
+    if (roomPhase !== "break" || seenWorkCycleRef.current !== cycle || handledCycleRef.current === cycle) return;
+    handledCycleRef.current = cycle;
     setShowCongrats(true);
-    if (isSharedTick && userId && phase && serverNow !== null) {
-      const cycle = getTimerState(serverNow, phase).cycle;
+    if (userId) {
       const dXp = xpForMinutes(phase.workMin);
       const dCoins = coinsForMinutes(phase.workMin);
       void getSupabase()
