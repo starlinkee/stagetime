@@ -64,8 +64,17 @@ const PORT = Number(process.env.PORT) || 8080;
  * occasional `join` — this is about capping abuse/bugs, not normal play. */
 const MAX_MESSAGES_PER_SEC = 40;
 /** Simultaneous WebSocket connections allowed from one IP — bounds a single-source flood of raw
- * sockets. A few is normal (multiple tabs/devices for one person). */
+ * sockets. A few is normal (multiple tabs/devices for one person, or many people behind the same
+ * NAT/office IP — see MAX_CONNECTIONS_PER_IP_UA below for the tighter per-browser bound that
+ * doesn't punish that shared-IP case). */
 const MAX_CONNECTIONS_PER_IP = 8;
+/** Simultaneous WebSocket connections allowed from one (IP, User-Agent) pair — same flood
+ * protection as MAX_CONNECTIONS_PER_IP, but scoped to a single browser install rather than a
+ * whole IP (STU-55): opening 1000 tabs from one machine hits this long before it could hit the
+ * per-IP cap on a shared/NAT'd IP where MAX_CONNECTIONS_PER_IP has to stay generous. A few tabs
+ * from the same real browser is still normal, so this stays a little above what one person would
+ * plausibly have open. */
+const MAX_CONNECTIONS_PER_IP_UA = 4;
 /** Players allowed in one room at once — bounds per-room memory and broadcast cost. Coworking
  * rooms are small groups by design; this is a safety ceiling, not a game-design number. */
 const MAX_PLAYERS_PER_ROOM = 50;
@@ -249,6 +258,8 @@ function ensureArenaEnemy(roomSlug: string) {
 }
 /** Live connection count per IP — see MAX_CONNECTIONS_PER_IP. */
 const connectionsByIp = new Map<string, number>();
+/** Live connection count per (IP, User-Agent) pair — see MAX_CONNECTIONS_PER_IP_UA. */
+const connectionsByIpUa = new Map<string, number>();
 /**
  * Scheduled removals for connections currently in their grace period (see GRACE_MS) — dropped
  * WS, but still sitting in `rooms` so other clients keep seeing them until either the timer
@@ -439,6 +450,15 @@ function clientIp(req: import("node:http").IncomingMessage): string {
   const header = req.headers["fly-client-ip"];
   if (typeof header === "string" && header) return header;
   return req.socket.remoteAddress ?? "unknown";
+}
+
+/** Raw User-Agent header, only ever used as an opaque grouping key (see MAX_CONNECTIONS_PER_IP_UA)
+ * — never parsed, never trusted as identity, just "same string means same browser install". A
+ * missing/empty header collapses every UA-less client behind one IP into a single bucket, which
+ * is the conservative direction (stricter, not more permissive). */
+function clientUa(req: import("node:http").IncomingMessage): string {
+  const header = req.headers["user-agent"];
+  return typeof header === "string" && header ? header : "unknown";
 }
 
 /** True if this connection is still under MAX_MESSAGES_PER_SEC for the current 1s window;
@@ -720,7 +740,14 @@ wss.on("connection", (ws, req) => {
     ws.close(1013, "too many connections");
     return;
   }
+  const ipUaKey = `${ip}|${clientUa(req)}`;
+  const ipUaCount = connectionsByIpUa.get(ipUaKey) ?? 0;
+  if (ipUaCount >= MAX_CONNECTIONS_PER_IP_UA) {
+    ws.close(1013, "too many connections");
+    return;
+  }
   connectionsByIp.set(ip, ipCount + 1);
+  connectionsByIpUa.set(ipUaKey, ipUaCount + 1);
 
   // See Conn.stats' doc comment — own copy, not a shared reference, so a future item/character
   // bonus can mutate this connection's stats without touching the default or any other connection.
@@ -865,6 +892,9 @@ wss.on("connection", (ws, req) => {
     const remaining = (connectionsByIp.get(ip) ?? 1) - 1;
     if (remaining <= 0) connectionsByIp.delete(ip);
     else connectionsByIp.set(ip, remaining);
+    const remainingUa = (connectionsByIpUa.get(ipUaKey) ?? 1) - 1;
+    if (remainingUa <= 0) connectionsByIpUa.delete(ipUaKey);
+    else connectionsByIpUa.set(ipUaKey, remainingUa);
   });
 });
 
