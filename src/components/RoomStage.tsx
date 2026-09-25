@@ -272,6 +272,9 @@ export type RoomZone = {
   w: number;
   h: number;
   kind?: "nav" | "action";
+  /** "NEW ITEMS"/"NEW ROOM" bounce badge under the zone (STU-50) — separate from `kind`, which
+   * drives nav-vs-action entry behavior, not the callout. */
+  badge?: "shop" | "arena";
   /** Pokój pomodoro — długości faz (nagroda/opis pod kwadratem). STU-58: w lobby ten kwadrat jest
    * zawsze "drzwiami" (waiting instance) — zamknięte 2s po starcie, patrz `doors` w RoomStage. */
   phase?: { workMin: number; breakMin: number };
@@ -1767,11 +1770,11 @@ export function RoomStage({
         // it (no "seen it already" tracking) — just draws attention to the Shop/Arena zones.
         // Bounce is `t` (the draw loop's own rAF timestamp, ms) fed through a sine, same idea as
         // the E-hold progress bar below reusing `t` for its own animation.
-        if (z.kind === "shop" || z.kind === "arena") {
+        if (z.badge === "shop" || z.badge === "arena") {
           const bounce = Math.sin(t / 220) * 3;
           ctx.fillStyle = "#facc15";
           ctx.font = "800 13px sans-serif";
-          ctx.fillText(z.kind === "shop" ? "✨ NEW ITEMS" : "✨ NEW ROOM", z.x + z.w / 2, z.y + z.h + 10 + bounce);
+          ctx.fillText(z.badge === "shop" ? "✨ NEW ITEMS" : "✨ NEW ROOM", z.x + z.w / 2, z.y + z.h + 10 + bounce);
         }
         if (active && eHoldStart !== null) {
           const p = Math.min(1, (t - eHoldStart) / holdMsFor(z));

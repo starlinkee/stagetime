@@ -52,6 +52,7 @@ const shopZones: RoomZone[] = shopRooms.map((r) => ({
   color: r.color,
   requiresAuth: true,
   noReward: true,
+  badge: "shop",
 }));
 
 // Arena sits right next to Shop, same row — a quick test room for a room-owned enemy everyone can
@@ -65,6 +66,7 @@ const arenaZones: RoomZone[] = arenaRooms.map((r) => ({
   w: 220,
   h: 140,
   color: r.color,
+  badge: "arena",
 }));
 
 const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones, ...shopZones, ...arenaZones];
