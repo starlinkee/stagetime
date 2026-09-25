@@ -13,8 +13,8 @@
  * comment for why this only exists in the lobby's outer margin.
  */
 
-import type { Rect } from "./rooms";
-import { ARENA_ROOM_SLUG, HITBOX_H, HITBOX_OFFSET_X, HITBOX_OFFSET_Y, HITBOX_W, worldH, worldW } from "./constants";
+import { isArenaSlug, type Rect } from "./rooms";
+import { HITBOX_H, HITBOX_OFFSET_X, HITBOX_OFFSET_Y, HITBOX_W, worldH, worldW } from "./constants";
 
 export type Quadrant = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -167,13 +167,14 @@ function buildArenaObstacles(): Rect[] {
 
 export const ARENA_OBSTACLES: ReadonlyArray<Rect> = buildArenaObstacles();
 
-/** Obstacles only exist in the lobby and the arena (see LOBBY_OBSTACLES/ARENA_OBSTACLES' doc
- * comments) — every other room passes an empty array through the same collision helpers below, so
- * callers don't need a second, obstacle-free code path. `roomSlug` is only consulted when
- * `isLobby` is false — a lobby connection has no room slug of its own that matters here. */
+/** Obstacles only exist in the lobby/lobby2 and the arena/arena-2 (see LOBBY_OBSTACLES/
+ * ARENA_OBSTACLES' doc comments) — every other room passes an empty array through the same
+ * collision helpers below, so callers don't need a second, obstacle-free code path. STU-56: lobby2
+ * reuses the exact same furniture layout as the main lobby (no new art) — only its own arena
+ * mirror needs a `roomSlug` branch, via `isArenaSlug`. */
 export function obstaclesFor(isLobby: boolean, roomSlug?: string): ReadonlyArray<Rect> {
   if (isLobby) return LOBBY_OBSTACLES;
-  if (roomSlug === ARENA_ROOM_SLUG) return ARENA_OBSTACLES;
+  if (roomSlug !== undefined && isArenaSlug(roomSlug)) return ARENA_OBSTACLES;
   return [];
 }
 

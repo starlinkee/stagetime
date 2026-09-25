@@ -4,9 +4,8 @@ import { WebSocket, WebSocketServer } from "ws";
 import { verifyEntryToken } from "../shared/entryToken";
 import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "../shared/obstacles";
 import { clampPos } from "../shared/physics";
-import { LOBBY_ZONE_RECTS, POMODORO_TYPES } from "../shared/rooms";
+import { isArenaSlug, isLobbySlug, LOBBY_ZONE_RECTS, POMODORO_TYPES } from "../shared/rooms";
 import {
-  ARENA_ROOM_SLUG,
   BALL_SPEED,
   BROADCAST_MS,
   CHARGE_MS,
@@ -380,7 +379,7 @@ function spawnEnemy(): Enemy {
  * a live-or-dying enemy (leaveRoom below deletes the entry outright once the room empties, so the
  * next join here always starts fresh). */
 function ensureArenaEnemy(roomSlug: string) {
-  if (roomSlug !== ARENA_ROOM_SLUG) return;
+  if (!isArenaSlug(roomSlug)) return;
   if (roomEnemies.has(roomSlug)) return;
   roomEnemies.set(roomSlug, spawnEnemy());
 }
@@ -407,7 +406,7 @@ function spawnDummy(): Dummy {
 
 /** Same "always full HP the moment the room stops being empty" lifecycle as ensureArenaEnemy. */
 function ensureArenaDummy(roomSlug: string) {
-  if (roomSlug !== ARENA_ROOM_SLUG) return;
+  if (!isArenaSlug(roomSlug)) return;
   if (roomDummies.has(roomSlug)) return;
   roomDummies.set(roomSlug, spawnDummy());
 }
@@ -844,7 +843,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
     return;
   }
 
-  const isLobbyTarget = roomSlug === "lobby";
+  const isLobbyTarget = isLobbySlug(roomSlug);
   // Fresh join into the lobby, naming the room just left (see `fromRoomSlug`'s doc comment in
   // types.ts) — resolved to that room's own lobby zone, same one RoomStage.tsx's `fromSlug`
   // resolves client-side, so both sides land in the same spot instead of the server improvising
@@ -874,7 +873,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   leaveRoom(conn);
   conn.id = newId;
   conn.roomSlug = roomSlug;
-  conn.isLobby = conn.roomSlug === "lobby";
+  conn.isLobby = isLobbySlug(conn.roomSlug);
   conn.userId = verified.userId;
   conn.nick = typeof msg.nick === "string" ? msg.nick.slice(0, 40) : null;
   conn.color = typeof msg.color === "string" ? msg.color : "#ffffff";
@@ -1297,7 +1296,7 @@ setInterval(() => {
   // chases this tick's positions, before the ball-physics pass below so a swing thrown just now
   // resolves in the same tick, exactly like a player's own slash would.
   for (const [slug, set] of rooms) {
-    if (slug === ARENA_ROOM_SLUG) {
+    if (isArenaSlug(slug)) {
       tickEnemy(slug, set, now, dt);
       tickDummy(slug, now);
     }
@@ -1309,7 +1308,7 @@ setInterval(() => {
   for (const [slug, balls] of roomBalls) {
     const set = rooms.get(slug);
     if (!set || set.size === 0) continue; // leaveRoom() already cleans these up when it happens
-    const isLobby = slug === "lobby";
+    const isLobby = isLobbySlug(slug);
     const worldWidth = worldW(isLobby);
     const worldHeight = worldH(isLobby);
     const obstacles = obstaclesFor(isLobby, slug);
@@ -1567,7 +1566,7 @@ setInterval(() => {
       ...(instance && cfg
         ? { pomodoro: { state: instance.state, startedAt: instance.startedAt, workMin: cfg.workMin, breakMin: cfg.breakMin } }
         : {}),
-      ...(slug === "lobby" ? { doors: doorStates } : {}),
+      ...(isLobbySlug(slug) ? { doors: doorStates } : {}),
     };
     for (const conn of set) send(conn.ws, msg);
   }

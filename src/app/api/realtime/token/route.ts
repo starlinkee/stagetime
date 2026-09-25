@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getRoom } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { mintEntryToken } from "@realtime-shared/entryToken";
+import { isLobbySlug } from "@realtime-shared/rooms";
 
 /**
  * Mints the short-lived signed token realtime-server requires on WS `join` (see
@@ -14,9 +15,9 @@ import { mintEntryToken } from "@realtime-shared/entryToken";
 export async function POST(request: Request) {
   const body: unknown = await request.json().catch(() => null);
   const slug = body && typeof body === "object" && "roomSlug" in body ? (body as { roomSlug: unknown }).roomSlug : null;
-  // "lobby" isn't in ROOMS (it's the implicit default area, see src/lib/rooms.ts) but is a valid
-  // place to move around in, so it has to be accepted here too.
-  const validSlug = typeof slug === "string" && (slug === "lobby" || Boolean(getRoom(slug)));
+  // "lobby"/"lobby2" aren't in ROOMS (they're locations, not rooms — see src/lib/rooms.ts) but are
+  // valid places to move around in, so they have to be accepted here too.
+  const validSlug = typeof slug === "string" && (isLobbySlug(slug) || Boolean(getRoom(slug)));
   if (!validSlug) {
     return NextResponse.json({ error: "unknown room" }, { status: 400 });
   }

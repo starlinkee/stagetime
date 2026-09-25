@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
 import { ROOMS } from "@/lib/rooms";
 import { useRoomOccupancy } from "@/lib/useRoomOccupancy";
-import { SCREEN_W } from "@realtime-shared/constants";
+import { SCREEN_W, worldH, worldW } from "@realtime-shared/constants";
 
 /**
  * Kwadraty pokoi w lobby: ułożone w kółko wokół wspólnego środka, zamiast kolumny pomodoro +
@@ -87,9 +87,30 @@ const arenaZones: RoomZone[] = arenaRooms.map((r) => ({
   badge: "arena",
 }));
 
-const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones, ...shopZones, ...arenaZones];
+// STU-56: portal to lobby2, a completely separate location — deliberately placed at a fixed
+// corner of the world instead of via ringPos(), so it reads as "a different place" rather than
+// another room door on the same ring. `noReward: true` (same flag Shop uses) suppresses the
+// XP/coins reward text a normal room zone would otherwise show.
+const LOBBY2_PORTAL_W = 220;
+const LOBBY2_PORTAL_H = 140;
+const lobby2PortalZone: RoomZone = {
+  slug: "lobby2",
+  name: "Lobby 2",
+  x: worldW(true) - LOBBY2_PORTAL_W - 80,
+  y: worldH(true) - LOBBY2_PORTAL_H - 80,
+  w: LOBBY2_PORTAL_W,
+  h: LOBBY2_PORTAL_H,
+  color: "#0e7490",
+  noReward: true,
+};
 
-const ROOM_SLUGS = ROOMS.map((r) => r.slug);
+const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones, ...shopZones, ...arenaZones, lobby2PortalZone];
+
+// STU-56: derived from LOBBY_ZONES (not the full ROOMS roster) so this only ever subscribes to
+// occupancy for zones actually shown on this page — ROOMS now also lists lobby2's own rooms
+// (arena-2/timer-2), which have no zone here. Including the portal's own "lobby2" slug shows a
+// live occupant count for lobby2 itself, same as any other zone.
+const ROOM_SLUGS = LOBBY_ZONES.map((z) => z.slug);
 
 export default function Home() {
   const occupancy = useRoomOccupancy(ROOM_SLUGS);

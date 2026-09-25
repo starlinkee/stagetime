@@ -8,6 +8,11 @@ export interface PomodoroRoomConfig {
   breakMin: number;
   /** Kolor kwadratu pokoju w lobby. */
   color?: string;
+  /** STU-56: which lobby this room's exit zone leads back to (a slug in
+   * realtime-server/shared/rooms.ts's LOBBY_SLUGS) — defaults to `"lobby"` when omitted. Used by
+   * /rooms/[slug]/page.tsx to build the room's `exitZone` from EXIT_ZONE, so e.g. arena-2/timer-2
+   * (lobby2's own rooms) exit back into lobby2 instead of the main lobby. */
+  exitTo?: string;
 }
 
 /** Pokój z prywatnym stoperem każdej osoby (bez wspólnych cykli pracy/przerwy). */
@@ -16,6 +21,7 @@ export interface StopwatchRoomConfig {
   name: string;
   kind: "stopwatch";
   color?: string;
+  exitTo?: string;
 }
 
 /** Sklep: nie zarabia się tu XP/coinów, można je za to wydać (patrz src/components/ShopRoom.tsx). */
@@ -24,6 +30,7 @@ export interface ShopRoomConfig {
   name: string;
   kind: "shop";
   color?: string;
+  exitTo?: string;
 }
 
 /** Arena: no timer/XP here either (like Shop) — one room-owned enemy everyone can fight, spawned
@@ -34,6 +41,7 @@ export interface ArenaRoomConfig {
   name: string;
   kind: "arena";
   color?: string;
+  exitTo?: string;
 }
 
 export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig | ShopRoomConfig | ArenaRoomConfig;

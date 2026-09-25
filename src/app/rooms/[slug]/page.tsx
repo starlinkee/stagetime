@@ -19,7 +19,11 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
 
   // Kwadrat wyjścia niesie fazę tego pokoju, żeby RoomStage wiedział, kiedy ostrzec przed
   // wyjściem w trakcie pracy (utrata XP z sesji) — patrz obsługa "lobby" jako wyjścia w RoomStage.
-  const exitZone = room.kind === "pomodoro" ? { ...EXIT_ZONE, phase: { workMin: room.workMin, breakMin: room.breakMin } } : EXIT_ZONE;
+  // STU-56: `slug` na kwadracie wyjścia to `room.exitTo` (domyślnie "lobby") zamiast zawsze
+  // literału EXIT_ZONE.slug — to on decyduje, do której lokacji trzymanie E tu wróci (patrz
+  // LOBBY_ROUTES w RoomStage.tsx).
+  const exitZoneBase = { ...EXIT_ZONE, slug: room.exitTo ?? EXIT_ZONE.slug };
+  const exitZone = room.kind === "pomodoro" ? { ...exitZoneBase, phase: { workMin: room.workMin, breakMin: room.breakMin } } : exitZoneBase;
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
@@ -55,11 +59,11 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
         </Suspense>
       ) : room.kind === "arena" ? (
         <Suspense fallback={null}>
-          <RoomStage roomSlug={room.slug} zones={[exitZone]} spawnZoneSlug={EXIT_ZONE.slug} />
+          <RoomStage roomSlug={room.slug} zones={[exitZone]} spawnZoneSlug={exitZone.slug} />
         </Suspense>
       ) : (
         <Suspense fallback={null}>
-          <PomodoroRoom room={room} zones={[exitZone, START_SESSION_ZONE]} spawnZoneSlug={EXIT_ZONE.slug} />
+          <PomodoroRoom room={room} zones={[exitZone, START_SESSION_ZONE]} spawnZoneSlug={exitZone.slug} />
         </Suspense>
       )}
     </main>

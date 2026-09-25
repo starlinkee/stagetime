@@ -76,9 +76,16 @@ import {
 } from "@realtime-shared/constants";
 import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "@realtime-shared/obstacles";
 import { clampPos } from "@realtime-shared/physics";
+import { isArenaSlug, isLobbySlug } from "@realtime-shared/rooms";
+
+/** STU-56: lobby slugs that have their own top-level Next.js page instead of going through the
+ * generic `/rooms/<slug>` + entry-ticket flow — same role the single `"lobby"` -> `router.push("/")`
+ * special case played before lobby2 existed. Every slug in `@realtime-shared/rooms`'s LOBBY_SLUGS
+ * must have an entry here. */
+const LOBBY_ROUTES: Record<string, string> = { lobby: "/", lobby2: "/lobby2" };
 
 /** STU-58: reserved zone slug for a pomodoro room's center "start session" button — special-cased
- * in the E-hold handler below the same way `zone.slug === "lobby"` already is for the exit zone. */
+ * in the E-hold handler below the same way `isLobbySlug(zone.slug)` already is for the exit zone. */
 const START_SESSION_ZONE_SLUG = "start-session";
 
 /** Pisanie w polu/textarea/select nie może być przechwycone przez sterowanie postacią ani skrótem otwierającym czat. */
@@ -395,7 +402,7 @@ async function fetchSpawn(userId: string, room: string): Promise<Pos | null> {
     return null;
   }
   if (!data || !Number.isFinite(data.x) || !Number.isFinite(data.y)) return null;
-  return { ...clampPos(data.x, data.y, room === "lobby"), d: asDir(data.d) };
+  return { ...clampPos(data.x, data.y, isLobbySlug(room)), d: asDir(data.d) };
 }
 
 async function savePosition(userId: string, room: string, p: Pos) {
@@ -883,7 +890,7 @@ export function RoomStage({
   const router = useRouter();
   // Tylko lobby dostaje powiększoną (4× powierzchni) mapę z kamerą — pojedynczy pokój ma mapę
   // wielkości ekranu, jak dawniej (patrz worldW/worldH powyżej).
-  const isLobby = roomSlug === "lobby";
+  const isLobby = isLobbySlug(roomSlug);
   const WORLD_W = worldW(isLobby);
   const WORLD_H = worldH(isLobby);
   const CONTENT_OX = (WORLD_W - SCREEN_W) / 2;
@@ -1891,7 +1898,7 @@ export function RoomStage({
         // gdy trwa faza work i wejście jest zablokowane); w innym wypadku prawdziwa liczba osób
         // w pokoju, ale tylko gdy ktoś tam jest.
         const occupants = occupancyRef.current?.[z.slug];
-        const isExitHere = roomSlug !== "lobby" && z.slug === "lobby";
+        const isExitHere = !isLobbySlug(roomSlug) && isLobbySlug(z.slug);
         // Pokój zamknięty (drzwi właśnie się zamknęły): kłódka, bez nagrody i tekstów wejścia (bo i
         // tak nie można teraz wejść), ale nadal liczba osób w środku (STU-39) — patrz warunek
         // niżej, `isExitHere || !doorClosed`, który przepuszcza occupants-branch mimo doorClosed.
@@ -2293,7 +2300,7 @@ export function RoomStage({
             eHoldStart = null;
           }
         } else if (!entered) {
-          const isExit = zone.slug === "lobby";
+          const isExit = !isLobbySlug(roomSlug) && isLobbySlug(zone.slug);
           const zonePhase = zone.phase ? (pomodoroSessionLocal?.state ?? null) : null;
           if (!isExit && zone.requiresAuth && !userIdRef.current) {
             // Strefa zamknięta bez konta (np. Shop) — nie ma sensu nawet pytać serwera o bilet.
@@ -2320,8 +2327,15 @@ export function RoomStage({
             // ma wiele stref wejścia/wyjścia i inaczej nie wiedziałoby, w której z nich dokładnie
             // wylądować. Zapisujemy tuż przed nawigacją, docelowa strona odczytuje to raz i czyści.
             window.sessionStorage.setItem(SPAWN_FROM_KEY, roomSlug);
-            if (isExit) {
-              router.push("/");
+            // STU-56: destination is decided purely by LOBBY_ROUTES[zone.slug], independent of
+            // `isExit` (which still only drives the reward-text/label/XP-forfeit-warning logic
+            // above) — this is what lets the lobby's own portal zone (slug "lobby2", fired from
+            // inside a lobby, so isExit is false there) and a room's own exit zone (slug "lobby2",
+            // fired from inside arena-2/timer-2, so isExit is true there) both resolve to the same
+            // correct "/lobby2" destination without a second special case.
+            const lobbyPath = LOBBY_ROUTES[zone.slug];
+            if (lobbyPath) {
+              router.push(lobbyPath);
             } else {
               // Wejście do pokoju wymaga biletu wydanego tylko za to przytrzymanie E — samo
               // wklejenie /rooms/<slug> w pasku adresu nic nie da (patrz proxy.ts). Token sesji
@@ -3225,7 +3239,7 @@ export function RoomStage({
       >
         <DungeonBackground width={WORLD_W} height={WORLD_H} />
         {isLobby && <LobbyDecor width={WORLD_W} height={WORLD_H} />}
-        {roomSlug === "arena" && <ArenaDecor />}
+        {isArenaSlug(roomSlug) && <ArenaDecor />}
         {Object.entries(others).map(([k, o]) => {
           // respawnAt > 0: this player just died — o.x/o.y/o.d is their corpse, frozen where it
           // dropped, and o.gx/o.gy/o.gd is the ghost they're still steering (see

@@ -29,6 +29,27 @@ interface RoomMeta {
 }
 
 /**
+ * STU-56: every location that behaves like a lobby (2x world size, no combat damage, safe
+ * respawn/reconnect home) — was a single hardcoded `"lobby"` literal scattered across server.ts
+ * and RoomStage.tsx until lobby2 needed the same behavior. Both files import `isLobbySlug` instead
+ * of re-hardcoding the string, so a third location only needs an entry here.
+ */
+export const LOBBY_SLUGS: ReadonlySet<string> = new Set(["lobby", "lobby2"]);
+export function isLobbySlug(slug: string): boolean {
+  return LOBBY_SLUGS.has(slug);
+}
+
+/**
+ * STU-56: every room with a room-owned enemy+dummy (see ARENA_ROOM_SLUG's doc comment in
+ * constants.ts) — generalized the same way as LOBBY_SLUGS above so arena-2 gets the same
+ * enemy/dummy/obstacle treatment as arena without a second hardcoded compare.
+ */
+export const ARENA_SLUGS: ReadonlySet<string> = new Set(["arena", "arena-2"]);
+export function isArenaSlug(slug: string): boolean {
+  return ARENA_SLUGS.has(slug);
+}
+
+/**
  * Same roster and order as ROOMS in src/lib/rooms.ts (colors/names omitted — irrelevant here).
  * STU-58: one door per pomodoro type, not N phase-offset variants — each type's actual work/break
  * cycle is now decided per on-demand instance (see PomodoroInstance in server.ts), not by a global
@@ -41,6 +62,16 @@ const ROOM_META: RoomMeta[] = [
   { slug: "timer", kind: "stopwatch" },
   { slug: "shop", kind: "shop" },
   { slug: "arena", kind: "arena" },
+];
+
+/**
+ * STU-56: lobby2's own tiny roster (mirrors of existing room kinds, no new gameplay) — kept
+ * separate from ROOM_META/RING_ANGLES_DEG above since it's a second, independent ring on its own
+ * page (src/app/lobby2/page.tsx), not a 7th/8th slot on the main lobby's ring.
+ */
+const ROOM_META_LOBBY2: RoomMeta[] = [
+  { slug: "arena-2", kind: "arena" },
+  { slug: "timer-2", kind: "stopwatch" },
 ];
 
 export interface Rect {
@@ -71,14 +102,23 @@ const RING_ANGLES_DEG: Record<string, number> = {
   timer: 210,
 };
 
+// STU-56: lobby2's own 2-slot ring — same RING_CENTER/RADIUS numbers as the main lobby's ring
+// above (no visual collision: this ring renders on lobby2's own separate page/world), just its own
+// angle-per-slug map since it has its own room count. Must match RING_ANGLES_DEG_LOBBY2 in
+// src/app/lobby2/page.tsx exactly, same as RING_ANGLES_DEG above does for src/app/page.tsx.
+const RING_ANGLES_DEG_LOBBY2: Record<string, number> = {
+  "arena-2": -90,
+  "timer-2": 90,
+};
+
 // Lobby world is 2x the screen in each dimension (worldW/worldH(true) in constants.ts) — this is
 // the same CONTENT_OX/CONTENT_OY RoomStage.tsx's toWorldZone() adds to LOBBY_ZONES before using
 // them, so the rects below land on the same world position the client actually renders.
 const CONTENT_OX = (SCREEN_W * 2 - SCREEN_W) / 2;
 const CONTENT_OY = (SCREEN_H * 2 - SCREEN_H) / 2;
 
-function ringRect(slug: string, w: number, h: number): Rect {
-  const rad = (RING_ANGLES_DEG[slug] * Math.PI) / 180;
+function ringRect(slug: string, w: number, h: number, angles: Record<string, number>): Rect {
+  const rad = (angles[slug] * Math.PI) / 180;
   return {
     x: RING_CENTER_X + RING_RADIUS * Math.cos(rad) - w / 2 + CONTENT_OX,
     y: RING_CENTER_Y + RING_RADIUS * Math.sin(rad) - h / 2 + CONTENT_OY,
@@ -91,7 +131,11 @@ function buildLobbyZoneRects(): ReadonlyMap<string, Rect> {
   const rects = new Map<string, Rect>();
   for (const r of ROOM_META) {
     const [w, h] = r.kind === "pomodoro" ? [POMODORO_ZONE_W, POMODORO_ZONE_H] : [WIDE_ZONE_W, WIDE_ZONE_H];
-    rects.set(r.slug, ringRect(r.slug, w, h));
+    rects.set(r.slug, ringRect(r.slug, w, h, RING_ANGLES_DEG));
+  }
+  // STU-56: lobby2's own rooms, same flat map (slugs are globally unique across both lobbies).
+  for (const r of ROOM_META_LOBBY2) {
+    rects.set(r.slug, ringRect(r.slug, WIDE_ZONE_W, WIDE_ZONE_H, RING_ANGLES_DEG_LOBBY2));
   }
   return rects;
 }
