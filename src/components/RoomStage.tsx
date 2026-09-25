@@ -2993,7 +2993,7 @@ export function RoomStage({
         className="absolute left-0 top-0 origin-top-left outline outline-1 outline-zinc-400/30"
         style={{ width: WORLD_W, height: WORLD_H }}
       >
-        {isLobby && <DungeonBackground width={WORLD_W} height={WORLD_H} />}
+        <DungeonBackground width={WORLD_W} height={WORLD_H} />
         {isLobby && <LobbyDecor width={WORLD_W} height={WORLD_H} />}
         {Object.entries(others).map(([k, o]) => {
           // respawnAt > 0: this player just died — o.x/o.y/o.d is their corpse, frozen where it

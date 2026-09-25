@@ -1,10 +1,11 @@
 import { useId } from "react";
 
 /**
- * Purely decorative ground for the lobby — a simple, seamlessly repeating pixel-art tile of damp
- * dungeon brick, rendered once as an SVG `<pattern>` (cheap regardless of world size). No game
- * state, collisions or logic live here (see /client rules in AGENTS.md); it's just a backdrop
- * behind the room zones drawn on RoomStage's canvas.
+ * Purely decorative ground for every room (STU-52: work rooms/arena had no floor tile at all,
+ * just a bare background) — a simple, seamlessly repeating pixel-art tile of damp dungeon brick,
+ * rendered once as an SVG `<pattern>` (cheap regardless of world size). No game state, collisions
+ * or logic live here (see /client rules in AGENTS.md); it's just a backdrop behind the room zones
+ * drawn on RoomStage's canvas.
  */
 
 /** 8×8 running-bond brick tile: "." mortar, B/H/D brick base/highlight/shadow, W a wet glint. */
