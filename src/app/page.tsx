@@ -6,65 +6,83 @@ import { useRoomOccupancy } from "@/lib/useRoomOccupancy";
 import { SCREEN_W } from "@realtime-shared/constants";
 
 /**
- * Kwadraty pokoi w lobby: jeden wiersz na typ pomodoro (25+5, 20+5, 50+10) — od STU-58 to jeden
- * kwadrat ("drzwi") na typ, nie N kwadratów-wariantów, plus osobny kwadrat pokoju-stopera pod spodem.
+ * Kwadraty pokoi w lobby: ułożone w kółko wokół wspólnego środka, zamiast kolumny pomodoro +
+ * osobnego rzędu timer/shop/arena. Środek i promień muszą być identyczne w
+ * realtime-server/shared/rooms.ts's buildLobbyZoneRects — patrz komentarz tam.
  */
-const ZONE_W = 180;
-const ZONE_H = 100;
-const ROW_GAP = 70;
-const gridStartY = 220;
+const RING_CENTER_X = SCREEN_W / 2;
+const RING_CENTER_Y = 550;
+const RING_RADIUS = 320;
+
+/** Rozmiar kwadratu pomodoro vs. pozostałych (timer/shop/arena) — jak w starym układzie. */
+const POMODORO_ZONE_W = 180;
+const POMODORO_ZONE_H = 100;
+const WIDE_ZONE_W = 220;
+const WIDE_ZONE_H = 140;
+
+/** Kąt (stopnie, 0° = w prawo, rosnąco zgodnie z ruchem wskazówek zegara) każdego pokoju na
+ * okręgu — sześć pokoi rozstawionych równo co 60°, zaczynając od góry. */
+const RING_ANGLES_DEG: Record<string, number> = {
+  "25-5": -90,
+  "20-5": -30,
+  "50-10": 30,
+  arena: 90,
+  shop: 150,
+  timer: 210,
+};
+
+function ringPos(slug: string, w: number, h: number) {
+  const rad = (RING_ANGLES_DEG[slug] * Math.PI) / 180;
+  return {
+    x: RING_CENTER_X + RING_RADIUS * Math.cos(rad) - w / 2,
+    y: RING_CENTER_Y + RING_RADIUS * Math.sin(rad) - h / 2,
+  };
+}
 
 const pomodoroRooms = ROOMS.filter((r) => r.kind === "pomodoro");
 const stopwatchRooms = ROOMS.filter((r) => r.kind === "stopwatch");
 const shopRooms = ROOMS.filter((r) => r.kind === "shop");
 const arenaRooms = ROOMS.filter((r) => r.kind === "arena");
 
-const pomodoroZones: RoomZone[] = pomodoroRooms.map((r, row) => ({
+const pomodoroZones: RoomZone[] = pomodoroRooms.map((r) => ({
   slug: r.slug,
-  name: `${r.workMin}+${r.breakMin}`,
-  x: (SCREEN_W - ZONE_W) / 2,
-  y: gridStartY + row * (ZONE_H + ROW_GAP),
-  w: ZONE_W,
-  h: ZONE_H,
+  name: r.name,
+  ...ringPos(r.slug, POMODORO_ZONE_W, POMODORO_ZONE_H),
+  w: POMODORO_ZONE_W,
+  h: POMODORO_ZONE_H,
   color: r.color,
   phase: { workMin: r.workMin, breakMin: r.breakMin },
 }));
 
-const TIMER_ZONE_Y = gridStartY + pomodoroRooms.length * (ZONE_H + ROW_GAP) + 10;
 const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
   slug: r.slug,
   name: "Timer",
-  x: SCREEN_W / 2 - 110 - 150,
-  y: TIMER_ZONE_Y,
-  w: 220,
-  h: 140,
+  ...ringPos(r.slug, WIDE_ZONE_W, WIDE_ZONE_H),
+  w: WIDE_ZONE_W,
+  h: WIDE_ZONE_H,
   color: r.color,
 }));
-// Sklep stoi tuż obok Timer Room, żeby oba pokoje-narzędzia (bez wspólnych cykli) siedziały razem
-// w jednym rzędzie, osobno od kratki pomodoro powyżej.
 const shopZones: RoomZone[] = shopRooms.map((r) => ({
   slug: r.slug,
   name: "Shop",
-  x: SCREEN_W / 2 + 150 - 110,
-  y: TIMER_ZONE_Y,
-  w: 220,
-  h: 140,
+  ...ringPos(r.slug, WIDE_ZONE_W, WIDE_ZONE_H),
+  w: WIDE_ZONE_W,
+  h: WIDE_ZONE_H,
   color: r.color,
   requiresAuth: true,
   noReward: true,
   badge: "shop",
 }));
 
-// Arena sits right next to Shop, same row — a quick test room for a room-owned enemy everyone can
-// fight (see ARENA_ROOM_SLUG in realtime-server/shared/constants.ts). Must match the "arena"
-// branch in realtime-server/shared/rooms.ts's buildLobbyZoneRects exactly.
+// Arena — a quick test room for a room-owned enemy everyone can fight (see ARENA_ROOM_SLUG in
+// realtime-server/shared/constants.ts). Must match the "arena" branch in
+// realtime-server/shared/rooms.ts's buildLobbyZoneRects exactly.
 const arenaZones: RoomZone[] = arenaRooms.map((r) => ({
   slug: r.slug,
   name: "Arena",
-  x: SCREEN_W / 2 + 150 - 110 + 270,
-  y: TIMER_ZONE_Y,
-  w: 220,
-  h: 140,
+  ...ringPos(r.slug, WIDE_ZONE_W, WIDE_ZONE_H),
+  w: WIDE_ZONE_W,
+  h: WIDE_ZONE_H,
   color: r.color,
   badge: "arena",
 }));

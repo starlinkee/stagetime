@@ -115,10 +115,15 @@ się dwa razy. Dwie znane przyczyny:
   `realtime-server/` zawsze idzie bezpośrednio na `studyquest`, nie ma tam integracji git ani
   kolizji ID. Fly **nie ma** dziś osobnego env preview/staging — jeden `fly.toml`, jedna appka.
 
-### Branch policy (od 2026-09-23): tylko `main` i `dev`, żadnych branchy feature'owych
-Pracujemy wyłącznie na dwóch branchach — `main` (prod) i `dev` (preview, patrz sekcja Deploy
-wyżej). Nie twórz nowych branchy (`feature/...`, `fix/...` itd.) na potrzeby pojedynczej zmiany —
+### Branch policy (od 2026-09-25): `main`, `dev`, i krótkotrwałe branche zadaniowe z Linear
+Domyślnie pracujemy na dwóch branchach — `main` (prod) i `dev` (preview, patrz sekcja Deploy
+wyżej). Dla pojedynczej, ręcznej zmiany nie twórz nowego brancha (`feature/...`, `fix/...` itd.) —
 commituj bezpośrednio na `dev` (albo na `main`, jeśli zmiana ma od razu iść na prod).
+
+Wyjątek: przy automatycznym przetwarzaniu zadań z Linear (np. agent pracujący w pętli po backlogu)
+dopuszczalny jest krótkotrwały branch per zadanie, utworzony z `dev`, zmergowany z powrotem do
+`dev` zaraz po ukończeniu zadania i usunięty po mergu — nie zostaje jako trwały branch
+feature'owy, i nie trafia sam z siebie na `main`.
 
 Do tego są dwa skrypty w `scripts/` (`git-push-target.sh` to wspólna logika, `git-push-preview.sh`
 i `git-push-prod.sh` to cienkie wrappery), zarejestrowane jako aliasy gita w tym repo (`.git/config`,
@@ -153,6 +158,8 @@ Wiadomość commita jest wymagana tylko wtedy, gdy jest faktycznie coś do zacom
 4. Jeśli ktoś poprosi o zmiany w HP albo o dodanie ekonomii/AI przeciwników, nie proponuj przy tej
    okazji migracji na Colyseus — patrz "Decyzja (2026-09-23)" wyżej o tym, kiedy to faktycznie
    byłoby zasadne.
-5. Nie twórz nowych branchy — patrz "Branch policy" wyżej. Praca zawsze na `main` albo `dev`;
-   do przełączania/commitowania/pushowania używaj `git push-preview` / `git push-prod`, nie
-   ręcznego `git checkout -b ...`.
+5. Dla ręcznej, pojedynczej zmiany nie twórz nowego brancha — patrz "Branch policy" wyżej. Praca
+   zawsze na `main` albo `dev`; do przełączania/commitowania/pushowania używaj `git push-preview` /
+   `git push-prod`, nie ręcznego `git checkout -b ...`. Wyjątek: automatyczne przetwarzanie zadań
+   z Linear może użyć krótkotrwałego brancha per zadanie utworzonego z `dev`, zmergowanego z
+   powrotem do `dev` i usuniętego zaraz po zakończeniu tego zadania.

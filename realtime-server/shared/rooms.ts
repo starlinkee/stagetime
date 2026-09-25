@@ -5,9 +5,9 @@
  * way to learn which room a fresh connection just came from).
  *
  * Every slug and every layout constant below must match src/lib/rooms.ts (ROOMS / EXIT_ZONE) and
- * the grid built in src/app/page.tsx (ZONE_W/H, COL_GAP, ROW_GAP, gridStartY, TIMER_ZONE_Y) —
+ * the ring built in src/app/page.tsx (RING_CENTER_X/Y, RING_RADIUS, RING_ANGLES_DEG, zone sizes) —
  * this is a second copy of that layout, kept here only because this server is a separate deploy
- * that can't import Next.js code. If you change the lobby grid or the room roster on the Next.js
+ * that can't import Next.js code. If you change the lobby ring or the room roster on the Next.js
  * side, update this file to match, or exit-to-lobby spawn silently falls out of sync again.
  *
  * That page.tsx grid is defined in "start screen" coordinates (0..SCREEN_W/H) — RoomStage.tsx
@@ -50,12 +50,26 @@ export interface Rect {
   h: number;
 }
 
-// Grid constants — must match src/app/page.tsx exactly.
-const ZONE_W = 180;
-const ZONE_H = 100;
-const COL_GAP = 50;
-const ROW_GAP = 70;
-const GRID_START_Y = 220;
+// Ring constants — must match RING_CENTER_X/Y, RING_RADIUS and the zone sizes in src/app/page.tsx
+// exactly.
+const RING_CENTER_X = SCREEN_W / 2;
+const RING_CENTER_Y = 550;
+const RING_RADIUS = 320;
+const POMODORO_ZONE_W = 180;
+const POMODORO_ZONE_H = 100;
+const WIDE_ZONE_W = 220;
+const WIDE_ZONE_H = 140;
+
+// Same angle-per-slug map as RING_ANGLES_DEG in src/app/page.tsx — six rooms spaced 60° apart
+// around the ring, starting at the top.
+const RING_ANGLES_DEG: Record<string, number> = {
+  "25-5": -90,
+  "20-5": -30,
+  "50-10": 30,
+  arena: 90,
+  shop: 150,
+  timer: 210,
+};
 
 // Lobby world is 2x the screen in each dimension (worldW/worldH(true) in constants.ts) — this is
 // the same CONTENT_OX/CONTENT_OY RoomStage.tsx's toWorldZone() adds to LOBBY_ZONES before using
@@ -63,42 +77,22 @@ const GRID_START_Y = 220;
 const CONTENT_OX = (SCREEN_W * 2 - SCREEN_W) / 2;
 const CONTENT_OY = (SCREEN_H * 2 - SCREEN_H) / 2;
 
+function ringRect(slug: string, w: number, h: number): Rect {
+  const rad = (RING_ANGLES_DEG[slug] * Math.PI) / 180;
+  return {
+    x: RING_CENTER_X + RING_RADIUS * Math.cos(rad) - w / 2 + CONTENT_OX,
+    y: RING_CENTER_Y + RING_RADIUS * Math.sin(rad) - h / 2 + CONTENT_OY,
+    w,
+    h,
+  };
+}
+
 function buildLobbyZoneRects(): ReadonlyMap<string, Rect> {
   const rects = new Map<string, Rect>();
-
-  const pomodoroRooms = ROOM_META.filter((r) => r.kind === "pomodoro");
-  const groups = new Map<string, RoomMeta[]>();
-  for (const r of pomodoroRooms) {
-    const key = r.slug.replace(/-\d+$/, "");
-    const group = groups.get(key);
-    if (group) group.push(r);
-    else groups.set(key, [r]);
-  }
-
-  let row = 0;
-  for (const group of groups.values()) {
-    const rowW = group.length * ZONE_W + (group.length - 1) * COL_GAP;
-    const rowStartX = (SCREEN_W - rowW) / 2;
-    const y = GRID_START_Y + row * (ZONE_H + ROW_GAP);
-    group.forEach((r, col) => {
-      rects.set(r.slug, { x: rowStartX + col * (ZONE_W + COL_GAP) + CONTENT_OX, y: y + CONTENT_OY, w: ZONE_W, h: ZONE_H });
-    });
-    row += 1;
-  }
-
-  const timerY = GRID_START_Y + groups.size * (ZONE_H + ROW_GAP) + 10;
   for (const r of ROOM_META) {
-    if (r.kind === "stopwatch") {
-      rects.set(r.slug, { x: SCREEN_W / 2 - 110 - 150 + CONTENT_OX, y: timerY + CONTENT_OY, w: 220, h: 140 });
-    } else if (r.kind === "shop") {
-      rects.set(r.slug, { x: SCREEN_W / 2 + 150 - 110 + CONTENT_OX, y: timerY + CONTENT_OY, w: 220, h: 140 });
-    } else if (r.kind === "arena") {
-      // Sits directly to the right of Shop, same row (see AGENTS.md's request: "one extra room
-      // next to the shop") — must match the arenaZones block in src/app/page.tsx exactly.
-      rects.set(r.slug, { x: SCREEN_W / 2 + 150 - 110 + 270 + CONTENT_OX, y: timerY + CONTENT_OY, w: 220, h: 140 });
-    }
+    const [w, h] = r.kind === "pomodoro" ? [POMODORO_ZONE_W, POMODORO_ZONE_H] : [WIDE_ZONE_W, WIDE_ZONE_H];
+    rects.set(r.slug, ringRect(r.slug, w, h));
   }
-
   return rects;
 }
 

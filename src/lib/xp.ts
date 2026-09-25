@@ -42,3 +42,12 @@ export function levelFromXp(xp: number): LevelInfo {
     level += 1;
   }
 }
+
+/** Multi-line "Lv.N → N+1: X XP" breakdown for levels 1..maxLevel, for a progress bar tooltip. */
+export function xpLevelTableText(maxLevel = 30): string {
+  const lines: string[] = [];
+  for (let level = 1; level <= maxLevel; level++) {
+    lines.push(`Lv.${level} → ${level + 1}: ${xpForLevel(level)} XP`);
+  }
+  return lines.join("\n");
+}

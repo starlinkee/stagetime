@@ -3,7 +3,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CharacterSprite } from "@/components/CharacterSprite";
-import { CoinBadge } from "@/components/CoinBadge";
+import { CoinBadge, CoinIcon } from "@/components/CoinBadge";
 import { DungeonBackground } from "@/components/DungeonBackground";
 import { ArenaDecor } from "@/components/ArenaDecor";
 import { LobbyDecor } from "@/components/LobbyDecor";
@@ -61,6 +61,7 @@ import {
   STAMINA_MAX,
   STAMINA_REGEN_PER_SEC,
   START_HOLD_MS,
+  STRIKE_COOLDOWN_MS,
   STRIKE_DMG,
   STRIKE_MS,
   STRIKE_R,
@@ -475,6 +476,24 @@ function chargeTint(p: number): string {
   return dmgTint(DMG_MIN + (DMG_MAX - DMG_MIN) * Math.max(0, Math.min(1, p)));
 }
 
+/**
+ * STU-23: no real multi-weapon system yet (see AGENTS.md) — this is a client-only input router
+ * picking which existing attack Space triggers (charge-and-throw vs. the fist swing, which was
+ * already fully wired server-side via ClientMessage "strike"/spawnMelee in server.ts, just never
+ * fired by any client input until now). Slot 3 is a deliberate placeholder for a future real
+ * weapon, not a bug — rendered disabled below.
+ */
+type WeaponId = "ball" | "fist";
+const WEAPON_SLOTS: readonly { key: string; id: WeaponId | null; icon: string; label: string }[] = [
+  { key: "1", id: "ball", icon: "\u{1F534}", label: "Throw" },
+  { key: "2", id: "fist", icon: "\u{1F94A}", label: "Fist" },
+  { key: "3", id: null, icon: "", label: "Empty" },
+] as const;
+
+/** STU-23: freed Digit1..Digit3 for weapon slots above, so STU-45's emote hotkeys move to the
+ * remaining digits, starting at 0 as requested — same EMOJI_EMOTES[0..5] mapping, new keys. */
+const EMOTE_KEY_CODES = ["Digit0", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8"];
+
 function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, glow: number, skin?: string) {
   ctx.save();
   ctx.shadowColor = color;
@@ -703,14 +722,19 @@ function CharacterInfoPanel({
  * kolejny tick trafi zanim poprzedni popup zdąży zniknąć.
  */
 function RewardPopup({ coins, xp, id }: { coins: number; xp: number; id: number }) {
-  const parts = [coins > 0 && `+${coins} 🪙`, xp > 0 && `+${xp} XP`].filter(Boolean);
-  if (parts.length === 0) return null;
+  if (coins <= 0 && xp <= 0) return null;
   return (
     <span
       key={id}
-      className="pp-reward absolute bottom-full left-1/2 mb-5 whitespace-nowrap text-sm font-bold text-amber-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
+      className="pp-reward absolute bottom-full left-1/2 mb-5 flex items-center gap-1 whitespace-nowrap text-sm font-bold text-amber-400 drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)]"
     >
-      {parts.join(" · ")}
+      {coins > 0 && (
+        <span className="inline-flex items-center gap-0.5">
+          +{coins} <CoinIcon className="h-3 w-3" />
+        </span>
+      )}
+      {coins > 0 && xp > 0 && <span>·</span>}
+      {xp > 0 && <span>+{xp} XP</span>}
     </span>
   );
 }
@@ -1071,6 +1095,13 @@ export function RoomStage({
   const [myDir, setMyDir] = useState<Dir>(DIR_DOWN);
   const [myWalking, setMyWalking] = useState(false);
   const [myRolling, setMyRolling] = useState(false);
+  // STU-23: which WEAPON_SLOTS.id Space currently triggers — state for the hotbar below, ref so
+  // the keydown handler (outside React) reads the latest value without depending on the effect.
+  const [selectedWeapon, setSelectedWeapon] = useState<WeaponId>("ball");
+  const selectedWeaponRef = useRef<WeaponId>("ball");
+  useEffect(() => {
+    selectedWeaponRef.current = selectedWeapon;
+  }, [selectedWeapon]);
   // HP/respawn/immunity — updated from the server's own "state" broadcast (see the WS message
   // handler below), never predicted locally: unlike movement, there's nothing useful to predict
   // here, and the server is broadcasting at BROADCAST_MS anyway.
@@ -1268,6 +1299,10 @@ export function RoomStage({
     let rollCooldownUntil = 0;
     /** Początek ładowania własnej kuli (performance.now) albo null. */
     let chargeStart: number | null = null;
+    /** STU-23: client-side mirror of Conn.meleeCooldownUntil in server.ts — same "don't even try"
+     * shortcut as the stamina mirror below, purely to skip a doomed send; the server's own
+     * meleeCooldownUntil check is what actually gates spawnMelee. */
+    let meleeCooldownUntilLocal = 0;
     // Mirrors the server's own stamina state (see currentStamina()/Conn.staminaAt in
     // realtime-server/src/server.ts) — without this, our own predicted preview kept showing shots
     // the server would actually refuse. Regenerated every frame in tick() (STAMINA_REGEN_PER_SEC),
@@ -1694,6 +1729,39 @@ export function RoomStage({
       }
       emit("charge", { on: false });
     };
+    /**
+     * STU-23: fires immediately on Space keydown when "fist" is the selected weapon (see the
+     * onKeyDown handler below) — unlike release() above there's no charge-up, so no separate
+     * press/release pair. meleeCooldownUntilLocal only skips a doomed send; the server's own
+     * conn.meleeCooldownUntil (server.ts) is the real gate, same relationship as predictedStamina
+     * vs. the server's stamina check in release().
+     */
+    const doStrike = () => {
+      const now = performance.now();
+      if (now < meleeCooldownUntilLocal) return;
+      meleeCooldownUntilLocal = now + STRIKE_COOLDOWN_MS;
+      playAttackSound();
+      if (REALTIME_SERVER_URL) {
+        // Instant local swing, same "predictedRef, not ballsRef" reasoning as release()'s own
+        // predicted ball above — ballsRef is replaced wholesale by the server's next "state".
+        strike(predictedRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const msg: ClientMessage = { type: "strike" };
+          ws.send(JSON.stringify(msg));
+        }
+      } else {
+        strike(ballsRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+        emit("strike", { ...myPos.current });
+      }
+      // Same "server-verified count, not a client-claimed one" reasoning as increment_balls_shot
+      // in release() above — see migration 0023_fist_swings.sql.
+      if (userIdRef.current)
+        void getSupabase()
+          ?.rpc("increment_fist_swings")
+          .then(({ error }) => {
+            if (error) console.error("increment_fist_swings", error);
+          });
+    };
 
     const draw = (t: number) => {
       ctx.clearRect(0, 0, WORLD_W, WORLD_H);
@@ -1728,7 +1796,16 @@ export function RoomStage({
           ctx.font = "28px sans-serif";
           ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
         } else {
-          ctx.font = "600 24px sans-serif";
+          // Nazwy pokoi pomodoro są teraz pełnymi etykietami ("Hour Block 50+10", nie samo
+          // "50+10") — mogą nie zmieścić się w wąskim (180px) kwadracie przy stałych 24px, więc
+          // zamiast przycinać tekst, zmniejszamy font aż się zmieści.
+          const maxNameW = z.w - 16;
+          let nameFontPx = 24;
+          ctx.font = `600 ${nameFontPx}px sans-serif`;
+          while (nameFontPx > 13 && ctx.measureText(z.name).width > maxNameW) {
+            nameFontPx -= 1;
+            ctx.font = `600 ${nameFontPx}px sans-serif`;
+          }
           ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2 - 6);
         }
         // Pod numerem/kłódką: stojąc na wyjściu (kwadrat "lobby" na scenie samego pokoju) — zielony
@@ -1740,20 +1817,24 @@ export function RoomStage({
         // Pokój zamknięty (drzwi właśnie się zamknęły): kłódka, bez nagrody i tekstów wejścia (bo i
         // tak nie można teraz wejść), ale nadal liczba osób w środku (STU-39) — patrz warunek
         // niżej, `isExitHere || !doorClosed`, który przepuszcza occupants-branch mimo doorClosed.
-        // Nagroda XP tego pokoju i długość faz: pod numerem/kłódką, zawsze widoczna (nie tylko
-        // stojąc na kwadracie) — dla pomodoro to praca+przerwa w minutach i nagroda za całą sesję
-        // pracy, dla stopwatch/timer stała stawka za ciągłą obecność (patrz STUDY_SECONDS_PER_XP
-        // w src/lib/xp.ts).
+        // Nagroda tego pokoju: pod nazwą/kłódką, zawsze widoczna (nie tylko stojąc na kwadracie)
+        // — dla pomodoro nagroda za całą sesję pracy (długość faz już widać w nazwie pokoju,
+        // patrz wyżej), dla stopwatch/timer stała stawka za ciągłą obecność (patrz
+        // STUDY_SECONDS_PER_XP w src/lib/xp.ts).
         if ((z.kind ?? "nav") === "nav" && !isExitHere && !z.noReward && !doorClosed) {
-          ctx.fillStyle = "rgba(255,255,255,0.7)";
-          ctx.font = "600 14px sans-serif";
-          ctx.fillText(z.phase ? `${z.phase.workMin}+${z.phase.breakMin} min` : "no timer", z.x + z.w / 2, z.y + z.h / 2 + 14);
-          ctx.fillStyle = "#fbbf24";
+          // Nazwa pokoju już mówi "25+5" itd. (patrz wyżej), więc tu tylko nagroda — jedna
+          // wartość na linię (XP osobno od coinów), zamiast jednego zbitego napisu "+X XP ·
+          // +Y coins/session", żeby obie liczby dało się przeczytać na pierwszy rzut oka.
           ctx.font = "700 14px sans-serif";
+          ctx.fillStyle = "#7dd3fc";
           ctx.fillText(
-            z.phase
-              ? `+${xpForMinutes(z.phase.workMin)} XP · +${coinsForMinutes(z.phase.workMin)} coins/session`
-              : "+0.1 XP/5min · +0.1 coins/min while running",
+            z.phase ? `+${xpForMinutes(z.phase.workMin)} XP` : "+0.1 XP / 5 min",
+            z.x + z.w / 2,
+            z.y + z.h / 2 + 14,
+          );
+          ctx.fillStyle = "#fbbf24";
+          ctx.fillText(
+            z.phase ? `+${coinsForMinutes(z.phase.workMin)} coins` : "+0.1 coins / min",
             z.x + z.w / 2,
             z.y + z.h / 2 + 30,
           );
@@ -2338,6 +2419,12 @@ export function RoomStage({
       if ((myDead || frozenByWork()) && (e.code === "Space" || e.code === "KeyC")) return;
       if (e.code === "Space") {
         e.preventDefault(); // spacja nie przewija strony ani nie klika fokusowanego przycisku
+        // STU-23: which attack Space triggers depends on the selected weapon slot. Fist has no
+        // charge-up — it fires right here on keydown, unlike ball's press-and-hold-then-release.
+        if (selectedWeaponRef.current === "fist") {
+          if (!e.repeat) doStrike();
+          return;
+        }
         if (!e.repeat && chargeStart === null) {
           chargeStart = performance.now();
           if (REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
@@ -2352,13 +2439,19 @@ export function RoomStage({
         if (!eLocked) eDown = true;
         return;
       }
-      // STU-45: Digit1..Digit6 send EMOJI_EMOTES[0..5] — deliberately not gated by
+      // STU-23: Digit1..Digit3 pick the weapon slot Space fires — not gated by myDead/
+      // frozenByWork(), same reasoning as KeyB's skin cycling below: selecting isn't an attack.
+      if ((e.code === "Digit1" || e.code === "Digit2" || e.code === "Digit3") && !e.repeat) {
+        const slot = WEAPON_SLOTS.find((w) => w.key === e.code.slice(5));
+        if (slot?.id) setSelectedWeapon(slot.id);
+        return;
+      }
+      // STU-45: EMOTE_KEY_CODES send EMOJI_EMOTES[0..5] — deliberately not gated by
       // frozenByWork() like Space/KeyC above, since emotes must keep working during the work
       // phase (see the "emote" handler's doc comment in realtime-server/src/server.ts). Only
       // dead players are blocked, same as the server's own isDead(conn) check.
-      if (e.code.startsWith("Digit") && !e.repeat) {
-        const n = Number(e.code.slice(5));
-        const emoji = EMOJI_EMOTES[n - 1];
+      if (!e.repeat && EMOTE_KEY_CODES.includes(e.code)) {
+        const emoji = EMOJI_EMOTES[EMOTE_KEY_CODES.indexOf(e.code)];
         if (emoji && !myDead && REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
           const emote: ClientMessage = { type: "emote", emoji };
           ws.send(JSON.stringify(emote));
@@ -2366,7 +2459,7 @@ export function RoomStage({
         return;
       }
       // STU-35: flash grenade, gated like Space/KeyC above (myDead || frozenByWork()) since this
-      // is an attack item, unlike emote (Digit1..6) which deliberately isn't. Ownership is
+      // is an attack item, unlike emote (EMOTE_KEY_CODES) which deliberately isn't. Ownership is
       // checked client-side first (profileRef.current.flashGrenades, an optimistic read that can
       // be briefly stale — harmless, see useFlashGrenade's doc comment) via the atomic Postgres
       // RPC in supabase/migrations/0037_flash_grenade_item.sql; only on that RPC's success do we
@@ -2891,6 +2984,27 @@ export function RoomStage({
       >
         Leave room
       </button>
+    )}
+    {REALTIME_SERVER_URL && (
+      // STU-23: weapon hotbar — WEAPON_SLOTS[0]/[1] pick what Space fires (see onKeyDown), slot 3
+      // is a deliberate placeholder for a future real weapon, shown disabled rather than hidden.
+      <div className="pointer-events-none fixed bottom-20 left-1/2 z-20 flex -translate-x-1/2 gap-1.5">
+        {WEAPON_SLOTS.map((slot) => (
+          <div
+            key={slot.key}
+            className={`flex h-11 w-11 flex-col items-center justify-center rounded-lg border shadow-lg ${
+              slot.id && slot.id === selectedWeapon
+                ? "border-amber-400 bg-amber-500/25 text-amber-200"
+                : slot.id
+                  ? "border-zinc-700 bg-zinc-900/80 text-zinc-200"
+                  : "border-zinc-800/60 bg-zinc-900/40 text-zinc-600"
+            }`}
+          >
+            <span className="text-lg leading-none">{slot.icon || "—"}</span>
+            <span className="text-[9px] font-semibold leading-none text-zinc-400">{slot.key}</span>
+          </div>
+        ))}
+      </div>
     )}
     {REALTIME_SERVER_URL && (
       <div className="pointer-events-none fixed bottom-9 right-4 z-20 flex items-center gap-2">

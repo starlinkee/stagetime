@@ -5,7 +5,7 @@ import { CoinBadge, CoinIcon } from "@/components/CoinBadge";
 import { LevelBadge } from "@/components/LevelBadge";
 import { useMyProfile } from "@/lib/useProfile";
 import { displayName, signOut } from "@/lib/useSession";
-import { levelFromXp } from "@/lib/xp";
+import { levelFromXp, xpLevelTableText } from "@/lib/xp";
 
 /**
  * Brief "+N" pop shown next to the header's coin/XP badges (STU-16) whenever `value` ticks up —
@@ -85,7 +85,10 @@ export function ProfileMenu({ session }: { session: Session }) {
           </span>
         )}
         {ready && (
-          <span className="relative flex h-1.5 w-10 overflow-hidden rounded-full bg-zinc-700/60">
+          <span
+            title={xpLevelTableText()}
+            className="relative flex h-1.5 w-10 overflow-hidden rounded-full bg-zinc-700/60"
+          >
             <span
               className="h-full rounded-full bg-amber-400 transition-[width]"
               style={{ width: `${Math.min(100, (intoLevel / forNextLevel) * 100)}%` }}
@@ -165,7 +168,10 @@ function ProfileForm({
         <span className="shrink-0 rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-amber-300">
           Lv.{level}
         </span>
-        <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-zinc-800">
+        <div
+          title={xpLevelTableText()}
+          className="relative h-3.5 w-full overflow-hidden rounded-full bg-zinc-800"
+        >
           <div
             className="h-full rounded-full bg-amber-500 transition-[width]"
             style={{ width: `${Math.min(100, (intoLevel / forNextLevel) * 100)}%` }}
