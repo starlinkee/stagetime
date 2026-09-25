@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { verifyEntryToken } from "../shared/entryToken";
-import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMove } from "../shared/obstacles";
+import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "../shared/obstacles";
 import { clampPos } from "../shared/physics";
 import { getRoomPhase, LOBBY_ZONE_RECTS } from "../shared/rooms";
 import {
@@ -23,6 +23,7 @@ import {
   ENEMY_ATTACK_RANGE,
   ENEMY_H,
   ENEMY_LEASH_RANGE,
+  DESPERATE_HP,
   ENEMY_MAX_HP,
   ENEMY_RESPAWN_MS,
   ENEMY_SPEED,
@@ -808,16 +809,22 @@ wss.on("connection", (ws, req) => {
       const now = Date.now();
       // Stamina, not a salvo cooldown — see currentStamina() and STAMINA_MAX's doc comment in
       // shared/constants.ts. A shot is refused outright (not queued/partial) when the pool can't
-      // cover its cost; this is the only fire-rate gate (see pushBall's doc comment).
+      // cover its cost; this is the only fire-rate gate (see pushBall's doc comment). Except: at
+      // DESPERATE_HP or below (STU-44, deliberate), the gate and the spend are both skipped — a
+      // nearly-dead player can spam shots freely, and the pool keeps regenerating underneath
+      // untouched so there's no debt once HP recovers back above the threshold.
+      const desperate = conn.hp <= DESPERATE_HP;
       const stamina = currentStamina(conn, now);
-      if (stamina < conn.stats.staminaCostPerShot) return;
+      if (!desperate && stamina < conn.stats.staminaCostPerShot) return;
       const elapsed = conn.chargeStartAt !== null ? now - conn.chargeStartAt : 0;
       const claimed = typeof msg.chargeMs === "number" && Number.isFinite(msg.chargeMs) ? msg.chargeMs : 0;
       const chargeMs = Math.max(0, Math.min(CHARGE_MS, Math.min(elapsed, claimed)));
       conn.chargeStartAt = null;
       spawnBall(conn, chargeMs / CHARGE_MS);
-      conn.staminaAt = stamina - conn.stats.staminaCostPerShot;
-      conn.staminaUpdatedAt = now;
+      if (!desperate) {
+        conn.staminaAt = stamina - conn.stats.staminaCostPerShot;
+        conn.staminaUpdatedAt = now;
+      }
       return;
     }
     if (msg.type === "strike") {
@@ -918,7 +925,7 @@ setInterval(() => {
         const gnx = conn.gx + gdx * conn.speed * dt * gnorm;
         const gny = conn.gy + gdy * conn.speed * dt * gnorm;
         const gclamped = clampPos(gnx, gny, conn.isLobby);
-        const gresolved = resolveObstacleMove(conn.gx, conn.gy, gclamped.x, gclamped.y, PERSON_W, PERSON_H, obstaclesFor(conn.isLobby));
+        const gresolved = resolveObstacleMoveHitbox(conn.gx, conn.gy, gclamped.x, gclamped.y, obstaclesFor(conn.isLobby));
         conn.gx = gresolved.x;
         conn.gy = gresolved.y;
         continue;
@@ -945,7 +952,7 @@ setInterval(() => {
       const nx = conn.x + dx * speed * dt * norm;
       const ny = conn.y + dy * speed * dt * norm;
       const clamped = clampPos(nx, ny, conn.isLobby);
-      const resolved = resolveObstacleMove(conn.x, conn.y, clamped.x, clamped.y, PERSON_W, PERSON_H, obstaclesFor(conn.isLobby));
+      const resolved = resolveObstacleMoveHitbox(conn.x, conn.y, clamped.x, clamped.y, obstaclesFor(conn.isLobby));
       conn.x = resolved.x;
       conn.y = resolved.y;
     }

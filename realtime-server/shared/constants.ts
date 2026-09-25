@@ -98,16 +98,19 @@ export const STRIKE_COOLDOWN_MS = 260;
 /** Character hitbox padding used by ball/melee collision checks. */
 export const HIT_PAD = 8;
 /**
- * Combat hitbox (ball/melee collision only) — narrower and shorter than the full
- * PERSON_W x PERSON_H box, which stays the movement footprint (world clamp, zone overlap, spawn
- * centering) and sprite scale unchanged. Horizontally centered within that box so a thrown ball
- * only connects with the character's visible silhouette instead of its whole walking footprint.
- * Vertically it's bottom-anchored, not centered: every character sprite stands on the box's
- * bottom edge (feet at PERSON_H), with empty headroom above, not a silhouette centered in the
- * middle of the box — PlayerSprite's fixed art (public/characters/player/rotation/*.png) only
- * fills the bottom 2/3 of its 24x24 canvas (checked via alpha bbox: visible rows 8-24 of 24), so
- * a vertically-centered hitbox used to sit mostly in the empty headroom above the head and miss
- * the feet entirely. Must match RoomStage.tsx's `hits()` exactly, same as PERSON_W/PERSON_H above.
+ * Combat hitbox (ball/melee collision), and — since STU-53 — solid-obstacle collision too (see
+ * resolveObstacleMoveHitbox in shared/obstacles.ts) — narrower and shorter than the full
+ * PERSON_W x PERSON_H box, which remains the movement footprint for world clamp, zone overlap and
+ * spawn centering, and stays the sprite scale, unchanged. Horizontally centered within that box so
+ * a thrown ball (or a desk/bookshelf) only blocks against the character's visible silhouette
+ * instead of its whole walking footprint. Vertically it's bottom-anchored, not centered: every
+ * character sprite stands on the box's bottom edge (feet at PERSON_H), with empty headroom above,
+ * not a silhouette centered in the middle of the box — PlayerSprite's fixed art
+ * (public/characters/player/rotation/*.png) only fills the bottom 2/3 of its 24x24 canvas (checked
+ * via alpha bbox: visible rows 8-24 of 24), so a vertically-centered box used to sit mostly in the
+ * empty headroom above the head and miss the feet (or, for obstacles, block from the head down
+ * instead of from roughly the waist down) entirely. Must match RoomStage.tsx's `hits()` exactly,
+ * same as PERSON_W/PERSON_H above.
  */
 export const HITBOX_W = PERSON_W / 2;
 export const HITBOX_H = (PERSON_H * 2) / 3;
@@ -158,6 +161,14 @@ export const DEFAULT_CHARACTER_STATS: CharacterStats = {
  * `MAX_HP`.
  */
 export const MAX_HP = 25;
+/**
+ * "Desperation" threshold (STU-44, an intentional feature, not a bug): at this HP or below, the
+ * stamina gate on `fire` is skipped entirely (see the `fire` handler in server.ts) — a nearly-dead
+ * player can spam shots with no cooldown. Stamina itself keeps regenerating normally underneath
+ * (this only skips the check and the spend), so leaving desperation mode above this threshold just
+ * resumes the normal gate against whatever the pool has regenerated to, no debt carried over.
+ */
+export const DESPERATE_HP = 5;
 /** Charged-throw damage range — interpolated by charge fraction (0..1), same `p` spawnBall already
  * uses for `ORB_R_MIN`/`ORB_R_MAX`. */
 export const DMG_MIN = 1;

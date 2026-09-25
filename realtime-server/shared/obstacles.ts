@@ -14,7 +14,7 @@
  */
 
 import type { Rect } from "./rooms";
-import { worldH, worldW } from "./constants";
+import { HITBOX_H, HITBOX_OFFSET_X, HITBOX_OFFSET_Y, HITBOX_W, worldH, worldW } from "./constants";
 
 export type Quadrant = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -34,6 +34,35 @@ export type DecorItem = {
 
 /** Native-pixel -> CSS-px scale, matched to PlayerSprite's 24px source -> 96px-tall box (4x). */
 export const DECOR_SCALE = 4;
+
+/**
+ * Extra props scattered across the content square itself (SCREEN_W×SCREEN_H, where the room-select
+ * zones live — see CONTENT_OX/OY in RoomStage.tsx), not just the outer margin QUADRANT_ITEMS
+ * covers. Positioned in the gaps around the room grid (the empty band above it, and the row/column
+ * gaps between zones) so they read as scattered clutter without sitting on top of a room tile.
+ * LobbyDecor renders decor before the zone tiles (see RoomStage.tsx), so any item here that does
+ * end up under a tile is simply hidden behind it rather than looking broken. All traversable
+ * (non-solid) by design (see STU-42) — a solid item this close to the room grid risks walling off
+ * a tile's entry, so a future solid addition here should double-check that against LOBBY_OBSTACLES.
+ */
+export const CENTER_ITEMS: DecorItem[] = [
+  // Empty band above the room grid (world y 0-220, full width).
+  { file: "rug", w: 32, h: 48, x: 40, y: 5 },
+  { file: "floor-lamp", w: 15, h: 46, x: 110, y: 2 },
+  { file: "plant", w: 10, h: 23, x: 200, y: 10 },
+  { file: "mug", w: 10, h: 9, x: 250, y: 30 },
+  { file: "rug", w: 32, h: 48, x: 300, y: 5 },
+  { file: "book-open", w: 11, h: 8, x: 20, y: 35 },
+  // Left/right margins beside the 20-5 row (world y 390-490, x 0-133 / x 1233-1366).
+  { file: "plant", w: 10, h: 23, x: 5, y: 98 },
+  { file: "mug", w: 10, h: 9, x: 15, y: 115 },
+  { file: "plant", w: 10, h: 23, x: 312, y: 98 },
+  { file: "book-open", w: 11, h: 8, x: 325, y: 115 },
+  // Row gaps (full width, ~70px tall) — short items only so they don't bleed into the next row.
+  { file: "mug", w: 10, h: 9, x: 60, y: 82 },
+  { file: "book-open", w: 11, h: 8, x: 270, y: 84 },
+  { file: "mug", w: 10, h: 9, x: 160, y: 165 },
+];
 
 /** One quadrant's worth of props, in native pixels relative to that quadrant's own top-left corner. */
 export const QUADRANT_ITEMS: Record<Quadrant, DecorItem[]> = {
@@ -95,6 +124,17 @@ function buildLobbyObstacles(): Rect[] {
       });
     }
   }
+  // Same content-square origin LobbyDecor uses for CENTER_ITEMS (marginX/marginY == top-left
+  // corner of the content square, see that component's doc comment).
+  for (const item of CENTER_ITEMS) {
+    if (!item.solid) continue;
+    rects.push({
+      x: marginX + item.x * DECOR_SCALE,
+      y: marginY + item.y * DECOR_SCALE,
+      w: item.w * DECOR_SCALE,
+      h: item.h * DECOR_SCALE,
+    });
+  }
   return rects;
 }
 
@@ -141,6 +181,33 @@ export function resolveObstacleMove(
   if (!blocked(x1, y0)) return { x: x1, y: y0 };
   if (!blocked(x0, y1)) return { x: x0, y: y1 };
   return { x: x0, y: y0 };
+}
+
+/**
+ * Same as resolveObstacleMove above, but for a player's own (x, y) top-left-of-head position —
+ * translates to/from the trimmed HITBOX_W x HITBOX_H box (see its doc comment in constants.ts)
+ * before/after resolving, so a solid obstacle (desk, bookshelf, ...) blocks starting from roughly
+ * the character's waist, not its head (STU-53). `x0/y0/x1/y1` and the return value stay in the
+ * same head-anchored coordinate space every other caller (world clamp, zone overlap, spawn) uses —
+ * only the box handed to the actual collision math is narrower/shorter.
+ */
+export function resolveObstacleMoveHitbox(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  obstacles: ReadonlyArray<Rect>,
+): { x: number; y: number } {
+  const resolved = resolveObstacleMove(
+    x0 + HITBOX_OFFSET_X,
+    y0 + HITBOX_OFFSET_Y,
+    x1 + HITBOX_OFFSET_X,
+    y1 + HITBOX_OFFSET_Y,
+    HITBOX_W,
+    HITBOX_H,
+    obstacles,
+  );
+  return { x: resolved.x - HITBOX_OFFSET_X, y: resolved.y - HITBOX_OFFSET_Y };
 }
 
 /** Nearest-point circle-vs-rect test, same method as the ball/melee-vs-player hitbox check in

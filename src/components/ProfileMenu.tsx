@@ -7,6 +7,42 @@ import { useMyProfile } from "@/lib/useProfile";
 import { displayName, signOut } from "@/lib/useSession";
 import { levelFromXp } from "@/lib/xp";
 
+/**
+ * Brief "+N" pop shown next to the header's coin/XP badges (STU-16) whenever `value` ticks up —
+ * `coins`/`xp` from useMyProfile already update live via Supabase Realtime (see that hook's doc
+ * comment), so this just watches for an increase instead of needing its own event wiring. Mirrors
+ * the in-world RewardPopup bubble (RoomStage.tsx) but anchored to the header instead of a player
+ * sprite. A decrease (spending coins in the Shop) is ignored — nothing to celebrate there.
+ */
+function useDeltaPop(value: number) {
+  const prevRef = useRef(value);
+  const [pop, setPop] = useState<{ delta: number; id: number } | null>(null);
+  const idRef = useRef(0);
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = value;
+    const delta = value - prev;
+    if (delta <= 0) return;
+    idRef.current += 1;
+    setPop({ delta, id: idRef.current });
+    const timer = setTimeout(() => setPop((p) => (p?.id === idRef.current ? null : p)), 1400);
+    return () => clearTimeout(timer);
+  }, [value]);
+  return pop;
+}
+
+function DeltaPop({ pop, decimals, className = "" }: { pop: { delta: number; id: number } | null; decimals: 0 | 1; className?: string }) {
+  if (!pop) return null;
+  return (
+    <span
+      key={pop.id}
+      className={`pp-reward pointer-events-none absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs font-bold text-emerald-400 ${className}`}
+    >
+      +{pop.delta.toFixed(decimals)}
+    </span>
+  );
+}
+
 /** Nazwa w nagłówku: klik otwiera panel ze zmianą nicku i wylogowaniem. */
 export function ProfileMenu({ session }: { session: Session }) {
   const { ready, nickname, xp, ballsShot, fistSwings, kills, deaths, mobKills, coins, error } = useMyProfile();
@@ -14,6 +50,8 @@ export function ProfileMenu({ session }: { session: Session }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const shown = nickname ?? displayName(session);
   const { intoLevel, forNextLevel } = levelFromXp(xp);
+  const xpPop = useDeltaPop(ready ? xp : 0);
+  const coinPop = useDeltaPop(ready ? coins : 0);
 
   // Klik poza panelem i Escape zamykają menu.
   useEffect(() => {
@@ -40,13 +78,26 @@ export function ProfileMenu({ session }: { session: Session }) {
         aria-haspopup="dialog"
         className="flex items-center gap-1.5 rounded-lg bg-[#5865F2] px-3 py-1.5 text-white hover:bg-[#4752c4]"
       >
-        {ready && <LevelBadge xp={xp} />}
         {ready && (
-          <span className="text-[10px] leading-none text-zinc-300">
-            {intoLevel.toFixed(1)}/{forNextLevel} XP
+          <span className="relative flex items-center gap-1">
+            <LevelBadge xp={xp} />
+            <DeltaPop pop={xpPop} decimals={1} />
           </span>
         )}
-        {ready && <CoinBadge coins={coins} />}
+        {ready && (
+          <span className="relative flex h-1.5 w-10 overflow-hidden rounded-full bg-zinc-700/60">
+            <span
+              className="h-full rounded-full bg-amber-400 transition-[width]"
+              style={{ width: `${Math.min(100, (intoLevel / forNextLevel) * 100)}%` }}
+            />
+          </span>
+        )}
+        {ready && (
+          <span className="relative flex items-center">
+            <CoinBadge coins={coins} />
+            <DeltaPop pop={coinPop} decimals={1} />
+          </span>
+        )}
         {shown}
       </button>
 

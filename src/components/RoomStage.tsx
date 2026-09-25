@@ -3,6 +3,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CharacterSprite } from "@/components/CharacterSprite";
+import { CoinBadge } from "@/components/CoinBadge";
 import { DungeonBackground } from "@/components/DungeonBackground";
 import { LobbyDecor } from "@/components/LobbyDecor";
 import { LevelBadge } from "@/components/LevelBadge";
@@ -19,13 +20,15 @@ import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
 import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
-import { xpForMinutes } from "@/lib/xp";
+import { levelFromXp, xpForMinutes } from "@/lib/xp";
 import type { ClientMessage, EnemyState, HitEvent, ServerBall, ServerMessage } from "@realtime-shared/types";
 import {
   BALL_SPEED,
   CHARGE_MS,
   DIRS,
   DIR_OF,
+  DMG_MAX,
+  DMG_MIN,
   ENEMY_H,
   ENEMY_W,
   GHOST_OPACITY,
@@ -47,9 +50,11 @@ import {
   ROLL_SPEED_MULT,
   SCREEN_H,
   SCREEN_W,
+  DESPERATE_HP,
   STAMINA_COST_PER_SHOT,
   STAMINA_MAX,
   STAMINA_REGEN_PER_SEC,
+  STRIKE_DMG,
   STRIKE_MS,
   STRIKE_R,
   STRIKE_REACH,
@@ -59,7 +64,7 @@ import {
   worldH,
   worldW,
 } from "@realtime-shared/constants";
-import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMove } from "@realtime-shared/obstacles";
+import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "@realtime-shared/obstacles";
 import { clampPos } from "@realtime-shared/physics";
 
 /** Kolor etykiety fazy pod kwadratem pokoju: praca na czerwono (nie da się teraz wejść), przerwa na zielono. */
@@ -462,6 +467,135 @@ function NameTag({ name, xp }: { name: string | null; xp?: number }) {
   );
 }
 
+/** Nazwy wyświetlane dla `character_slug` (patrz CharacterSlug w src/lib/useProfile.ts) — ta sama
+ * lista co CHARACTER_OPTIONS w ShopRoom.tsx, zduplikowana tu zamiast eksportowana, bo to jedyne
+ * inne miejsce, które jej potrzebuje. */
+const CHARACTER_NAMES: Record<string, string> = { classic: "Classic", girl: "Girl", pixel: "Pixel" };
+/** Nazwy wyświetlane dla slugów kosmetyków (patrz supabase/migrations/0027_cosmetic_items.sql) —
+ * dziś jest tylko jeden. */
+const COSMETIC_NAMES: Record<string, string> = { flower: "Flower crown" };
+
+/**
+ * Panel statystyk postaci pod Tab (STU-49): serwerowe staty walki (HP, atak, roll — patrz
+ * realtime-server/shared/constants.ts, jedyne źródło prawdy dla tych liczb, patrz AGENTS.md),
+ * profil z Supabase (poziom/XP/coins/liczniki) i aktualnie wybrany strój/kosmetyk.
+ */
+function CharacterInfoPanel({
+  nick,
+  xp,
+  coins,
+  ballsShot,
+  fistSwings,
+  kills,
+  deaths,
+  mobKills,
+  character,
+  cosmetic,
+  myHp,
+  myStamina,
+  myStaminaMax,
+}: {
+  nick: string | null;
+  xp: number;
+  coins: number;
+  ballsShot: number;
+  fistSwings: number;
+  kills: number;
+  deaths: number;
+  mobKills: number;
+  character: string;
+  cosmetic: string | null;
+  myHp: number;
+  myStamina: number;
+  myStaminaMax: number;
+}) {
+  const { level, intoLevel, forNextLevel } = levelFromXp(xp);
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="truncate font-semibold text-zinc-100">{nick?.trim() || NO_NAME}</span>
+        <CoinBadge coins={coins} />
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-amber-300">
+          Lv.{level}
+        </span>
+        <div className="relative h-3.5 w-full overflow-hidden rounded-full bg-zinc-800">
+          <div
+            className="h-full rounded-full bg-amber-500 transition-[width]"
+            style={{ width: `${Math.min(100, (intoLevel / forNextLevel) * 100)}%` }}
+          />
+          <span className="absolute inset-0 flex items-center justify-center text-[9px] font-medium text-zinc-100">
+            {intoLevel.toFixed(1)}/{forNextLevel} XP
+          </span>
+        </div>
+      </div>
+
+      <span className="mt-1 text-zinc-400">Combat</span>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">HP</span>
+        <span className="font-semibold text-zinc-200">{Math.max(0, myHp)}/{MAX_HP}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Stamina</span>
+        <span className="font-semibold text-zinc-200">{Math.max(0, Math.round(myStamina))}/{myStaminaMax}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Move speed</span>
+        <span className="font-semibold text-zinc-200">{DEFAULT_PLAYER_SPEED} u/s</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Throw damage</span>
+        <span className="font-semibold text-zinc-200">{DMG_MIN}–{DMG_MAX}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Fist damage</span>
+        <span className="font-semibold text-zinc-200">{STRIKE_DMG}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Fist reach</span>
+        <span className="font-semibold text-zinc-200">{STRIKE_REACH}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Roll cooldown</span>
+        <span className="font-semibold text-zinc-200">{(ROLL_COOLDOWN_MS / 1000).toFixed(2)}s</span>
+      </div>
+
+      <span className="mt-1 text-zinc-400">Appearance</span>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Skin</span>
+        <span className="font-semibold text-zinc-200">{CHARACTER_NAMES[character] ?? character}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Cosmetic</span>
+        <span className="font-semibold text-zinc-200">{cosmetic ? COSMETIC_NAMES[cosmetic] ?? cosmetic : "None"}</span>
+      </div>
+
+      <span className="mt-1 text-zinc-400">Stats</span>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Balls</span>
+        <span className="font-semibold text-zinc-200">{ballsShot}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Fist swings</span>
+        <span className="font-semibold text-zinc-200">{fistSwings}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Kills</span>
+        <span className="font-semibold text-zinc-200">{kills}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Deaths</span>
+        <span className="font-semibold text-zinc-200">{deaths}</span>
+      </div>
+      <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <span className="text-zinc-400">Mob kills</span>
+        <span className="font-semibold text-zinc-200">{mobKills}</span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Popup "+1 🪙 · +0.2 XP" nad postacią po co-minutowym tick-u nagrody (patrz useStudyXp) — sam
  * znika po odegraniu animacji pp-reward (globals.css). `id` w key wymusza restart animacji, gdy
@@ -483,7 +617,7 @@ function RewardPopup({ coins, xp, id }: { coins: number; xp: number; id: number 
 /** Dymek nad postacią z jej ostatnią wiadomością — znika sam po BUBBLE_MS. */
 function ChatBubble({ text }: { text: string }) {
   return (
-    <div className="chat-fade absolute bottom-full left-1/2 mb-5 max-w-60 -translate-x-1/2 whitespace-pre-wrap break-words rounded-xl bg-white px-3 py-2 text-center text-sm text-zinc-900 shadow-lg after:absolute after:left-1/2 after:top-full after:-ml-1.5 after:border-4 after:border-transparent after:border-t-white">
+    <div className="chat-fade absolute bottom-full left-1/2 mb-5 w-max max-w-[min(90vw,32rem)] -translate-x-1/2 whitespace-pre-wrap break-words rounded-xl bg-white px-3 py-2 text-center text-sm text-zinc-900 shadow-lg after:absolute after:left-1/2 after:top-full after:-ml-1.5 after:border-4 after:border-transparent after:border-t-white">
       {text}
     </div>
   );
@@ -1007,6 +1141,9 @@ export function RoomStage({
     // but not attack — the server already rejects those messages while isDead(conn), this just
     // avoids the wasted message and the locally-predicted preview it would otherwise show).
     let myDead = false;
+    // Mirrors myHp state, same reason myDead mirrors respawnAt: read locally below (desperate
+    // mode, see DESPERATE_HP) without depending on the React state value at effect-mount time.
+    let myHpNow = MAX_HP;
     // Kierunek koryguje się jednorazowo, nie płynnie (to dyskretna orientacja sprite'a, nie
     // pozycja) — osobna flaga, żeby nie stosować go ponownie co klatkę dopóki nie przyjdzie nowy.
     let serverDirPending = false;
@@ -1094,6 +1231,7 @@ export function RoomStage({
             serverMe = { x: p.x, y: p.y, d: p.d, gx: p.gx, gy: p.gy, gd: p.gd };
             serverDirPending = true;
             setMyHp(p.hp);
+            myHpNow = p.hp;
             setMyStamina(p.stamina);
             setMyStaminaMax(p.staminaMax);
             // Resyncs the local predicted mirror (see predictedStamina below) to the server's own
@@ -1240,7 +1378,12 @@ export function RoomStage({
       // fire kept adding unlimited local predicted balls while the server (and everyone else)
       // only ever confirmed shots this connection could actually afford. Stamina is the only
       // fire-rate gate (see pushBall's doc comment in server.ts) — nothing else to mirror here.
-      const firing = !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || predictedStamina >= STAMINA_COST_PER_SHOT);
+      // Desperate mode (STU-44, deliberate): at DESPERATE_HP or below the server's own stamina
+      // gate is skipped (see the "fire" handler in server.ts), so mirror that here too — otherwise
+      // this local prediction would still block a shot the server was about to accept anyway.
+      const desperate = myHpNow <= DESPERATE_HP;
+      const firing =
+        !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || desperate || predictedStamina >= STAMINA_COST_PER_SHOT);
       if (firing) {
         if (REALTIME_SERVER_URL) {
           // Faza F4: the server decides the real ball (chargeMs capped to what it actually saw
@@ -1254,8 +1397,10 @@ export function RoomStage({
             const fire: ClientMessage = { type: "fire", chargeMs };
             ws.send(JSON.stringify(fire));
           }
-          predictedStamina -= STAMINA_COST_PER_SHOT;
-          setMyStamina(predictedStamina);
+          if (!desperate) {
+            predictedStamina -= STAMINA_COST_PER_SHOT;
+            setMyStamina(predictedStamina);
+          }
         } else {
           launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
         }
@@ -1364,6 +1509,16 @@ export function RoomStage({
           ctx.fillStyle = "rgba(255,255,255,0.75)";
           ctx.font = "500 16px sans-serif";
           ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 42);
+        }
+        // "NEW ITEMS" / "NEW ROOM" bouncing callouts (STU-50): pure decoration, no state behind
+        // it (no "seen it already" tracking) — just draws attention to the Shop/Arena zones.
+        // Bounce is `t` (the draw loop's own rAF timestamp, ms) fed through a sine, same idea as
+        // the E-hold progress bar below reusing `t` for its own animation.
+        if (z.kind === "shop" || z.kind === "arena") {
+          const bounce = Math.sin(t / 220) * 3;
+          ctx.fillStyle = "#facc15";
+          ctx.font = "800 13px sans-serif";
+          ctx.fillText(z.kind === "shop" ? "✨ NEW ITEMS" : "✨ NEW ROOM", z.x + z.w / 2, z.y + z.h + 10 + bounce);
         }
         if (active && eHoldStart !== null) {
           const p = Math.min(1, (t - eHoldStart) / roomEnterMs());
@@ -1641,7 +1796,7 @@ export function RoomStage({
       // movement here too, not just server-side — otherwise this client-side prediction would
       // visibly slide the player through it for up to one broadcast (BROADCAST_MS) before the
       // server's own correction snapped it back out.
-      const { x: nx, y: ny } = resolveObstacleMove(x, y, clampedNx, clampedNy, PERSON_W, PERSON_H, obstaclesFor(isLobby));
+      const { x: nx, y: ny } = resolveObstacleMoveHitbox(x, y, clampedNx, clampedNy, obstaclesFor(isLobby));
       if (nx !== x || ny !== y) dirty = true;
       x = nx;
       y = ny;
@@ -2207,6 +2362,10 @@ export function RoomStage({
   // Wysyłanie zawsze trafia do roomSlug — tam stoi postać — dymek nad nią widzą tylko inni w tym pokoju.
   const chat = useChat(roomSlug);
   const [chatOpen, setChatOpen] = useState(false);
+  // Tab otwiera/zamyka panel statystyk postaci (STU-49) — patrz efekt niżej i sekcja JSX z
+  // `statsOpen`. Osobny stan od `chatOpen`, bo Tab wewnątrz pola czatu ma inne znaczenie
+  // (przełącza zakres "room"/"all", patrz onChatKeyDown) i tam panel nie powinien się otwierać.
+  const [statsOpen, setStatsOpen] = useState(false);
   const [chatScope, setChatScope] = useState<"room" | "all">("room");
   const [chatDraft, setChatDraft] = useState("");
   const [chatSending, setChatSending] = useState(false);
@@ -2316,6 +2475,25 @@ export function RoomStage({
   useEffect(() => {
     if (chatOpen) chatInputRef.current?.focus();
   }, [chatOpen]);
+
+  // Tab (poza czatem/polami tekstowymi) otwiera/zamyka panel statystyk postaci — patrz `statsOpen`
+  // niżej w JSX. Gdy czat jest otwarty, Tab zostaje jego skrótem (patrz onChatKeyDown), więc panel
+  // się wtedy nie przełącza.
+  useEffect(() => {
+    if (chatOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key === "Tab") {
+        e.preventDefault();
+        setStatsOpen((v) => !v);
+      } else if (e.key === "Escape" && statsOpen) {
+        e.preventDefault();
+        setStatsOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [chatOpen, statsOpen]);
 
   // Esc zamyka czat nawet gdy pole straciło focus (np. po kliknięciu poza czatem).
   useEffect(() => {
@@ -2438,6 +2616,40 @@ export function RoomStage({
       <div className="pointer-events-none fixed inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-zinc-950/60">
         <p className="text-4xl font-extrabold text-red-500">You died…</p>
         <p className="text-lg font-medium text-zinc-200">Respawning in {respawnRemainingSec}…</p>
+      </div>
+    )}
+    {statsOpen && (
+      <div
+        role="dialog"
+        aria-label="Character info"
+        className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-[2px]"
+        onClick={() => setStatsOpen(false)}
+      >
+        <div
+          className="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-950 p-4 text-sm shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {session ? (
+            <CharacterInfoPanel
+              nick={nick}
+              xp={profile.xp}
+              coins={profile.coins}
+              ballsShot={profile.ballsShot}
+              fistSwings={profile.fistSwings}
+              kills={profile.kills}
+              deaths={profile.deaths}
+              mobKills={profile.mobKills}
+              character={character}
+              cosmetic={cosmetic}
+              myHp={myHp}
+              myStamina={myStamina}
+              myStaminaMax={myStaminaMax}
+            />
+          ) : (
+            <p className="text-zinc-500">Sign in to see your character info.</p>
+          )}
+          <p className="mt-3 text-center text-xs text-zinc-600">Press Tab or Esc to close</p>
+        </div>
       </div>
     )}
     {REALTIME_SERVER_URL && wsStatus === "reconnecting" && (
@@ -2618,6 +2830,19 @@ export function RoomStage({
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
       </div>
     </div>
+    {!isLobby && roomPhase === "work" && (
+      // Freeze overlay (STU-38): movement/roll/fire are already rejected server-side for the
+      // whole "work" phase (see isFrozen in realtime-server/src/server.ts and frozenByWork above)
+      // — this just makes that state visible instead of leaving it implicit. Fixed to the
+      // viewport (not the scrolling world div) so it stays centered regardless of camera position;
+      // pointer-events-none so it never blocks clicking through to the game underneath.
+      <div className="pointer-events-none fixed inset-0 z-20 flex items-center justify-center">
+        <div className="rounded-2xl bg-black/40 px-6 py-4 text-center backdrop-blur-sm">
+          <p className="text-2xl font-bold text-white drop-shadow">🔒 Good luck!</p>
+          <p className="mt-1 text-sm font-medium text-zinc-200">Room is frozen until this work session ends</p>
+        </div>
+      </div>
+    )}
     {!chatOpen && toasts.length > 0 && (
       // Toasty z kanału "all": ta sama pozycja (fixed inset-x-0 bottom-6, ta sama kolumna po
       // odjęciu pustego miejsca na przełącznik room/all) co lista wiadomości w panelu poniżej —

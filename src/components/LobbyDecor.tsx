@@ -10,7 +10,7 @@
  * component and the movement/combat server read, so a solid item's no-go box (see
  * LOBBY_OBSTACLES there) can never silently drift from where it's actually drawn.
  */
-import { DECOR_SCALE, QUADRANT_ITEMS, type DecorItem, type Quadrant } from "@realtime-shared/obstacles";
+import { CENTER_ITEMS, DECOR_SCALE, QUADRANT_ITEMS, type DecorItem, type Quadrant } from "@realtime-shared/obstacles";
 
 const DECOR_DIR = "/map/props/decor";
 
@@ -26,6 +26,10 @@ export function LobbyDecor({ width, height }: { width: number; height: number })
     "bottom-left": { x: 0, y: height - marginY },
     "bottom-right": { x: width - marginX, y: height - marginY },
   };
+
+  // Content square's own top-left corner — see CENTER_ITEMS' doc comment in obstacles.ts: it's
+  // exactly (marginX, marginY), the same origin math the quadrants above use.
+  const centerOrigin = { x: marginX, y: marginY };
 
   return (
     <div className="absolute left-0 top-0" aria-hidden="true">
@@ -51,6 +55,23 @@ export function LobbyDecor({ width, height }: { width: number; height: number })
           />
         )),
       )}
+      {CENTER_ITEMS.map((item, i) => (
+        <img
+          key={`center-${item.file}-${i}`}
+          src={`${DECOR_DIR}/${item.file}.png`}
+          alt=""
+          draggable={false}
+          style={{
+            position: "absolute",
+            left: centerOrigin.x + item.x * DECOR_SCALE,
+            top: centerOrigin.y + item.y * DECOR_SCALE,
+            width: item.w * DECOR_SCALE,
+            height: item.h * DECOR_SCALE,
+            maxWidth: "none",
+            imageRendering: "pixelated",
+          }}
+        />
+      ))}
     </div>
   );
 }
