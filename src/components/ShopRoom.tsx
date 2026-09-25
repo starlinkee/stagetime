@@ -3,7 +3,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CharacterSprite } from "@/components/CharacterSprite";
 import { CosmeticOverlay } from "@/components/CosmeticOverlay";
 import { RoomStage, type RoomZone } from "@/components/RoomStage";
-import { CHARACTER_CHANGE_COST, FLOWER_COST, FLOWER_HOURS, SPARKLES_COST, SPARKLES_HOURS } from "@/lib/coins";
+import {
+  CHARACTER_CHANGE_COST,
+  FLOWER_COST,
+  FLOWER_HOURS,
+  SHURIKEN_AMMO_COST,
+  SHURIKEN_AMMO_PACK,
+  SPARKLES_COST,
+  SPARKLES_HOURS,
+} from "@/lib/coins";
 import { EXIT_ZONE } from "@/lib/rooms";
 import { DEFAULT_COLOR, type CharacterSlug, useMyProfile } from "@/lib/useProfile";
 
@@ -49,7 +57,14 @@ const CHARACTER_OPTIONS: { slug: CharacterSlug; name: string }[] = [
   { slug: "pixel", name: "Pixel" },
 ];
 const CHARACTER_ZONE: RoomZone = { slug: CHARACTER_ZONE_SLUG, name: "Change character", kind: "action", x: 573, y: 500, w: 220, h: 140 };
-const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, ...Object.values(COSMETIC_ITEMS).map((item) => item.zone), CHARACTER_ZONE];
+/** Third weapon (weapon slot 3, see WEAPON_SLOTS in RoomStage.tsx): the gunman NPC sells shuriken
+ * ammo packs for coins — a real gameplay effect (unlike the cosmetics/character above), so the
+ * atomic balance-check-and-grant happens server-side (see buy_shuriken_ammo in
+ * supabase/migrations/0040_shuriken_ammo.sql), same "coins never disappear before the item is
+ * granted" guarantee as purchaseCosmetic. */
+const GUNMAN_ZONE_SLUG = "gunman";
+const GUNMAN_ZONE: RoomZone = { slug: GUNMAN_ZONE_SLUG, name: "Gunman", kind: "action", x: 996, y: 500, w: 220, h: 140 };
+const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, ...Object.values(COSMETIC_ITEMS).map((item) => item.zone), CHARACTER_ZONE, GUNMAN_ZONE];
 
 /**
  * Pokój-sklep: wejście już wymaga konta (patrz RoomZone.requiresAuth w lobby i sprawdzenie w
@@ -60,7 +75,7 @@ const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, ...Object.values(COSMETIC_ITEMS).map(
  * nigdy nie zdejmuje coinów bez przyznania przedmiotu.
  */
 export function ShopRoom({ roomSlug }: { roomSlug: string }) {
-  const { ready, coins, cosmetic, character, purchaseCosmetic, purchaseCharacter } = useMyProfile();
+  const { ready, coins, cosmetic, character, shurikenAmmo, purchaseCosmetic, purchaseCharacter, purchaseShurikenAmmo } = useMyProfile();
   const [activeItem, setActiveItem] = useState<CosmeticSlug | null>(null);
   const [confirmingRebuy, setConfirmingRebuy] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -69,6 +84,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   const [characterOpen, setCharacterOpen] = useState(false);
   const [characterBusy, setCharacterBusy] = useState(false);
   const [characterError, setCharacterError] = useState<string | null>(null);
+  const [gunmanOpen, setGunmanOpen] = useState(false);
+  const [gunmanBusy, setGunmanBusy] = useState(false);
+  const [gunmanError, setGunmanError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!toast) return;
@@ -85,6 +103,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     } else if (slug === CHARACTER_ZONE_SLUG) {
       setCharacterError(null);
       setCharacterOpen(true);
+    } else if (slug === GUNMAN_ZONE_SLUG) {
+      setGunmanError(null);
+      setGunmanOpen(true);
     }
   }, []);
 
@@ -100,6 +121,12 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     setCharacterOpen(false);
     setCharacterError(null);
   }, [characterBusy]);
+
+  const closeGunman = useCallback(() => {
+    if (gunmanBusy) return;
+    setGunmanOpen(false);
+    setGunmanError(null);
+  }, [gunmanBusy]);
 
   const owned = activeItem !== null && cosmetic === activeItem;
 
@@ -141,9 +168,23 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     [characterBusy, character, purchaseCharacter],
   );
 
+  const buyShurikens = useCallback(async () => {
+    if (gunmanBusy) return;
+    setGunmanBusy(true);
+    setGunmanError(null);
+    const result = await purchaseShurikenAmmo();
+    setGunmanBusy(false);
+    if (!result.ok) {
+      setGunmanError(result.error);
+      return;
+    }
+    setToast(`+${SHURIKEN_AMMO_PACK} shurikens!`);
+  }, [gunmanBusy, purchaseShurikenAmmo]);
+
   const activeItemInfo = activeItem ? COSMETIC_ITEMS[activeItem] : null;
   const canAfford = activeItemInfo ? coins >= activeItemInfo.cost : false;
   const canAffordCharacter = coins >= CHARACTER_CHANGE_COST;
+  const canAffordShurikens = coins >= SHURIKEN_AMMO_COST;
 
   const zones = useMemo(() => SHOP_ZONES, []);
 
@@ -158,7 +199,8 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
       />
       <div className="flex w-full max-w-2xl flex-col items-center gap-2 text-center">
         <p className="text-sm text-zinc-500">
-          Hold E on a floor button to browse a cosmetic, or the wardrobe to change your character.
+          Hold E on a floor button to browse a cosmetic, the wardrobe to change your character, or the gunman
+          for shurikens.
         </p>
         {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
       </div>
@@ -218,6 +260,58 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
                 className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {gunmanOpen && ready && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Gunman shop"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-zinc-100">Gunman</h2>
+              <span className="flex items-center gap-1 rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-300">
+                {SHURIKEN_AMMO_COST} copper coins
+              </span>
+            </div>
+            <p className="mb-5 text-center text-sm text-zinc-400">
+              Shurikens: 5 damage, much faster than a thrown ball. You have{" "}
+              <span className="font-semibold text-zinc-100">{shurikenAmmo}</span> left. Buy a pack of{" "}
+              {SHURIKEN_AMMO_PACK} more for {SHURIKEN_AMMO_COST} coins.
+            </p>
+            <div className="mb-3 flex flex-col gap-1 text-center text-sm text-zinc-400">
+              <span>Your balance</span>
+              <span className={`text-lg font-semibold ${canAffordShurikens ? "text-zinc-100" : "text-rose-400"}`}>
+                {coins.toFixed(1)} coins
+              </span>
+            </div>
+            {!canAffordShurikens && (
+              <p className="mb-3 text-center text-sm text-rose-400">
+                You need {(SHURIKEN_AMMO_COST - coins).toFixed(1)} more copper coins.
+              </p>
+            )}
+            {gunmanError && <p className="mb-3 text-center text-sm text-rose-400">{gunmanError}</p>}
+            <div className="flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={closeGunman}
+                disabled={gunmanBusy}
+                className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void buyShurikens()}
+                disabled={gunmanBusy || !canAffordShurikens}
+                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {gunmanBusy ? "Processing…" : `Buy ${SHURIKEN_AMMO_PACK} shurikens`}
               </button>
             </div>
           </div>

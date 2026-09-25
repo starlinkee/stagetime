@@ -1,5 +1,15 @@
 "use client";
 import { useSyncExternalStore } from "react";
+import {
+  BALL_SPEED,
+  DMG_MAX,
+  DMG_MIN,
+  SHURIKEN_COOLDOWN_MS,
+  SHURIKEN_DMG,
+  SHURIKEN_SPEED,
+  SLASH_COOLDOWN_MS,
+  SLASH_DMG,
+} from "@realtime-shared/constants";
 
 /**
  * Jedno miejsce ze wszystkimi ustawieniami "adminowskimi" apki (rzeczy, które admin chce
@@ -16,12 +26,38 @@ export type AdminSettings = {
    * w realtime-server/shared/constants.ts. Wysyłane do realtime-server jako staminaRegenOverride
    * (patrz DEV_OVERRIDES_ENABLED w server.ts), dokładnie tym samym mechanizmem co playerSpeed. */
   staminaRegenPerSec: number;
+  /** Prędkość lotu rzuconej kuli (px/s) — patrz BALL_SPEED w realtime-server/shared/constants.ts.
+   * Wysyłane jako weapons.ballSpeed (dokładnie ten sam mechanizm co playerSpeed powyżej). */
+  ballSpeed: number;
+  /** Dolna granica obrażeń rzuconej kuli (przy zerowym ładowaniu) — patrz DMG_MIN. */
+  ballDmgMin: number;
+  /** Górna granica obrażeń rzuconej kuli (przy pełnym ładowaniu) — patrz DMG_MAX. */
+  ballDmgMax: number;
+  /** Obrażenia zadawane przez slash (bez ładowania) — patrz SLASH_DMG. */
+  slashDmg: number;
+  /** Cooldown między slashami (ms) — patrz SLASH_COOLDOWN_MS. */
+  slashCooldownMs: number;
+  /** Obrażenia zadawane przez szurikena (broń nr 3) — patrz SHURIKEN_DMG. */
+  shurikenDmg: number;
+  /** Prędkość lotu szurikena (px/s) — patrz SHURIKEN_SPEED. */
+  shurikenSpeed: number;
+  /** Cooldown między szurikenami (ms) — ammo, nie ten cooldown, jest głównym ogranicznikiem, patrz
+   * SHURIKEN_COOLDOWN_MS. */
+  shurikenCooldownMs: number;
 };
 
 export const DEFAULT_ADMIN_SETTINGS: AdminSettings = {
   roomEnterSec: 0.75,
   playerSpeed: 220,
   staminaRegenPerSec: 100,
+  ballSpeed: BALL_SPEED,
+  ballDmgMin: DMG_MIN,
+  ballDmgMax: DMG_MAX,
+  slashDmg: SLASH_DMG,
+  slashCooldownMs: SLASH_COOLDOWN_MS,
+  shurikenDmg: SHURIKEN_DMG,
+  shurikenSpeed: SHURIKEN_SPEED,
+  shurikenCooldownMs: SHURIKEN_COOLDOWN_MS,
 };
 
 /** Opisuje jedno ustawienie do automatycznego wyrenderowania w panelu admina. */
@@ -39,6 +75,14 @@ export const ADMIN_SETTINGS_SCHEMA: AdminSettingDef[] = [
   { key: "roomEnterSec", label: "Czas otwarcia pokoju (przytrzymanie E)", min: 0, step: 0.05, suffix: "s" },
   { key: "playerSpeed", label: "Prędkość gracza", min: 0, step: 10, suffix: " px/s" },
   { key: "staminaRegenPerSec", label: "Regeneracja staminy", min: 0, step: 5, suffix: " /s" },
+  { key: "ballSpeed", label: "Kula: prędkość", min: 1, step: 10, suffix: " px/s" },
+  { key: "ballDmgMin", label: "Kula: dmg min", min: 0, step: 1 },
+  { key: "ballDmgMax", label: "Kula: dmg max", min: 0, step: 1 },
+  { key: "slashDmg", label: "Slash: dmg", min: 0, step: 1 },
+  { key: "slashCooldownMs", label: "Slash: cooldown", min: 0, step: 10, suffix: " ms" },
+  { key: "shurikenDmg", label: "Shuriken: dmg", min: 0, step: 1 },
+  { key: "shurikenSpeed", label: "Shuriken: prędkość", min: 1, step: 10, suffix: " px/s" },
+  { key: "shurikenCooldownMs", label: "Shuriken: cooldown", min: 0, step: 10, suffix: " ms" },
 ];
 
 const STORAGE_KEY = "stagetime:admin-settings";

@@ -64,7 +64,7 @@ export interface PlayerState {
  * cooldown rules differ too much per kind for that), but named here so `ClientMessage`'s combat
  * variants and any future per-kind bookkeeping share one vocabulary instead of drifting.
  */
-export type AttackKind = "roll" | "fire" | "slash";
+export type AttackKind = "roll" | "fire" | "slash" | "shuriken";
 
 /**
  * A live projectile (thrown ball) or melee hitbox, decided and simulated server-side (Faza F3).
@@ -93,6 +93,10 @@ export interface ServerBall {
    * fraction for a thrown ball (DMG_MIN..DMG_MAX), decided once at spawn (see spawnBall/spawnSlash
    * in server.ts) rather than recomputed from `r` at hit time. */
   dmg: number;
+  /** Weapon slot 3: renders as a spinning shuriken instead of an orb — purely a rendering hint,
+   * never used for hit-testing/physics, same role `melee` plays for the slash swipe. Flies exactly
+   * like a thrown ball (see spawnShuriken in server.ts), just faster and for a fixed damage. */
+  shuriken?: boolean;
 }
 
 /**
@@ -160,11 +164,37 @@ export type ClientMessage =
        * `stats.staminaRegenPerSec` instead of the global STAMINA_REGEN_PER_SEC constant.
        */
       staminaRegenOverride?: number;
+      /**
+       * Admin-panel per-weapon stat overrides (see AdminSettings in src/lib/adminSettings.ts) —
+       * same dev-only gate as speedOverride/staminaRegenOverride above (DEV_OVERRIDES_ENABLED in
+       * server.ts). Each field only overrides this one connection's own copy (Conn.weapons in
+       * server.ts), never a shared/global default; any field left out keeps its current value.
+       */
+      weapons?: {
+        ballSpeed?: number;
+        ballDmgMin?: number;
+        ballDmgMax?: number;
+        slashDmg?: number;
+        slashCooldownMs?: number;
+        shurikenDmg?: number;
+        shurikenSpeed?: number;
+        shurikenCooldownMs?: number;
+      };
     }
   | { type: "roll" }
   | { type: "charge"; on: boolean }
   | { type: "fire"; chargeMs: number }
   | { type: "slash" }
+  /**
+   * Weapon slot 3: a request, not an assertion, same shape as `slash` above — the server derives
+   * direction/position from this connection's own `d`/`x`/`y`. Ammo (does this connection's player
+   * have one left) is NOT checked here — that's a Postgres concern the client already resolved via
+   * consume_shuriken_ammo before sending this (see supabase/migrations/0040_shuriken_ammo.sql,
+   * same "ownership is Postgres, *use* is realtime-server" split as `useItem`/flashGrenade below);
+   * `shurikenCooldownUntil` in server.ts is only defense-in-depth against resending faster than
+   * that round-trip.
+   */
+  | { type: "shuriken" }
   /**
    * STU-45: one of EMOJI_EMOTES (shared/constants.ts). Unlike roll/charge/fire/slash this is
    * accepted during the work phase too — see isFrozen's doc comment in server.ts — so it never

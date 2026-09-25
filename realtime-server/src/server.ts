@@ -54,6 +54,10 @@ import {
   ROLL_SPEED_MULT,
   ROLL_STAMINA_COST,
   SCHEMA_VERSION,
+  SHURIKEN_COOLDOWN_MS,
+  SHURIKEN_DMG,
+  SHURIKEN_R,
+  SHURIKEN_SPEED,
   SLASH_COOLDOWN_MS,
   SLASH_DMG,
   SLASH_MS,
@@ -168,6 +172,24 @@ type Conn = {
   // claimed `chargeMs` to what actually elapsed here, not to what the client claims elapsed.
   chargeStartAt: number | null;
   slashCooldownUntil: number;
+  // Weapon slot 3 (shuriken) fire-rate gate — defense-in-depth only, see SHURIKEN_COOLDOWN_MS's
+  // doc comment in shared/constants.ts (ammo, not this, is the real limit).
+  shurikenCooldownUntil: number;
+  // Admin-panel per-weapon stat overrides (see AdminSettings in src/lib/adminSettings.ts and the
+  // "weapons" field on the "input" ClientMessage) — own copy per connection, same reasoning as
+  // `stats` below. Only ever different from the shared/constants.ts defaults when
+  // DEV_OVERRIDES_ENABLED is on; a real client otherwise can't touch another connection's own
+  // damage/speed/cooldown numbers.
+  weapons: {
+    ballSpeed: number;
+    ballDmgMin: number;
+    ballDmgMax: number;
+    slashDmg: number;
+    slashCooldownMs: number;
+    shurikenDmg: number;
+    shurikenSpeed: number;
+    shurikenCooldownMs: number;
+  };
   // Cooldown for the "emote" message — see EMOTE_COOLDOWN_MS in shared/constants.ts. Unlike
   // roll/charge/fire/slash this is intentionally never gated by isFrozen(): emotes must work
   // during the work phase too (STU-45), only isDead(conn) blocks them.
@@ -499,16 +521,18 @@ function spawnBall(conn: Conn, p: number) {
   const [ux, uy] = DIRS[conn.d];
   const n = Math.hypot(ux, uy) || 1;
   const r = ORB_R_MIN + (ORB_R_MAX - ORB_R_MIN) * p;
-  // Base damage from charge fraction, then scaled by this connection's own attackPower — 1 for
-  // everyone today, but a higher one (future item/character) can push past DMG_MAX on purpose.
-  const baseDmg = Math.max(DMG_MIN, Math.min(DMG_MAX, DMG_MIN + (DMG_MAX - DMG_MIN) * p));
+  // Base damage from charge fraction (admin-panel-editable min/max, see conn.weapons' doc
+  // comment above), then scaled by this connection's own attackPower — 1 for everyone today, but
+  // a higher one (future item/character) can push past ballDmgMax on purpose.
+  const { ballDmgMin, ballDmgMax, ballSpeed } = conn.weapons;
+  const baseDmg = Math.max(ballDmgMin, Math.min(ballDmgMax, ballDmgMin + (ballDmgMax - ballDmgMin) * p));
   const dmg = Math.round(baseDmg * conn.stats.attackPower);
   pushBall(conn, {
     id: `${conn.id}:${nextBallId++}`,
     x: conn.x + PERSON_W / 2,
     y: Math.max(r + 2, conn.y - r - 4),
-    vx: (ux / n) * BALL_SPEED,
-    vy: (uy / n) * BALL_SPEED,
+    vx: (ux / n) * ballSpeed,
+    vy: (uy / n) * ballSpeed,
     r,
     color: conn.color,
     owner: conn.id,
@@ -536,7 +560,29 @@ function spawnSlash(conn: Conn) {
     melee: true,
     angle: Math.atan2(uy, ux),
     until: Date.now() + SLASH_MS,
-    dmg: Math.round(SLASH_DMG * conn.stats.attackPower),
+    dmg: Math.round(conn.weapons.slashDmg * conn.stats.attackPower),
+  });
+}
+
+/** Shuriken (weapon slot 3): flies exactly like a thrown ball (spawnBall above) — same
+ * above-the-head spawn point, straight line in the facing direction — just at this connection's
+ * own shurikenSpeed/shurikenDmg (see conn.weapons' doc comment) instead of a charge-scaled one,
+ * and flagged `shuriken` so the client draws a spinning star instead of an orb. */
+function spawnShuriken(conn: Conn) {
+  const [ux, uy] = DIRS[conn.d];
+  const n = Math.hypot(ux, uy) || 1;
+  const { shurikenSpeed, shurikenDmg } = conn.weapons;
+  pushBall(conn, {
+    id: `${conn.id}:${nextBallId++}`,
+    x: conn.x + PERSON_W / 2,
+    y: Math.max(SHURIKEN_R + 2, conn.y - SHURIKEN_R - 4),
+    vx: (ux / n) * shurikenSpeed,
+    vy: (uy / n) * shurikenSpeed,
+    r: SHURIKEN_R,
+    color: conn.color,
+    owner: conn.id,
+    shuriken: true,
+    dmg: Math.round(shurikenDmg * conn.stats.attackPower),
   });
 }
 
@@ -965,6 +1011,17 @@ wss.on("connection", (ws, req) => {
     rollDy: 0,
     chargeStartAt: null,
     slashCooldownUntil: 0,
+    shurikenCooldownUntil: 0,
+    weapons: {
+      ballSpeed: BALL_SPEED,
+      ballDmgMin: DMG_MIN,
+      ballDmgMax: DMG_MAX,
+      slashDmg: SLASH_DMG,
+      slashCooldownMs: SLASH_COOLDOWN_MS,
+      shurikenDmg: SHURIKEN_DMG,
+      shurikenSpeed: SHURIKEN_SPEED,
+      shurikenCooldownMs: SHURIKEN_COOLDOWN_MS,
+    },
     emoteCooldownUntil: 0,
     flashGrenadeCooldownUntil: 0,
     staminaAt: stats.staminaMax,
@@ -1016,6 +1073,24 @@ wss.on("connection", (ws, req) => {
           MIN_DEV_STAMINA_REGEN,
           Math.min(MAX_DEV_STAMINA_REGEN, msg.staminaRegenOverride),
         );
+      }
+      // Admin panel's per-weapon stat knobs (see AdminSettings in src/lib/adminSettings.ts) —
+      // same dev-only gate as speedOverride/staminaRegenOverride above. Any field left out (or not
+      // a finite number) keeps this connection's current value instead of resetting to a default.
+      if (DEV_OVERRIDES_ENABLED && msg.weapons) {
+        const w = msg.weapons;
+        const clamp = (v: unknown, lo: number, hi: number, fallback: number) =>
+          typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
+        conn.weapons = {
+          ballSpeed: clamp(w.ballSpeed, 1, 5000, conn.weapons.ballSpeed),
+          ballDmgMin: clamp(w.ballDmgMin, 0, 999, conn.weapons.ballDmgMin),
+          ballDmgMax: clamp(w.ballDmgMax, 0, 999, conn.weapons.ballDmgMax),
+          slashDmg: clamp(w.slashDmg, 0, 999, conn.weapons.slashDmg),
+          slashCooldownMs: clamp(w.slashCooldownMs, 0, 10_000, conn.weapons.slashCooldownMs),
+          shurikenDmg: clamp(w.shurikenDmg, 0, 999, conn.weapons.shurikenDmg),
+          shurikenSpeed: clamp(w.shurikenSpeed, 1, 5000, conn.weapons.shurikenSpeed),
+          shurikenCooldownMs: clamp(w.shurikenCooldownMs, 0, 10_000, conn.weapons.shurikenCooldownMs),
+        };
       }
       return;
     }
@@ -1074,10 +1149,22 @@ wss.on("connection", (ws, req) => {
       if (now < conn.slashCooldownUntil) return;
       const stamina = currentStamina(conn, now);
       if (stamina < SLASH_STAMINA_COST) return;
-      conn.slashCooldownUntil = now + SLASH_COOLDOWN_MS;
+      conn.slashCooldownUntil = now + conn.weapons.slashCooldownMs;
       conn.staminaAt = stamina - SLASH_STAMINA_COST;
       conn.staminaUpdatedAt = now;
       spawnSlash(conn);
+      return;
+    }
+    // Weapon slot 3: a request, not an assertion, same shape as `slash` above — the server derives
+    // direction/position from this connection's own `d`/`x`/`y`. Ammo ownership is NOT checked
+    // here (see the "shuriken" ClientMessage's doc comment in shared/types.ts) — this cooldown is
+    // defense-in-depth only, same role FLASH_GRENADE_COOLDOWN_MS plays for "useItem" below.
+    if (msg.type === "shuriken") {
+      if (isDead(conn) || isFrozen(conn)) return;
+      const now = Date.now();
+      if (now < conn.shurikenCooldownUntil) return;
+      conn.shurikenCooldownUntil = now + conn.weapons.shurikenCooldownMs;
+      spawnShuriken(conn);
       return;
     }
     // STU-45: deliberately only isDead(conn), not isFrozen(conn) — emotes must keep working

@@ -107,6 +107,28 @@ export const SLASH_STAMINA_COST = 15;
 /** Character hitbox padding used by ball/melee collision checks. */
 export const HIT_PAD = 8;
 
+/**
+ * Weapon slot 3: a fast, ammo-limited throwing weapon. Flies exactly like a thrown ball
+ * (spawnShuriken in server.ts: same above-the-head spawn, straight line in the facing direction,
+ * no charge), just quicker and for a fixed damage instead of one scaled by charge fraction. Ammo
+ * (how many a player has left) is a Postgres concern checked client-side before this weapon's
+ * ClientMessage is ever sent — same "ownership is Postgres, *use* is realtime-server" split as
+ * flash grenades (see supabase/migrations/0040_shuriken_ammo.sql) — neither Conn nor this file
+ * track a per-connection ammo count. Every value below is also an admin-panel-editable default
+ * (see AdminSettings in src/lib/adminSettings.ts) — a connection's own live value lives in
+ * `Conn.weapons` (server.ts), only ever different from these defaults when DEV_OVERRIDES_ENABLED
+ * is on (same gate as playerSpeed/staminaRegenPerSec overrides).
+ */
+export const SHURIKEN_DMG = 5;
+/** Flight speed, px/s — deliberately faster than BALL_SPEED so a shuriken reads as a quicker,
+ * sharper throw than the charge-and-lob ball. */
+export const SHURIKEN_SPEED = 900;
+export const SHURIKEN_R = 14;
+/** Defense-in-depth only — ammo itself (checked client-side against Postgres before this message
+ * is ever sent, see the doc comment above) is the real fire-rate limit, same role
+ * FLASH_GRENADE_COOLDOWN_MS plays for that item's own "useItem" message. */
+export const SHURIKEN_COOLDOWN_MS = 120;
+
 /** STU-45: cooldown between emotes — generous enough to allow expression, tight enough to stop
  * spam (no per-message-type rate limiter exists elsewhere, see withinRateLimit's doc comment in
  * server.ts, so this cooldown is emote's only anti-spam guard). */

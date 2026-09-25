@@ -62,6 +62,9 @@ import {
   STAMINA_MAX,
   STAMINA_REGEN_PER_SEC,
   START_HOLD_MS,
+  SHURIKEN_COOLDOWN_MS,
+  SHURIKEN_R,
+  SHURIKEN_SPEED,
   SLASH_COOLDOWN_MS,
   SLASH_DMG,
   SLASH_MS,
@@ -233,6 +236,9 @@ type Ball = {
    * time, stamped onto the ball once (a skin change mid-flight doesn't retroactively repaint
    * already-fired balls, same as color already works). */
   skin?: string;
+  /** Weapon slot 3: renders as a spinning shuriken instead of an orb — see ServerBall.shuriken's
+   * doc comment in realtime-shared/types. */
+  shuriken?: boolean;
 };
 type Shard = {
   x: number;
@@ -487,6 +493,25 @@ function spawnSlash(balls: Ball[], x: number, y: number, d: Dir, color: string, 
   });
 }
 
+/** Wypuszcza szurikena znad postaci stojącej w (x, y) w kierunku d — purely a local/predicted
+ * preview, same "instant local feedback, server confirms the real one" role as `launch()` above
+ * (see spawnShuriken's own doc comment in realtime-server/src/server.ts for the authoritative,
+ * server-side version). */
+function spawnShuriken(balls: Ball[], x: number, y: number, d: Dir, color: string, owner: string) {
+  const [ux, uy] = DIRS[d];
+  const n = Math.hypot(ux, uy) || 1;
+  balls.push({
+    x: x + PERSON_W / 2,
+    y: Math.max(SHURIKEN_R + 2, y - SHURIKEN_R - 4),
+    vx: (ux / n) * SHURIKEN_SPEED,
+    vy: (uy / n) * SHURIKEN_SPEED,
+    r: SHURIKEN_R,
+    color,
+    owner,
+    shuriken: true,
+  });
+}
+
 /**
  * STU-41: `skin` (one of BALL_SKINS, see src/lib/useProfile.ts) only changes what gets drawn
  * *around/on top of* the base orb below — the base gradient/glow/outline is "classic" and every
@@ -501,22 +526,32 @@ function chargeTint(p: number): string {
 }
 
 /**
- * STU-23: no real multi-weapon system yet (see AGENTS.md) — this is a client-only input router
- * picking which existing attack Space triggers (charge-and-throw vs. the melee slash, wired
- * server-side via ClientMessage "slash"/spawnSlash in server.ts). Slot 3 is a deliberate
- * placeholder for a future real weapon, not a bug — rendered disabled below.
+ * STU-23: a client-only input router picking which existing attack Space triggers (charge-and-
+ * throw, melee slash, or the ammo-limited shuriken, wired server-side via ClientMessage "slash"/
+ * "shuriken"/spawnSlash/spawnShuriken in server.ts). Slots 4..10 are deliberate placeholders for
+ * future real weapons, not a bug — rendered disabled below.
  * STU-61: this slot used to be a fist swing rendered as a glowing orb (same shape as the thrown
  * ball, just stationary) — replaced by a slash (see drawSlash below) both because it now looks
  * distinct from the ball and because the orb's radius/glow scaled off a life fraction computed by
  * mixing the server's `ServerBall.until` (epoch ms) with this client's own `performance.now()`-
  * based render clock, which could blow the on-screen radius up to cover the whole canvas for a
  * frame — see slashClockRef's doc comment for the actual fix.
+ * Shuriken's `cost` is null (unlike ball/slash's stamina cost) — it's ammo-gated instead, shown as
+ * a live count via the hotbar's own shurikenAmmo badge (see the WEAPON_SLOTS.map render below),
+ * not a fixed per-shot number like STAMINA_COST_PER_SHOT/SLASH_STAMINA_COST.
  */
-type WeaponId = "ball" | "slash";
-const WEAPON_SLOTS: readonly { key: string; id: WeaponId | null; icon: string; label: string }[] = [
-  { key: "1", id: "ball", icon: "\u{1F534}", label: "Throw" },
-  { key: "2", id: "slash", icon: "\u{2694}\u{FE0F}", label: "Slash" },
-  { key: "3", id: null, icon: "", label: "Empty" },
+type WeaponId = "ball" | "slash" | "shuriken";
+const WEAPON_SLOTS: readonly { key: string; id: WeaponId | null; icon: string; label: string; cost: number | null }[] = [
+  { key: "1", id: "ball", icon: "\u{1F534}", label: "Throw", cost: STAMINA_COST_PER_SHOT },
+  { key: "2", id: "slash", icon: "\u{2694}\u{FE0F}", label: "Slash", cost: SLASH_STAMINA_COST },
+  { key: "3", id: "shuriken", icon: "\u{2733}\u{FE0F}", label: "Shuriken", cost: null },
+  { key: "", id: null, icon: "", label: "Empty", cost: null },
+  { key: "", id: null, icon: "", label: "Empty", cost: null },
+  { key: "", id: null, icon: "", label: "Empty", cost: null },
+  { key: "", id: null, icon: "", label: "Empty", cost: null },
+  { key: "", id: null, icon: "", label: "Empty", cost: null },
+  { key: "", id: null, icon: "", label: "Empty", cost: null },
+  { key: "", id: null, icon: "", label: "Empty", cost: null },
 ] as const;
 
 /** STU-23: freed Digit1..Digit3 for weapon slots above, so STU-45's emote hotkeys move to the
@@ -621,6 +656,39 @@ function drawSlash(ctx: CanvasRenderingContext2D, cx: number, cy: number, angle:
   ctx.beginPath();
   ctx.arc(0, 0, arcR, -spread / 2, spread / 2);
   ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Weapon slot 3: a small spinning 4-pointed star, deliberately not drawOrb/drawSlash's look —
+ * reads as a thrown blade rather than a glowing projectile or a swipe. Spin is driven by `t`
+ * (this client's own render clock) rather than distance traveled, so it keeps spinning even while
+ * at rest in a screenshot-freeze — purely cosmetic, never used for hit-testing.
+ */
+function drawShuriken(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, t: number) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate((t / 120) % (Math.PI * 2));
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = "#d4d4d8";
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < 4; i++) {
+    const a0 = (Math.PI / 2) * i;
+    const aMid = a0 + Math.PI / 4;
+    ctx.lineTo(Math.cos(a0) * r, Math.sin(a0) * r);
+    ctx.lineTo(Math.cos(aMid) * (r * 0.35), Math.sin(aMid) * (r * 0.35));
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.18, 0, Math.PI * 2);
+  ctx.fillStyle = "#3f3f46";
+  ctx.fill();
   ctx.restore();
 }
 
@@ -1378,6 +1446,9 @@ export function RoomStage({
      * shortcut as the stamina mirror below, purely to skip a doomed send; the server's own
      * slashCooldownUntil check is what actually gates spawnSlash. */
     let slashCooldownUntilLocal = 0;
+    /** Same client-side mirror role as slashCooldownUntilLocal, for weapon slot 3's
+     * Conn.shurikenCooldownUntil in server.ts. */
+    let shurikenCooldownUntilLocal = 0;
     // Mirrors the server's own stamina state (see currentStamina()/Conn.staminaAt in
     // realtime-server/src/server.ts) — without this, our own predicted preview kept showing shots
     // the server would actually refuse. Regenerated every frame in tick() (STAMINA_REGEN_PER_SEC),
@@ -1675,6 +1746,7 @@ export function RoomStage({
             until: b.until,
             id: b.id,
             skin: b.owner === netKey ? ballSkinRef.current : othersRef.current[b.owner]?.ballSkin,
+            shuriken: b.shuriken,
           }),
         );
         // predictedRef only ever holds this connection's own shots, so the moment the server
@@ -1847,6 +1919,32 @@ export function RoomStage({
             if (error) console.error("increment_fist_swings", error);
           });
     };
+    /**
+     * Weapon slot 3: fires immediately on Space keydown when "shuriken" is the selected weapon,
+     * same no-charge-up shape as doSlash above. Ammo is checked client-side first
+     * (profileRef.current.shurikenAmmo, an optimistic read that can be briefly stale — harmless,
+     * see useShuriken's doc comment in src/lib/useProfile.ts) via the atomic Postgres RPC in
+     * supabase/migrations/0040_shuriken_ammo.sql, same "ownership is Postgres, *use* is
+     * realtime-server" split KeyG's flash grenade already uses below; only on that RPC's success
+     * do we spawn the local preview and ask realtime-server to actually throw it.
+     * shurikenCooldownUntilLocal only skips a doomed RPC call; the server's own
+     * conn.shurikenCooldownUntil (server.ts) is the real gate.
+     */
+    const doShuriken = () => {
+      if (!REALTIME_SERVER_URL || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const now = performance.now();
+      if (now < shurikenCooldownUntilLocal) return;
+      const p = profileRef.current;
+      if (p.shurikenAmmo <= 0) return;
+      shurikenCooldownUntilLocal = now + SHURIKEN_COOLDOWN_MS;
+      void p.useShuriken().then((res) => {
+        if (!res.ok || !ws || ws.readyState !== WebSocket.OPEN) return;
+        playAttackSound();
+        spawnShuriken(predictedRef.current, x, y, dir, colorRef.current, keyRef.current || "me");
+        const msg: ClientMessage = { type: "shuriken" };
+        ws.send(JSON.stringify(msg));
+      });
+    };
 
     const draw = (t: number) => {
       ctx.clearRect(0, 0, WORLD_W, WORLD_H);
@@ -1992,6 +2090,8 @@ export function RoomStage({
           }
           const life = 1 - (t - born) / SLASH_MS;
           drawSlash(ctx, b.x, b.y, b.angle ?? 0, b.r, life, b.color);
+        } else if (b.shuriken) {
+          drawShuriken(ctx, b.x, b.y, b.r, b.color, t);
         } else {
           drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6, b.skin);
         }
@@ -2194,6 +2294,16 @@ export function RoomStage({
             ? {
                 speedOverride: getAdminSettings().playerSpeed,
                 staminaRegenOverride: getAdminSettings().staminaRegenPerSec,
+                weapons: {
+                  ballSpeed: getAdminSettings().ballSpeed,
+                  ballDmgMin: getAdminSettings().ballDmgMin,
+                  ballDmgMax: getAdminSettings().ballDmgMax,
+                  slashDmg: getAdminSettings().slashDmg,
+                  slashCooldownMs: getAdminSettings().slashCooldownMs,
+                  shurikenDmg: getAdminSettings().shurikenDmg,
+                  shurikenSpeed: getAdminSettings().shurikenSpeed,
+                  shurikenCooldownMs: getAdminSettings().shurikenCooldownMs,
+                },
               }
             : {}),
         };
@@ -2531,6 +2641,10 @@ export function RoomStage({
         // charge-up — it fires right here on keydown, unlike ball's press-and-hold-then-release.
         if (selectedWeaponRef.current === "slash") {
           if (!e.repeat) doSlash();
+          return;
+        }
+        if (selectedWeaponRef.current === "shuriken") {
+          if (!e.repeat) doShuriken();
           return;
         }
         if (!e.repeat && chargeStart === null) {
@@ -3101,13 +3215,17 @@ export function RoomStage({
       </button>
     )}
     {REALTIME_SERVER_URL && (
-      // STU-23: weapon hotbar — WEAPON_SLOTS[0]/[1] pick what Space fires (see onKeyDown), slot 3
-      // is a deliberate placeholder for a future real weapon, shown disabled rather than hidden.
-      <div className="pointer-events-none fixed bottom-20 left-1/2 z-20 flex -translate-x-1/2 gap-1.5">
-        {WEAPON_SLOTS.map((slot) => (
+      // STU-23: weapon hotbar — WEAPON_SLOTS[0]/[1]/[2] pick what Space fires (see onKeyDown),
+      // slots 4..10 are deliberate placeholders for future real weapons, shown disabled rather
+      // than hidden. Spans from the left screen edge to where the HP/stamina bars start on the
+      // right (those are w-72 anchored at right-4, hence the right-[20rem] here).
+      <div
+        className="pointer-events-none fixed bottom-20 left-4 right-[20rem] z-20 flex items-end justify-between gap-2 opacity-75"
+      >
+        {WEAPON_SLOTS.map((slot, i) => (
           <div
-            key={slot.key}
-            className={`flex h-11 w-11 flex-col items-center justify-center rounded-lg border shadow-lg ${
+            key={`${slot.key || "empty"}-${i}`}
+            className={`flex h-16 w-16 flex-col items-center justify-center gap-0.5 rounded-lg border shadow-lg ${
               slot.id && slot.id === selectedWeapon
                 ? "border-amber-400 bg-amber-500/25 text-amber-200"
                 : slot.id
@@ -3115,8 +3233,20 @@ export function RoomStage({
                   : "border-zinc-800/60 bg-zinc-900/40 text-zinc-600"
             }`}
           >
-            <span className="text-lg leading-none">{slot.icon || "—"}</span>
-            <span className="text-[9px] font-semibold leading-none text-zinc-400">{slot.key}</span>
+            <span className="text-2xl leading-none">{slot.icon || "—"}</span>
+            {slot.cost != null && (
+              <span className="text-[10px] font-bold leading-none text-amber-300">{slot.cost}</span>
+            )}
+            {/* Ammo-gated, not stamina-gated (see WEAPON_SLOTS' doc comment) — shows the live
+                Postgres-backed count instead of a fixed per-shot cost. */}
+            {slot.id === "shuriken" && (
+              <span className={`text-[10px] font-bold leading-none ${profile.shurikenAmmo > 0 ? "text-amber-300" : "text-rose-400"}`}>
+                {profile.shurikenAmmo}
+              </span>
+            )}
+            {slot.key && (
+              <span className="text-[9px] font-semibold leading-none text-zinc-400">{slot.key}</span>
+            )}
           </div>
         ))}
       </div>

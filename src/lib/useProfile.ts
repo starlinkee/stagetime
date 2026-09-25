@@ -78,6 +78,8 @@ type CharacterFields = { character: string | null };
 type FlashGrenadeFields = { flashGrenades: number };
 /** STU-41: raw ball-skin column as stored. */
 type BallSkinFields = { ballSkin: string | null };
+/** Third weapon (shuriken, weapon slot 3) ammo stock — see supabase/migrations/0040_shuriken_ammo.sql. */
+type ShurikenAmmoFields = { shurikenAmmo: number };
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
 function activeCosmetic(f: CosmeticFields): string | null {
@@ -125,6 +127,10 @@ export type MyProfile = {
   /** STU-41: equipped ball skin (see supabase/migrations/0038_ball_skin.sql) — same Presence-only,
    * no-gameplay-effect path as cosmetic/character. */
   ballSkin: BallSkin;
+  /** Shuriken ammo (weapon slot 3, see WEAPON_SLOTS in RoomStage.tsx) — see
+   * supabase/migrations/0040_shuriken_ammo.sql. Same "ownership/quantity is Postgres, *use* is
+   * realtime-server" split as flashGrenades above. Private, like coins/flashGrenades. */
+  shurikenAmmo: number;
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -159,6 +165,20 @@ export type MyProfile = {
   /** STU-41: switches ball skin — free, direct column update (see saveBallSkin's grant in
    * supabase/migrations/0038_ball_skin.sql), same shape as `save` (color) above, not an RPC. */
   saveBallSkin: (skin: BallSkin) => Promise<boolean>;
+  /**
+   * Consumes one shuriken (atomic check-and-decrement RPC, see
+   * supabase/migrations/0040_shuriken_ammo.sql — same shape as useFlashGrenade). Only decrements
+   * the Postgres stock; the caller still has to tell realtime-server to actually spawn/fly the
+   * projectile (see the "shuriken" ClientMessage in RoomStage.tsx) — this function alone has no
+   * visible effect.
+   */
+  useShuriken: () => Promise<{ ok: true; remaining: number } | { ok: false; error: string }>;
+  /**
+   * Buys a pack of 10 shurikens for 10 copper coins from the gunman (see
+   * supabase/migrations/0040_shuriken_ammo.sql) — same atomic-RPC pattern as purchaseCosmetic:
+   * balance check, coin deduction and the ammo grant happen in one transaction.
+   */
+  purchaseShurikenAmmo: () => Promise<{ ok: true } | { ok: false; error: string }>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -184,7 +204,8 @@ export function useMyProfile(): MyProfile {
     | ({ userId: string } & Profile & { coins: number } & CosmeticFields &
         CharacterFields &
         FlashGrenadeFields &
-        BallSkinFields)
+        BallSkinFields &
+        ShurikenAmmoFields)
     | null
   >(null);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +215,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, shuriken_ammo",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -218,6 +239,7 @@ export function useMyProfile(): MyProfile {
           character: data?.character_slug ?? null,
           flashGrenades: data?.flash_grenades ?? 0,
           ballSkin: data?.ball_skin ?? null,
+          shurikenAmmo: data?.shuriken_ammo ?? 0,
         });
       });
     return () => {
@@ -232,7 +254,8 @@ export function useMyProfile(): MyProfile {
           { userId: string } & Profile & { coins: number } & CosmeticFields &
             CharacterFields &
             FlashGrenadeFields &
-            BallSkinFields
+            BallSkinFields &
+            ShurikenAmmoFields
         >
       ).detail;
       if (next.userId === userId) setLoaded(next);
@@ -266,6 +289,7 @@ export function useMyProfile(): MyProfile {
             character_slug?: string | null;
             flash_grenades?: number;
             ball_skin?: string | null;
+            shuriken_ammo?: number;
           };
           if (!p.nickname) return;
           setLoaded({
@@ -284,6 +308,7 @@ export function useMyProfile(): MyProfile {
             character: p.character_slug ?? null,
             flashGrenades: p.flash_grenades ?? 0,
             ballSkin: p.ball_skin ?? null,
+            shurikenAmmo: p.shuriken_ammo ?? 0,
           });
         },
       )
@@ -307,6 +332,7 @@ export function useMyProfile(): MyProfile {
   const currentCharacter = loaded?.userId === userId ? safeCharacter(loaded.character) : DEFAULT_CHARACTER;
   const currentFlashGrenades = loaded?.userId === userId ? loaded.flashGrenades : 0;
   const currentBallSkin = loaded?.userId === userId ? safeBallSkin(loaded.ballSkin) : DEFAULT_BALL_SKIN;
+  const currentShurikenAmmo = loaded?.userId === userId ? loaded.shurikenAmmo : 0;
 
   const save = useCallback(
     async (color: string) => {
@@ -355,6 +381,7 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
           },
         }),
       );
@@ -376,6 +403,7 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
+      currentShurikenAmmo,
     ],
   );
 
@@ -417,6 +445,7 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
           },
         }),
       );
@@ -438,6 +467,7 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
+      currentShurikenAmmo,
     ],
   );
 
@@ -482,6 +512,7 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
           },
         }),
       );
@@ -502,6 +533,7 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
+      currentShurikenAmmo,
     ],
   );
 
@@ -546,6 +578,7 @@ export function useMyProfile(): MyProfile {
             character: newCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
           },
         }),
       );
@@ -567,6 +600,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentFlashGrenades,
       currentBallSkin,
+      currentShurikenAmmo,
     ],
   );
 
@@ -601,6 +635,7 @@ export function useMyProfile(): MyProfile {
           character: currentCharacter,
           flashGrenades: remaining,
           ballSkin: currentBallSkin,
+          shurikenAmmo: currentShurikenAmmo,
         },
       }),
     );
@@ -622,6 +657,7 @@ export function useMyProfile(): MyProfile {
     currentCharacter,
     currentFlashGrenades,
     currentBallSkin,
+    currentShurikenAmmo,
   ]);
 
   const saveBallSkin = useCallback(
@@ -653,6 +689,7 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: skin,
+            shurikenAmmo: currentShurikenAmmo,
           },
         }),
       );
@@ -674,8 +711,122 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentShurikenAmmo,
     ],
   );
+
+  const useShuriken = useCallback(async () => {
+    if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
+    if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+    // Same atomic check-and-decrement pattern as useFlashGrenade above, see
+    // supabase/migrations/0040_shuriken_ammo.sql — no coins involved, just stock.
+    const { data, error } = await sb.rpc("consume_shuriken_ammo");
+    if (error) {
+      console.error("consume_shuriken_ammo", error);
+      const message = error.message === "no_shuriken_ammo" ? "No shurikens left." : `Failed: ${saveHint(error)}`;
+      return { ok: false as const, error: message };
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as { shuriken_ammo?: number } | null;
+    const remaining = Number(row?.shuriken_ammo ?? Math.max(0, currentShurikenAmmo - 1));
+    saved.dispatchEvent(
+      new CustomEvent("saved", {
+        detail: {
+          userId,
+          nickname: currentNickname,
+          color: currentColor,
+          xp: currentXp,
+          ballsShot: currentBallsShot,
+          fistSwings: currentFistSwings,
+          kills: currentKills,
+          deaths: currentDeaths,
+          mobKills: currentMobKills,
+          coins: currentCoins,
+          cosmetic: currentCosmetic,
+          cosmeticExpiresAt: currentCosmeticExpiresAt,
+          character: currentCharacter,
+          flashGrenades: currentFlashGrenades,
+          ballSkin: currentBallSkin,
+          shurikenAmmo: remaining,
+        },
+      }),
+    );
+    return { ok: true as const, remaining };
+  }, [
+    sb,
+    userId,
+    currentNickname,
+    currentColor,
+    currentXp,
+    currentBallsShot,
+    currentFistSwings,
+    currentKills,
+    currentDeaths,
+    currentMobKills,
+    currentCoins,
+    currentCosmetic,
+    currentCosmeticExpiresAt,
+    currentCharacter,
+    currentFlashGrenades,
+    currentBallSkin,
+    currentShurikenAmmo,
+  ]);
+
+  const purchaseShurikenAmmo = useCallback(async () => {
+    if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
+    if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+    // One RPC: balance check, coin deduction and the ammo grant in one transaction (see
+    // supabase/migrations/0040_shuriken_ammo.sql), same atomic pattern as purchaseCosmetic.
+    const { data, error } = await sb.rpc("buy_shuriken_ammo");
+    if (error) {
+      console.error("buy_shuriken_ammo", error);
+      const message = error.message === "insufficient_coins" ? "Not enough copper coins." : `Purchase failed: ${saveHint(error)}`;
+      return { ok: false as const, error: message };
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as { shuriken_ammo?: number; coins?: number | string } | null;
+    const newAmmo = Number(row?.shuriken_ammo ?? currentShurikenAmmo + 10);
+    const newCoins = Number(row?.coins ?? currentCoins);
+    saved.dispatchEvent(
+      new CustomEvent("saved", {
+        detail: {
+          userId,
+          nickname: currentNickname,
+          color: currentColor,
+          xp: currentXp,
+          ballsShot: currentBallsShot,
+          fistSwings: currentFistSwings,
+          kills: currentKills,
+          deaths: currentDeaths,
+          mobKills: currentMobKills,
+          coins: newCoins,
+          cosmetic: currentCosmetic,
+          cosmeticExpiresAt: currentCosmeticExpiresAt,
+          character: currentCharacter,
+          flashGrenades: currentFlashGrenades,
+          ballSkin: currentBallSkin,
+          shurikenAmmo: newAmmo,
+        },
+      }),
+    );
+    return { ok: true as const };
+  }, [
+    sb,
+    userId,
+    currentNickname,
+    currentColor,
+    currentXp,
+    currentBallsShot,
+    currentFistSwings,
+    currentKills,
+    currentDeaths,
+    currentMobKills,
+    currentCoins,
+    currentCosmetic,
+    currentCosmeticExpiresAt,
+    currentCharacter,
+    currentFlashGrenades,
+    currentBallSkin,
+    currentShurikenAmmo,
+  ]);
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
   const offline = !sb || !userId;
@@ -697,6 +848,7 @@ export function useMyProfile(): MyProfile {
     character: mine ? safeCharacter(mine.character) : DEFAULT_CHARACTER,
     flashGrenades: mine?.flashGrenades ?? 0,
     ballSkin: mine ? safeBallSkin(mine.ballSkin) : DEFAULT_BALL_SKIN,
+    shurikenAmmo: mine?.shurikenAmmo ?? 0,
     error,
     save,
     purchaseColor,
@@ -704,6 +856,8 @@ export function useMyProfile(): MyProfile {
     purchaseCharacter,
     useFlashGrenade,
     saveBallSkin,
+    useShuriken,
+    purchaseShurikenAmmo,
   };
 }
 
