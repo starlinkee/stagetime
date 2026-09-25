@@ -76,6 +76,30 @@ body {
   animation: pp-roll var(--ps-jump-ms, 240ms) linear;
 }
 
+/* "sparkles" cosmetic (STU-54, supabase/migrations/0035_sparkles_cosmetic.sql): a handful of
+   small dots scattered around the sprite box by CosmeticOverlay.tsx, each twinkling on its own
+   offset via --sparkle-delay (set inline per dot) so they don't all pulse in lockstep. Drawn with
+   CSS instead of a sprite sheet — unlike "flower" there's no static pose that reads as "shining",
+   the animation itself is the whole point. */
+@keyframes sparkle-twinkle {
+  0%, 100% { opacity: 0; transform: scale(0.3); }
+  50% { opacity: 1; transform: scale(1); }
+}
+.cosmetic-sparkles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cosmetic-sparkles span {
+  position: absolute;
+  width: 14%;
+  aspect-ratio: 1;
+  border-radius: 9999px;
+  background: radial-gradient(circle, #fffceb 0%, #ffe066 45%, transparent 72%);
+  animation: sparkle-twinkle 1.6s ease-in-out infinite;
+  animation-delay: var(--sparkle-delay, 0s);
+}
+
 /* Popup "+1 coin / +xp" nad postacią po co-minutowym tick-u nagrody (patrz REWARD_MS w
    RoomStage.tsx): pojawia się, chwilę wisi, po czym płynnie znika unosząc się lekko w górę. */
 @keyframes pp-reward {

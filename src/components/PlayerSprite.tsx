@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { CosmeticOverlay } from "@/components/CosmeticOverlay";
 import type { Dir } from "@/components/PixelPerson";
 import { ROLL_MS } from "@realtime-shared/constants";
 
@@ -74,15 +75,6 @@ const JUMP_FRAME_W = 24;
 const JUMP_FRAME_H = 22;
 
 /**
- * Cosmetic items — purely decorative (see AGENTS.md), never affect stats/collision. One static
- * image per slug, no per-direction art (unlike DIR_IMAGE above): it's small enough, and sits
- * centered near the top of the sprite, to read fine at any facing without one.
- */
-const COSMETIC_IMAGE: Record<string, string> = {
-  flower: "/cosmetics/flower.png",
-};
-
-/**
  * Character sprite: one static image per direction (no walk-cycle frames), so "walking" is faked
  * with a step bob (.ps-walk) instead of leg animation. Position/collision anchoring still uses
  * PixelPerson's 8x12-cell box (boxW/boxH below), but the art itself is scaled to the box's height
@@ -143,21 +135,7 @@ export function PlayerSprite({
             } as CSSProperties
           }
         >
-          {cosmetic && COSMETIC_IMAGE[cosmetic] && (
-            <img
-              src={COSMETIC_IMAGE[cosmetic]}
-              alt=""
-              draggable={false}
-              style={{
-                position: "absolute",
-                top: "6%",
-                left: "50%",
-                width: "24%",
-                transform: cosmeticTransform,
-                pointerEvents: "none",
-              }}
-            />
-          )}
+          <CosmeticOverlay cosmetic={cosmetic} transform={cosmeticTransform} />
         </div>
       ) : (
         <div style={{ position: "absolute", left: (boxW - imgW) / 2, bottom: 0, width: imgW, height: imgH }}>
@@ -182,21 +160,7 @@ export function PlayerSprite({
               } as CSSProperties
             }
           />
-          {cosmetic && COSMETIC_IMAGE[cosmetic] && (
-            <img
-              src={COSMETIC_IMAGE[cosmetic]}
-              alt=""
-              draggable={false}
-              style={{
-                position: "absolute",
-                top: "6%",
-                left: "50%",
-                width: "24%",
-                transform: "translate(-50%, -55%)",
-                pointerEvents: "none",
-              }}
-            />
-          )}
+          <CosmeticOverlay cosmetic={cosmetic} />
         </div>
       )}
     </div>

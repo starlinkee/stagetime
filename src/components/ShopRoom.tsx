@@ -1,23 +1,44 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CharacterSprite } from "@/components/CharacterSprite";
+import { CosmeticOverlay } from "@/components/CosmeticOverlay";
 import { RoomStage, type RoomZone } from "@/components/RoomStage";
-import { CHARACTER_CHANGE_COST, FLOWER_COST, FLOWER_HOURS } from "@/lib/coins";
+import { CHARACTER_CHANGE_COST, FLOWER_COST, FLOWER_HOURS, SPARKLES_COST, SPARKLES_HOURS } from "@/lib/coins";
 import { EXIT_ZONE } from "@/lib/rooms";
 import { DEFAULT_COLOR, type CharacterSlug, useMyProfile } from "@/lib/useProfile";
 
-const FLOWER_SLUG = "flower";
-const FLOWER_ZONE_SLUG = "flower-item";
+type CosmeticSlug = "flower" | "sparkles";
 const CHARACTER_ZONE_SLUG = "character-select";
 
 /**
- * Color Change is disabled: the player character switched to fixed-art rotation sprites
- * (public/characters/player/rotation/*.png), which aren't recolorable, so there's currently
- * nothing to sell there. Purely cosmetic items (see supabase/migrations/0027_cosmetic_items.sql)
- * don't have this problem — they render as an overlay on top of the fixed art (see
- * PlayerSprite.tsx), so the floor button below is the first thing actually for sale in the Shop.
+ * One entry per purchasable cosmetic (see supabase/migrations/0027_cosmetic_items.sql,
+ * 0035_sparkles_cosmetic.sql) — cost/hours here are display-only copies of what purchase_cosmetic
+ * actually charges server-side, same caveat as FLOWER_COST/SPARKLES_COST in lib/coins.ts. Adding a
+ * new item means adding a branch to purchase_cosmetic plus one entry here; the dialog below reads
+ * everything else off this.
  */
-const FLOWER_ZONE: RoomZone = { slug: FLOWER_ZONE_SLUG, name: "Flower crown", kind: "action", x: 573, y: 320, w: 220, h: 140 };
+const COSMETIC_ITEMS: Record<CosmeticSlug, { name: string; cost: number; hours: number; zone: RoomZone; blurb: string }> = {
+  flower: {
+    name: "Flower crown",
+    cost: FLOWER_COST,
+    hours: FLOWER_HOURS,
+    zone: { slug: "flower-item", name: "Flower crown", kind: "action", x: 573, y: 320, w: 220, h: 140 },
+    blurb: "Purely decorative — sits on your head, no effect on gameplay.",
+  },
+  sparkles: {
+    name: "Shining",
+    cost: SPARKLES_COST,
+    hours: SPARKLES_HOURS,
+    zone: { slug: "sparkles-item", name: "Shining", kind: "action", x: 996, y: 320, w: 220, h: 140 },
+    blurb: "A sparkling aura around you — purely decorative, no effect on gameplay.",
+  },
+};
+const COSMETIC_ZONE_SLUGS: Record<string, CosmeticSlug> = Object.fromEntries(
+  (Object.entries(COSMETIC_ITEMS) as [CosmeticSlug, (typeof COSMETIC_ITEMS)[CosmeticSlug]][]).map(([slug, item]) => [
+    item.zone.slug,
+    slug,
+  ]),
+);
 /**
  * Character look (see supabase/migrations/0031_character_selection.sql,
  * 0033_girl_character.sql) — the three choices that exist today, see CharacterSprite.tsx.
@@ -28,19 +49,19 @@ const CHARACTER_OPTIONS: { slug: CharacterSlug; name: string }[] = [
   { slug: "pixel", name: "Pixel" },
 ];
 const CHARACTER_ZONE: RoomZone = { slug: CHARACTER_ZONE_SLUG, name: "Change character", kind: "action", x: 573, y: 500, w: 220, h: 140 };
-const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, FLOWER_ZONE, CHARACTER_ZONE];
+const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, ...Object.values(COSMETIC_ITEMS).map((item) => item.zone), CHARACTER_ZONE];
 
 /**
  * Pokój-sklep: wejście już wymaga konta (patrz RoomZone.requiresAuth w lobby i sprawdzenie w
- * /api/rooms/enter), więc tu zakładamy zalogowanego gracza. Jedyny przedmiot na start to kwiatek
- * na głowę — czysto kosmetyczny, tymczasowy (FLOWER_HOURS) przedmiot bez wpływu na rozgrywkę (patrz
- * AGENTS.md). Coiny znikają dopiero, gdy zapis w bazie faktycznie się powiedzie (jedno RPC robi obie
- * rzeczy atomowo, patrz useProfile.purchaseCosmetic) — crash przeglądarki w dowolnym momencie przed
- * tym nigdy nie zdejmuje coinów bez przyznania przedmiotu.
+ * /api/rooms/enter), więc tu zakładamy zalogowanego gracza. Kosmetyki (patrz COSMETIC_ITEMS) są
+ * czysto dekoracyjne, tymczasowe przedmioty bez wpływu na rozgrywkę (patrz AGENTS.md). Coiny
+ * znikają dopiero, gdy zapis w bazie faktycznie się powiedzie (jedno RPC robi obie rzeczy
+ * atomowo, patrz useProfile.purchaseCosmetic) — crash przeglądarki w dowolnym momencie przed tym
+ * nigdy nie zdejmuje coinów bez przyznania przedmiotu.
  */
 export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   const { ready, coins, cosmetic, character, purchaseCosmetic, purchaseCharacter } = useMyProfile();
-  const [open, setOpen] = useState(false);
+  const [activeItem, setActiveItem] = useState<CosmeticSlug | null>(null);
   const [confirmingRebuy, setConfirmingRebuy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,10 +77,11 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   }, [toast]);
 
   const onZoneAction = useCallback((slug: string) => {
-    if (slug === FLOWER_ZONE_SLUG) {
+    const item = COSMETIC_ZONE_SLUGS[slug];
+    if (item) {
       setConfirmingRebuy(false);
       setError(null);
-      setOpen(true);
+      setActiveItem(item);
     } else if (slug === CHARACTER_ZONE_SLUG) {
       setCharacterError(null);
       setCharacterOpen(true);
@@ -68,7 +90,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
 
   const close = useCallback(() => {
     if (busy) return; // W trakcie zapisu nie ma czego anulować — poczekaj na wynik.
-    setOpen(false);
+    setActiveItem(null);
     setConfirmingRebuy(false);
     setError(null);
   }, [busy]);
@@ -79,28 +101,28 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     setCharacterError(null);
   }, [characterBusy]);
 
-  const owned = cosmetic === FLOWER_SLUG;
+  const owned = activeItem !== null && cosmetic === activeItem;
 
   const confirm = useCallback(async () => {
-    if (busy) return;
+    if (busy || !activeItem) return;
     if (owned && !confirmingRebuy) {
-      // Już aktywny: druga, jawna zgoda, bo kupno i tak resetuje licznik do pełnych FLOWER_HOURS
+      // Już aktywny: druga, jawna zgoda, bo kupno i tak resetuje licznik do pełnych `hours`
       // zamiast się do niego doliczać (jeden aktywny slot, patrz 0027_cosmetic_items.sql).
       setConfirmingRebuy(true);
       return;
     }
     setBusy(true);
     setError(null);
-    const result = await purchaseCosmetic(FLOWER_SLUG);
+    const result = await purchaseCosmetic(activeItem);
     setBusy(false);
     if (!result.ok) {
       setError(result.error);
       return;
     }
-    setOpen(false);
+    setActiveItem(null);
     setConfirmingRebuy(false);
-    setToast("Flower crown equipped!");
-  }, [busy, owned, confirmingRebuy, purchaseCosmetic]);
+    setToast(`${COSMETIC_ITEMS[activeItem].name} equipped!`);
+  }, [busy, owned, confirmingRebuy, activeItem, purchaseCosmetic]);
 
   const pickCharacter = useCallback(
     async (slug: CharacterSlug) => {
@@ -119,7 +141,8 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     [characterBusy, character, purchaseCharacter],
   );
 
-  const canAfford = coins >= FLOWER_COST;
+  const activeItemInfo = activeItem ? COSMETIC_ITEMS[activeItem] : null;
+  const canAfford = activeItemInfo ? coins >= activeItemInfo.cost : false;
   const canAffordCharacter = coins >= CHARACTER_CHANGE_COST;
 
   const zones = useMemo(() => SHOP_ZONES, []);
@@ -135,7 +158,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
       />
       <div className="flex w-full max-w-2xl flex-col items-center gap-2 text-center">
         <p className="text-sm text-zinc-500">
-          Hold E on the floor button to browse the flower crown, or the wardrobe to change your character.
+          Hold E on a floor button to browse a cosmetic, or the wardrobe to change your character.
         </p>
         {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
       </div>
@@ -200,23 +223,24 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
           </div>
         </div>
       )}
-      {open && ready && (
+      {activeItemInfo && ready && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Flower crown shop"
+          aria-label={`${activeItemInfo.name} shop`}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
         >
           <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-zinc-100">Flower crown</h2>
+              <h2 className="text-lg font-semibold text-zinc-100">{activeItemInfo.name}</h2>
               <span className="flex items-center gap-1 rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-300">
-                {FLOWER_COST} copper coins
+                {activeItemInfo.cost} copper coins
               </span>
             </div>
             <div className="mb-5 flex items-center justify-center gap-8">
-              {/* eslint-disable-next-line @next/next/no-img-element -- small cutout, not worth next/image's overhead here */}
-              <img src="/cosmetics/flower.png" alt="Flower crown" className="h-24 w-24 object-contain" style={{ imageRendering: "pixelated" }} />
+              <div className="relative h-24 w-24">
+                <CosmeticOverlay cosmetic={activeItem} variant="preview" />
+              </div>
               <div className="flex flex-col gap-1 text-sm text-zinc-400">
                 <span>Your balance</span>
                 <span className={`text-lg font-semibold ${canAfford ? "text-zinc-100" : "text-rose-400"}`}>
@@ -225,19 +249,20 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
               </div>
             </div>
             <p className="mb-5 text-center text-sm text-zinc-400">
-              Purely decorative — sits on your head, no effect on gameplay. Lasts {FLOWER_HOURS} hours from purchase.
+              {activeItemInfo.blurb} Lasts {activeItemInfo.hours} hours from purchase.
             </p>
             {owned && !confirmingRebuy && (
               <p className="mb-3 text-center text-sm text-emerald-400">You already have this equipped.</p>
             )}
             {!canAfford && (
               <p className="mb-3 text-center text-sm text-rose-400">
-                You need {(FLOWER_COST - coins).toFixed(1)} more copper coins.
+                You need {(activeItemInfo.cost - coins).toFixed(1)} more copper coins.
               </p>
             )}
             {confirmingRebuy && (
               <p className="mb-3 text-center text-sm text-amber-400">
-                You&apos;ll still be charged {FLOWER_COST} coins, resetting the timer to a full {FLOWER_HOURS} hours. Buy anyway?
+                You&apos;ll still be charged {activeItemInfo.cost} coins, resetting the timer to a full {activeItemInfo.hours} hours. Buy
+                anyway?
               </p>
             )}
             {error && <p className="mb-3 text-center text-sm text-rose-400">{error}</p>}

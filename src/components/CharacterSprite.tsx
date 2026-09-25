@@ -1,4 +1,5 @@
 import type { CharacterSlug } from "@/lib/useProfile";
+import { CosmeticOverlay } from "@/components/CosmeticOverlay";
 import { PixelPerson, type Dir } from "@/components/PixelPerson";
 import { PlayerSprite } from "@/components/PlayerSprite";
 
@@ -11,14 +12,6 @@ import { PlayerSprite } from "@/components/PlayerSprite";
  * bottom-anchored and centered like the other looks, so all three now match.
  */
 const PIXEL_VISUAL_SCALE = 2 / 3;
-
-/** Must match the literal "6" in PlayerSprite.tsx's own cosmetic overlay `top`. Now shared as-is by
- * "pixel" too, since PIXEL_VISUAL_SCALE gives it the same 1/3 headroom as "classic"/"girl". */
-const PLAYER_COSMETIC_TOP_PCT = 6;
-
-const COSMETIC_IMAGE: Record<string, string> = {
-  flower: "/cosmetics/flower.png",
-};
 
 /**
  * Picks the equipped character look (see supabase/migrations/0031_character_selection.sql) and
@@ -70,21 +63,7 @@ export function CharacterSprite({
       <div style={{ position: "absolute", left: (boxW - pixelW) / 2, bottom: 0, width: pixelW, height: pixelH }}>
         <PixelPerson color={color} size={pixelSize} dir={dir} walking={walking} rolling={rolling} />
       </div>
-      {cosmetic && COSMETIC_IMAGE[cosmetic] && (
-        <img
-          src={COSMETIC_IMAGE[cosmetic]}
-          alt=""
-          draggable={false}
-          style={{
-            position: "absolute",
-            top: `${PLAYER_COSMETIC_TOP_PCT}%`,
-            left: "50%",
-            width: "24%",
-            transform: "translate(-50%, -55%)",
-            pointerEvents: "none",
-          }}
-        />
-      )}
+      <CosmeticOverlay cosmetic={cosmetic} />
     </div>
   );
 }

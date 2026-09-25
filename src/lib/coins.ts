@@ -27,6 +27,11 @@ export const COLOR_CHANGE_COST = 100;
 export const FLOWER_COST = 100;
 export const FLOWER_HOURS = 24;
 
+/** Second cosmetic item, added in supabase/migrations/0035_sparkles_cosmetic.sql (STU-54) — same
+ * display-only-copy caveat as FLOWER_COST/FLOWER_HOURS above. */
+export const SPARKLES_COST = 150;
+export const SPARKLES_HOURS = 24;
+
 /**
  * Price of switching character look (src/components/CharacterSprite.tsx) in the Shop — must match
  * `v_cost` in supabase/migrations/0031_character_selection.sql, which is the one that actually
