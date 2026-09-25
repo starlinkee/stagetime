@@ -9,6 +9,7 @@ import { LobbyDecor } from "@/components/LobbyDecor";
 import { LevelBadge } from "@/components/LevelBadge";
 import { DIR_DOWN, type Dir } from "@/components/PixelPerson";
 import { getAdminSettings, isAdminUiEnabled } from "@/lib/adminSettings";
+import { playAttackSound, playHitSound } from "@/lib/chime";
 import { setHowToPlay } from "@/lib/howToPlay";
 import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
@@ -21,7 +22,7 @@ import { useSession } from "@/lib/useSession";
 import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
 import { levelFromXp, xpForMinutes } from "@/lib/xp";
-import type { ClientMessage, EnemyState, HitEvent, ServerBall, ServerMessage } from "@realtime-shared/types";
+import type { ClientMessage, DummyState, EnemyState, HitEvent, ServerBall, ServerMessage } from "@realtime-shared/types";
 import {
   BALL_SPEED,
   CHARGE_MS,
@@ -29,6 +30,8 @@ import {
   DIR_OF,
   DMG_MAX,
   DMG_MIN,
+  DUMMY_H,
+  DUMMY_W,
   ENEMY_H,
   ENEMY_W,
   GHOST_OPACITY,
@@ -830,6 +833,10 @@ export function RoomStage({
   const enemyPosRef = useRef<Record<string, { x: number; y: number }>>({});
   const enemyDisplayRef = useRef<Record<string, { x: number; y: number }>>({});
   const enemyDomRef = useRef<Record<string, HTMLDivElement | null>>({});
+  // Room-owned training dummy (see DUMMY_MAX_HP in realtime-server/shared/constants.ts) — unlike
+  // the enemy above it never moves, so it needs none of the position-smoothing refs, just the raw
+  // state from the server.
+  const [dummy, setDummy] = useState<DummyState | null>(null);
   const metaRef = useRef<Meta>({ at: 0, color, nick, xp: profile.xp, user: userId });
   // Popupy "+1 🪙 · +XP" nad postaciami po co-minutowym tick-u nagrody (patrz useStudyXp niżej) —
   // `id` rośnie przy każdym tick-u, żeby RewardPopup dostał nowy key i animacja pp-reward wystartowała
@@ -1339,6 +1346,9 @@ export function RoomStage({
           // Trafiony widzi "-N" na czerwono nad sobą; ten, kto trafił, widzi "N" na biało nad
           // celem. Bez tekstu w bezpiecznym lobby (dmg 0 — patrz MAX_HP w shared/constants.ts).
           if (h.dmg > 0) {
+            // Same scoping as the damage-text below: only for a hit this connection was actually
+            // involved in (landed or took), not every hit broadcast to the whole room.
+            if (isMe || h.ownerId === (keyRef.current || "me")) playHitSound();
             if (isMe) {
               dmgTextRef.current.push({ x: h.x, y: h.y, text: `-${h.dmg}`, color: "#ef4444", born: t });
             } else if (h.ownerId === (keyRef.current || "me")) {
@@ -1400,6 +1410,7 @@ export function RoomStage({
       const firing =
         !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || desperate || predictedStamina >= STAMINA_COST_PER_SHOT);
       if (firing) {
+        playAttackSound();
         if (REALTIME_SERVER_URL) {
           // Faza F4: the server decides the real ball (chargeMs capped to what it actually saw
           // elapse since our own `charge: { on: true }`, see the "fire" handler in

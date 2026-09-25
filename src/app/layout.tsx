@@ -5,6 +5,7 @@ import { AuthButton } from "@/components/AuthButton";
 import { HowToPlayButton } from "@/components/HowToPlayButton";
 import { AllIdeasLink, IdeaBox } from "@/components/IdeaBox";
 import { PresenceBar } from "@/components/PresenceBar";
+import { SoundToggleButton } from "@/components/SoundToggleButton";
 import { VersionWatcher } from "@/components/VersionWatcher";
 import "./globals.css";
 
@@ -45,6 +46,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <PresenceBar />
           </div>
           <div className="flex flex-1 items-center justify-end gap-2">
+            <SoundToggleButton />
             <HowToPlayButton />
             <IdeaBox />
             <AuthButton />
