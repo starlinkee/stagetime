@@ -1,11 +1,11 @@
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
+import { PomodoroRoom } from "@/components/PomodoroRoom";
 import { RoomStage } from "@/components/RoomStage";
-import { RoomTimer } from "@/components/RoomTimer";
 import { ShopRoom } from "@/components/ShopRoom";
 import { TimerRoom } from "@/components/TimerRoom";
 import { coinsForMinutes } from "@/lib/coins";
-import { EXIT_ZONE, getRoom, ROOMS } from "@/lib/rooms";
+import { EXIT_ZONE, START_SESSION_ZONE, getRoom, ROOMS } from "@/lib/rooms";
 import { xpForMinutes } from "@/lib/xp";
 
 export function generateStaticParams() {
@@ -19,10 +19,7 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
 
   // Kwadrat wyjścia niesie fazę tego pokoju, żeby RoomStage wiedział, kiedy ostrzec przed
   // wyjściem w trakcie pracy (utrata XP z sesji) — patrz obsługa "lobby" jako wyjścia w RoomStage.
-  const exitZone =
-    room.kind === "pomodoro"
-      ? { ...EXIT_ZONE, phase: { workMin: room.workMin, breakMin: room.breakMin, offsetMs: room.offsetMs } }
-      : EXIT_ZONE;
+  const exitZone = room.kind === "pomodoro" ? { ...EXIT_ZONE, phase: { workMin: room.workMin, breakMin: room.breakMin } } : EXIT_ZONE;
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
@@ -61,17 +58,9 @@ export default async function RoomPage({ params }: PageProps<"/rooms/[slug]">) {
           <RoomStage roomSlug={room.slug} zones={[exitZone]} spawnZoneSlug={EXIT_ZONE.slug} />
         </Suspense>
       ) : (
-        <>
-          <RoomTimer room={room} />
-          <Suspense fallback={null}>
-            <RoomStage
-            roomSlug={room.slug}
-            zones={[exitZone]}
-            spawnZoneSlug={EXIT_ZONE.slug}
-            phase={room.kind === "pomodoro" ? { workMin: room.workMin, breakMin: room.breakMin, offsetMs: room.offsetMs } : undefined}
-          />
-          </Suspense>
-        </>
+        <Suspense fallback={null}>
+          <PomodoroRoom room={room} zones={[exitZone, START_SESSION_ZONE]} spawnZoneSlug={EXIT_ZONE.slug} />
+        </Suspense>
       )}
     </main>
   );

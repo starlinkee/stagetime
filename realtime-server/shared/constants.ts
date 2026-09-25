@@ -97,6 +97,20 @@ export const STRIKE_MS = 150;
 export const STRIKE_COOLDOWN_MS = 260;
 /** Character hitbox padding used by ball/melee collision checks. */
 export const HIT_PAD = 8;
+
+/** STU-45: cooldown between emotes — generous enough to allow expression, tight enough to stop
+ * spam (no per-message-type rate limiter exists elsewhere, see withinRateLimit's doc comment in
+ * server.ts, so this cooldown is emote's only anti-spam guard). */
+export const EMOTE_COOLDOWN_MS = 1_500;
+/** STU-45: the only emojis the server accepts in an `emote` message — anything else is dropped
+ * silently (server, not client, is the source of truth here, same as every other input). */
+export const EMOJI_EMOTES = ["👍", "😂", "❤️", "😮", "😢", "🔥"] as const;
+
+/** STU-35: cooldown between flash-grenade uses — this is defense-in-depth against a compromised
+ * client resending `useItem` faster than the Postgres round-trip (see consume_flash_grenade in
+ * supabase/migrations/0037_flash_grenade_item.sql), not the actual supply limit; the real "how
+ * many do you have" check happens in Postgres before the client ever sends this message. */
+export const FLASH_GRENADE_COOLDOWN_MS = 2_000;
 /**
  * Combat hitbox (ball/melee collision), and — since STU-53 — solid-obstacle collision too (see
  * resolveObstacleMoveHitbox in shared/obstacles.ts) — narrower and shorter than the full
@@ -203,6 +217,18 @@ export const KILL_GOLD_REWARD = 5;
  * across rooms.
  */
 export const ARENA_ROOM_SLUG = "arena";
+
+/**
+ * STU-58: on-demand pomodoro sessions. A room type's "door" instance starts in `waiting` — anyone
+ * inside can hold the center action zone for START_HOLD_MS to start the session for whoever is
+ * inside at that moment (see the `startSession` ClientMessage and PomodoroInstance in server.ts).
+ * The instance that was just started stops accepting joins immediately, and a brand-new empty
+ * instance becomes the type's new open door — but only after DOOR_REOPEN_MS (the "dimmed for 2s"
+ * window the lobby door shows), so a join landing in that window is rejected
+ * (`join_rejected`/"room_starting") exactly like `room_full` is.
+ */
+export const START_HOLD_MS = 3000;
+export const DOOR_REOPEN_MS = 2000;
 export const ENEMY_MAX_HP = 60;
 /** World units per second — slower than DEFAULT_PLAYER_SPEED so a chased player can outrun it. */
 export const ENEMY_SPEED = 140;
@@ -226,3 +252,19 @@ export const ENEMY_ATTACK_DMG = 4;
 /** How long the enemy stays dead before respawning at full HP — only while the room isn't empty
  * (see the tick loop in server.ts); an empty room just deletes it outright instead of waiting. */
 export const ENEMY_RESPAWN_MS = 8000;
+
+/**
+ * STU-40: a stationary, non-attacking training target — same "small per-room state in the existing
+ * tick loop" pattern as the arena enemy above, not a new subsystem. Unlike the enemy, its HP is
+ * broadcast as a plain number every tick (see DummyState in shared/types.ts) so players can watch
+ * it drain in real time, instead of only an HP-bar fraction. Lives only in ARENA_ROOM_SLUG, one per
+ * room, spawned at full HP the moment the room stops being empty (see ensureArenaDummy in
+ * server.ts) — same lifecycle as the enemy. While it has HP left, nothing ever restores it except a
+ * hit — there is no timer that heals or resets it while it's still alive; only an actual kill (hp
+ * reaches 0) respawns it, after DUMMY_RESPAWN_MS, same "brief death, then back to full" shape as
+ * the enemy's own respawn.
+ */
+export const DUMMY_MAX_HP = 10_000;
+export const DUMMY_W = 96;
+export const DUMMY_H = 96;
+export const DUMMY_RESPAWN_MS = 3000;

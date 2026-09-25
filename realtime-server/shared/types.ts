@@ -155,6 +155,29 @@ export type ClientMessage =
   | { type: "fire"; chargeMs: number }
   | { type: "strike" }
   /**
+   * STU-45: one of EMOJI_EMOTES (shared/constants.ts). Unlike roll/charge/fire/strike this is
+   * accepted during the work phase too — see isFrozen's doc comment in server.ts — so it never
+   * moves anything and only needs a cooldown, not position/physics validation.
+   */
+  | { type: "emote"; emoji: string }
+  /**
+   * STU-35: "I'm using this item right now" — a request, not an assertion, same as `roll`/
+   * `startSession` above. The server alone decides whether it actually broadcasts an effect (see
+   * FLASH_GRENADE_COOLDOWN_MS's doc comment in server.ts); *owning* one is checked separately, by
+   * the client against Postgres (see consume_flash_grenade in
+   * supabase/migrations/0037_flash_grenade_item.sql) before it ever sends this message — this
+   * message only gates the shared, room-wide effect, not the stock.
+   */
+  | { type: "useItem"; item: "flashGrenade" }
+  /**
+   * STU-58: held for START_HOLD_MS on the room's center action zone. A request, not an assertion,
+   * same as `roll` above — the server alone decides whether this connection's current room
+   * instance is actually a pomodoro door still in `waiting` (see PomodoroInstance in server.ts);
+   * anything else (already started, not a pomodoro room, or the client is lying about the hold
+   * duration) is silently ignored, exactly like `roll` during its own cooldown.
+   */
+  | { type: "startSession" }
+  /**
    * Sent whenever the client's own nick/color changes after `join` already went out — most
    * commonly because the profile fetch (see useMyProfile's DEFAULT_COLOR fallback) resolves after
    * the WebSocket connects. Updates this connection's `nick`/`color` in place; never touches
@@ -178,6 +201,37 @@ export interface EnemyState {
   state: "idle" | "chase" | "attack" | "dead";
 }
 
+/**
+ * STU-40: a stationary training target, same room-owned-entity shape as EnemyState above but
+ * unlike it, `hp` is meant to be shown as a plain number, not just an HP-bar fraction — see
+ * DUMMY_MAX_HP's doc comment in shared/constants.ts for why it never resets except on an actual
+ * kill. `dead` (mid-respawn, see DUMMY_RESPAWN_MS) is the only rendering hint it needs — it never
+ * moves or attacks, so there's no idle/chase/attack state to track.
+ */
+export interface DummyState {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  dead: boolean;
+}
+
+/**
+ * STU-58: a pomodoro room instance's own session state, carried in the `state` message of every
+ * connection inside it (`null`/absent for lobby, stopwatch, shop, arena — no session there).
+ * `startedAt` is `null` while `state === "waiting"`; once work starts it's the epoch ms `work`
+ * began, and every client derives its own remaining-time countdown from that plus `workMin`/
+ * `breakMin`, same pattern as the old getTimerState but instance-relative instead of EPOCH_MS
+ * -relative (see PomodoroInstance in server.ts).
+ */
+export interface PomodoroSessionState {
+  state: "waiting" | "work" | "break";
+  startedAt: number | null;
+  workMin: number;
+  breakMin: number;
+}
+
 export type ServerMessage =
   | { type: "welcome"; id: string }
   | {
@@ -188,8 +242,32 @@ export type ServerMessage =
       hits: HitEvent[];
       enemies: EnemyState[];
       at: number;
+      /** Only set for a connection currently inside a room that has a training dummy (see
+       * ARENA_ROOM_SLUG/DUMMY_MAX_HP in shared/constants.ts). */
+      dummy?: DummyState;
+      /** Only set for a connection currently inside a pomodoro room instance. */
+      pomodoro?: PomodoroSessionState;
+      /**
+       * Only set on the lobby room's own broadcast: per pomodoro-type-slug door state (true = open
+       * for a fresh join right now) — lets the lobby grid dim a door for DOOR_REOPEN_MS right after
+       * someone starts it (see shared/constants.ts).
+       */
+      doors?: Record<string, boolean>;
     }
-  | { type: "join_rejected"; reason: "room_full" }
+  | { type: "join_rejected"; reason: "room_full" | "room_starting" }
+  /**
+   * STU-45: broadcast immediately to every connection in the room (not queued into `state`,
+   * same reasoning as respawn_redirect below being its own message) the instant a player emotes.
+   * `id` is the emoting connection's id, matching PlayerState.id, so clients can find which
+   * player to show it above.
+   */
+  | { type: "emote"; id: string; emoji: string }
+  /**
+   * STU-35: broadcast immediately (same immediate, not-queued-into-`state` reasoning as `emote`
+   * above) to every connection in the room the instant someone's flash grenade goes off — purely
+   * a rendering cue (full-screen white flash), no HP/damage tie-in, see RoomStage.tsx.
+   */
+  | { type: "itemEffect"; id: string; item: "flashGrenade" }
   /**
    * Sent only to the one connection that just respawned (never part of `state`) — the server has
    * already moved it into the lobby room server-side (position/hp/immunity reset), but rooms are
@@ -198,4 +276,10 @@ export type ServerMessage =
    * resumes from the ghost this leaves behind, same as any other reconnect (see B2 in
    * docs/stateful_server_plan.md).
    */
-  | { type: "respawn_redirect" };
+  | { type: "respawn_redirect" }
+  /**
+   * STU-58: sent only to a connection whose pomodoro room instance just finished its break phase
+   * and was torn down server-side (see the tick loop in server.ts) — same "server already moved
+   * you, only the client's own router can navigate" reasoning as `respawn_redirect` above.
+   */
+  | { type: "session_ended_redirect" };

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { ROOM_ENTRY_COOKIE, verifyRoomEntryTicket } from "@/lib/roomEntryTicket";
+import { mintRoomEntryTicket, ROOM_ENTRY_COOKIE, verifyRoomEntryTicket } from "@/lib/roomEntryTicket";
 
 const UNSUPPORTED_DEVICE_PATH = "/unsupported-device";
 
@@ -33,10 +33,25 @@ export function proxy(request: NextRequest) {
   }
 
   const response = NextResponse.next();
-  // Ciasteczko zostało ustawione z Path=/rooms (patrz api/rooms/enter) — kasujące ustawienie
-  // musi mieć tę samą ścieżkę, inaczej przeglądarka potraktuje je jako osobne ciasteczko i
-  // oryginalny bilet przetrwa, pozwalając użyć go ponownie w oknie ważności.
-  response.cookies.set(ROOM_ENTRY_COOKIE, "", { path: "/rooms", maxAge: 0 });
+  // STU-43: re-mint a fresh one-time ticket for the same slug instead of just deleting it. The
+  // old behavior (delete, no replacement) made the ticket single-use across the room's entire
+  // lifetime, not just single-use per request — so a page refresh (which re-requests this exact
+  // route through this same middleware) always found no ticket and got bounced to "/", no matter
+  // how legitimately the player was already sitting in that room. Rolling the ticket forward on
+  // every successful check keeps the original anti-skip property intact (a URL that was never
+  // routed through POST /api/rooms/enter still has no ticket on its very first request, so it
+  // still gets redirected) while letting an already-validated room keep re-authorizing itself
+  // indefinitely, so refresh/reconnect (see NET_KEY_STORAGE_KEY/GRACE_MS in RoomStage.tsx and
+  // realtime-server/src/server.ts) actually gets a chance to run instead of never loading the
+  // page at all.
+  const fresh = mintRoomEntryTicket(slug);
+  response.cookies.set(ROOM_ENTRY_COOKIE, fresh.value, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/rooms",
+    maxAge: fresh.maxAgeSeconds,
+  });
   return response;
 }
 

@@ -6,13 +6,11 @@ import { useRoomOccupancy } from "@/lib/useRoomOccupancy";
 import { SCREEN_W } from "@realtime-shared/constants";
 
 /**
- * Kwadraty pokoi w lobby: jeden wiersz na typ pomodoro (25+5, 20+5, 50+10, patrz pomodoroVariants
- * w lib/rooms.ts) — liczba kwadratów w wierszu odpowiada liczbie wariantów tego typu (różna dla
- * każdego typu), plus osobny kwadrat pokoju-stopera pod spodem.
+ * Kwadraty pokoi w lobby: jeden wiersz na typ pomodoro (25+5, 20+5, 50+10) — od STU-58 to jeden
+ * kwadrat ("drzwi") na typ, nie N kwadratów-wariantów, plus osobny kwadrat pokoju-stopera pod spodem.
  */
 const ZONE_W = 180;
 const ZONE_H = 100;
-const COL_GAP = 50;
 const ROW_GAP = 70;
 const gridStartY = 220;
 
@@ -21,33 +19,18 @@ const stopwatchRooms = ROOMS.filter((r) => r.kind === "stopwatch");
 const shopRooms = ROOMS.filter((r) => r.kind === "shop");
 const arenaRooms = ROOMS.filter((r) => r.kind === "arena");
 
-// Grupowanie po typie (slug bez numeru wariantu na końcu, np. "25-5-1" -> "25-5"), w kolejności
-// pierwszego wystąpienia, żeby każdy typ trafił do jednego wiersza.
-const pomodoroGroups = new Map<string, typeof pomodoroRooms>();
-for (const r of pomodoroRooms) {
-  const key = r.slug.replace(/-\d+$/, "");
-  const group = pomodoroGroups.get(key);
-  if (group) group.push(r);
-  else pomodoroGroups.set(key, [r]);
-}
+const pomodoroZones: RoomZone[] = pomodoroRooms.map((r, row) => ({
+  slug: r.slug,
+  name: `${r.workMin}+${r.breakMin}`,
+  x: (SCREEN_W - ZONE_W) / 2,
+  y: gridStartY + row * (ZONE_H + ROW_GAP),
+  w: ZONE_W,
+  h: ZONE_H,
+  color: r.color,
+  phase: { workMin: r.workMin, breakMin: r.breakMin },
+}));
 
-const pomodoroZones: RoomZone[] = [...pomodoroGroups.values()].flatMap((group, row) => {
-  const rowW = group.length * ZONE_W + (group.length - 1) * COL_GAP;
-  const rowStartX = (SCREEN_W - rowW) / 2;
-  return group.map((r, col) => ({
-    slug: r.slug,
-    // Slug ma postać "<workMin>-<breakMin>-<wariant>" — ostatni człon to numer wariantu na kwadracie.
-    name: r.slug.split("-").pop()!,
-    x: rowStartX + col * (ZONE_W + COL_GAP),
-    y: gridStartY + row * (ZONE_H + ROW_GAP),
-    w: ZONE_W,
-    h: ZONE_H,
-    color: r.color,
-    phase: { workMin: r.workMin, breakMin: r.breakMin, offsetMs: r.offsetMs },
-  }));
-});
-
-const TIMER_ZONE_Y = gridStartY + pomodoroGroups.size * (ZONE_H + ROW_GAP) + 10;
+const TIMER_ZONE_Y = gridStartY + pomodoroRooms.length * (ZONE_H + ROW_GAP) + 10;
 const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
   slug: r.slug,
   name: "Timer",
@@ -96,7 +79,11 @@ export default function Home() {
       <RoomStage roomSlug="lobby" zones={LOBBY_ZONES} occupancy={occupancy} />
     </Suspense>
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center gap-2 p-8 pt-16 text-center">
-      <h1 className="title-64 text-5xl sm:text-6xl">StudyQuest.Party</h1>
+      <div className="flex items-center justify-center gap-3">
+        {/* eslint-disable-next-line @next/next/no-img-element -- animated GIF, next/image would strip the animation on optimization */}
+        <img src="/branding/output-onlinegiftools.gif" alt="" width={96} height={96} className="h-24 w-24" />
+        <h1 className="title-64 text-5xl sm:text-6xl">StudyQuest.Party</h1>
+      </div>
     </main>
     </>
   );

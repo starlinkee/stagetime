@@ -4,7 +4,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { verifyEntryToken } from "../shared/entryToken";
 import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "../shared/obstacles";
 import { clampPos } from "../shared/physics";
-import { getRoomPhase, LOBBY_ZONE_RECTS } from "../shared/rooms";
+import { LOBBY_ZONE_RECTS, POMODORO_TYPES } from "../shared/rooms";
 import {
   ARENA_ROOM_SLUG,
   BALL_SPEED,
@@ -15,6 +15,11 @@ import {
   DIR_OF,
   DMG_MAX,
   DMG_MIN,
+  DOOR_REOPEN_MS,
+  DUMMY_H,
+  DUMMY_MAX_HP,
+  DUMMY_RESPAWN_MS,
+  DUMMY_W,
   ENEMY_AGGRO_RANGE,
   ENEMY_ATTACK_COOLDOWN_MS,
   ENEMY_ATTACK_DMG,
@@ -28,7 +33,10 @@ import {
   ENEMY_RESPAWN_MS,
   ENEMY_SPEED,
   ENEMY_W,
+  EMOTE_COOLDOWN_MS,
+  EMOJI_EMOTES,
   EXIT_ZONE,
+  FLASH_GRENADE_COOLDOWN_MS,
   HITBOX_H,
   HITBOX_OFFSET_X,
   HITBOX_OFFSET_Y,
@@ -54,7 +62,7 @@ import {
   worldH,
   worldW,
 } from "../shared/constants";
-import type { CharacterStats, ClientMessage, Dir, EnemyState, HitEvent, PlayerState, ServerBall, ServerMessage } from "../shared/types";
+import type { CharacterStats, ClientMessage, Dir, DummyState, EnemyState, HitEvent, PlayerState, ServerBall, ServerMessage } from "../shared/types";
 
 const PORT = Number(process.env.PORT) || 8080;
 
@@ -80,8 +88,12 @@ const MAX_CONNECTIONS_PER_IP_UA = 4;
 const MAX_PLAYERS_PER_ROOM = 50;
 /** Faza B / B2 (docs/stateful_server_plan.md): how long a player stays visible, frozen in place,
  * after their WebSocket drops before they're actually removed from the room — long enough to
- * ride out a WiFi hiccup or a phone lock screen, short enough that a real leave doesn't linger. */
-const GRACE_MS = 12_000;
+ * ride out a WiFi hiccup, a phone lock screen, or a full page refresh (see NET_KEY_STORAGE_KEY's
+ * doc comment in RoomStage.tsx — a refresh only reattaches within this window), short enough that
+ * a real leave doesn't linger. STU-43: bumped from the original 12s toward the ~1 minute asked
+ * for, since a page refresh (reload from disk cache, slow connection, etc.) can take noticeably
+ * longer than a WS blip to reconnect. */
+const GRACE_MS = 60_000;
 
 // Fail loud at boot (visible in Fly logs / a crash-looping Machine) rather than silently
 // rejecting every `join` later — see docs/stateful_server_plan.md, Faza A / A1.
@@ -150,6 +162,13 @@ type Conn = {
   // claimed `chargeMs` to what actually elapsed here, not to what the client claims elapsed.
   chargeStartAt: number | null;
   meleeCooldownUntil: number;
+  // Cooldown for the "emote" message — see EMOTE_COOLDOWN_MS in shared/constants.ts. Unlike
+  // roll/charge/fire/strike this is intentionally never gated by isFrozen(): emotes must work
+  // during the work phase too (STU-45), only isDead(conn) blocks them.
+  emoteCooldownUntil: number;
+  // STU-35: same shape as emoteCooldownUntil, for the "useItem" flash-grenade broadcast — see
+  // FLASH_GRENADE_COOLDOWN_MS's doc comment.
+  flashGrenadeCooldownUntil: number;
   // Stamina (fire-rate) state — see currentStamina() and the "fire" handler below, and
   // STAMINA_MAX's doc comment in shared/constants.ts for the model. `staminaAt` is the stamina
   // value *as of* `staminaUpdatedAt`, not the live value — currentStamina() projects it forward
@@ -187,15 +206,100 @@ function isDead(conn: Conn): boolean {
 }
 
 /**
- * Frozen (no movement, no roll/charge/fire/strike) while this connection's own room is in
- * its "work" phase — the coworking half of the cycle, where nobody should be able to walk around
- * or fight. Thaws automatically the instant `getRoomPhase` flips to "break", same clock every
- * client already renders the countdown against (src/lib/timer.ts's getTimerState), so there's
- * nothing here to broadcast: every client sees the same freeze/thaw at the same instant on its
- * own. `null` (lobby/stopwatch/shop — no pomodoro cycle) never freezes.
+ * Frozen (no movement, no roll/charge/fire/strike) while this connection's own pomodoro room
+ * instance is in its "work" state — the coworking half of the session, where nobody should be
+ * able to walk around or fight. `waiting` (nobody's started it yet) and `break` are both free.
+ * STU-58: this used to be a pure function of the server's own clock (getRoomPhase against a
+ * shared EPOCH_MS-offset cycle); now it reads the connection's actual room instance state (see
+ * PomodoroInstance below), since instances start on demand instead of running on a fixed
+ * schedule. `undefined` (lobby/stopwatch/shop/arena — no session there) never freezes.
  */
 function isFrozen(conn: Conn): boolean {
-  return getRoomPhase(conn.roomSlug, Date.now()) === "work";
+  return pomodoroInstances.get(conn.roomSlug)?.state === "work";
+}
+
+/**
+ * STU-58: one on-demand pomodoro session. `slug` is what actually keys `rooms`/`roomBalls`/etc —
+ * an opaque, ephemeral id (`${typeSlug}#<8 hex>`), never persisted and never reused, so
+ * `persistedRoomSlug` below strips it back to `typeSlug` for anything that outlives the instance
+ * (saved positions). Exactly one instance per `typeSlug` is ever the type's "open door" at a time
+ * (see `openInstanceByType`) — every other instance of that type is already running (work/break)
+ * and no longer accepts fresh joins.
+ */
+type PomodoroInstance = {
+  slug: string;
+  typeSlug: string;
+  state: "waiting" | "work" | "break";
+  /** `null` while `state === "waiting"` — set once by the `startSession` handler and never
+   * written again; every phase transition below is computed from it, not ticked incrementally. */
+  startedAt: number | null;
+  /** Before this instant, a fresh (non-reconnecting) join to `slug` is rejected
+   * (`join_rejected`/"room_starting") — see DOOR_REOPEN_MS's doc comment in shared/constants.ts.
+   * 0 for a type's very first-ever instance (never locked). */
+  joinableAt: number;
+};
+/** Keyed by instance slug, same key `rooms` groups connections under. */
+const pomodoroInstances = new Map<string, PomodoroInstance>();
+/** typeSlug -> the one instance currently open as that type's lobby door — see ensureOpenInstance. */
+const openInstanceByType = new Map<string, string>();
+
+function newInstanceSlug(typeSlug: string): string {
+  return `${typeSlug}#${randomUUID().slice(0, 8)}`;
+}
+
+/** The type's current open door, creating a fresh empty one if it doesn't have one yet (first-
+ * ever join of that type, or its previous door was just started — see the `startSession` handler,
+ * the only other place that touches `openInstanceByType`). */
+function ensureOpenInstance(typeSlug: string): PomodoroInstance {
+  const existingSlug = openInstanceByType.get(typeSlug);
+  const existing = existingSlug ? pomodoroInstances.get(existingSlug) : undefined;
+  if (existing) return existing;
+  const slug = newInstanceSlug(typeSlug);
+  const instance: PomodoroInstance = { slug, typeSlug, state: "waiting", startedAt: null, joinableAt: 0 };
+  pomodoroInstances.set(slug, instance);
+  openInstanceByType.set(typeSlug, slug);
+  return instance;
+}
+
+/** A live connection or grace-period ghost of `requesterId` already sitting in one of this type's
+ * instances always wins over "the open door" — a reconnect/refresh must land back in its own
+ * in-progress session, never a fresh empty one, regardless of whether that session has since
+ * started (and so stopped being anyone else's open door). */
+function findInstanceForReconnect(typeSlug: string, requesterId: string): PomodoroInstance | null {
+  for (const instance of pomodoroInstances.values()) {
+    if (instance.typeSlug !== typeSlug) continue;
+    const set = rooms.get(instance.slug);
+    if (!set) continue;
+    for (const other of set) {
+      if (other.id === requesterId) return instance;
+    }
+  }
+  return null;
+}
+
+/**
+ * Turns whatever `roomSlug` a verified token names into the actual room slug to join. Every kind
+ * except pomodoro passes straight through (there's only ever one instance of "lobby"/"timer"/
+ * "shop"/ARENA_ROOM_SLUG). For a pomodoro type slug: a reconnecting connection always resumes its
+ * own in-progress instance; a fresh one joins the type's current open door, or is rejected if
+ * that door is still inside its post-start DOOR_REOPEN_MS lock window (see shared/constants.ts).
+ */
+function resolveJoinTarget(rawSlug: string, requesterId: string, now: number): { slug: string } | { rejected: true } {
+  if (!POMODORO_TYPES.has(rawSlug)) return { slug: rawSlug };
+  const reconnect = findInstanceForReconnect(rawSlug, requesterId);
+  if (reconnect) return { slug: reconnect.slug };
+  const open = ensureOpenInstance(rawSlug);
+  if (now < open.joinableAt) return { rejected: true };
+  return { slug: open.slug };
+}
+
+/** STU-58: instance slugs are ephemeral (`${typeSlug}#<8 hex>`) — anything that outlives a single
+ * instance (saved positions) has to key on the stable type slug instead, or a signed-in player's
+ * saved spot would never be found again once their old instance is torn down. A no-op for every
+ * other room kind, whose slug already equals its own "type" 1:1. */
+function persistedRoomSlug(roomSlug: string): string {
+  const hashIdx = roomSlug.indexOf("#");
+  return hashIdx === -1 ? roomSlug : roomSlug.slice(0, hashIdx);
 }
 
 /**
@@ -256,6 +360,42 @@ function ensureArenaEnemy(roomSlug: string) {
   if (roomEnemies.has(roomSlug)) return;
   roomEnemies.set(roomSlug, spawnEnemy());
 }
+
+/**
+ * STU-40: a stationary training target — same shared `roomBalls`/`roomHits` pipeline as the arena
+ * enemy above (see DUMMY_MAX_HP's doc comment in shared/constants.ts), but it never moves or
+ * attacks, so it needs none of the Enemy type's targeting/cooldown fields.
+ */
+type Dummy = {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
+  /** 0 while alive; otherwise the epoch ms it respawns at (same shape as Enemy.deadUntil). */
+  deadUntil: number;
+};
+const roomDummies = new Map<string, Dummy>();
+
+function spawnDummy(): Dummy {
+  const spawn = clampPos(worldW(false) / 2 - DUMMY_W / 2, worldH(false) / 2 - DUMMY_H / 2, false);
+  return { id: `dummy:${randomUUID()}`, x: spawn.x, y: spawn.y, hp: DUMMY_MAX_HP, deadUntil: 0 };
+}
+
+/** Same "always full HP the moment the room stops being empty" lifecycle as ensureArenaEnemy. */
+function ensureArenaDummy(roomSlug: string) {
+  if (roomSlug !== ARENA_ROOM_SLUG) return;
+  if (roomDummies.has(roomSlug)) return;
+  roomDummies.set(roomSlug, spawnDummy());
+}
+
+/** Ticks a dead dummy's respawn countdown — nothing else about it changes on its own (see
+ * DUMMY_MAX_HP's doc comment): while alive, its HP only ever moves in the ball-hit pass below. */
+function tickDummy(slug: string, now: number) {
+  const dummy = roomDummies.get(slug);
+  if (!dummy || dummy.deadUntil === 0 || now < dummy.deadUntil) return;
+  dummy.hp = DUMMY_MAX_HP;
+  dummy.deadUntil = 0;
+}
 /** Live connection count per IP — see MAX_CONNECTIONS_PER_IP. */
 const connectionsByIp = new Map<string, number>();
 /** Live connection count per (IP, User-Agent) pair — see MAX_CONNECTIONS_PER_IP_UA. */
@@ -270,6 +410,15 @@ const graceKey = (roomSlug: string, id: string) => `${roomSlug}:${id}`;
 
 function send(ws: WebSocket, msg: ServerMessage) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+}
+
+/** STU-45: immediate fan-out to everyone currently in a room, bypassing the periodic `state`
+ * broadcast — for one-off events where waiting up to BROADCAST_MS would feel laggy and there's
+ * no per-tick state to reconcile (unlike hits, which ride the next `state` via roomHits). */
+function broadcastToRoom(roomSlug: string, msg: ServerMessage) {
+  const set = rooms.get(roomSlug);
+  if (!set) return;
+  for (const conn of set) send(conn.ws, msg);
 }
 
 function joinRoom(conn: Conn) {
@@ -295,6 +444,9 @@ function leaveRoom(conn: Conn) {
     // arena drops it outright rather than waiting out ENEMY_RESPAWN_MS, so the next person in
     // always meets it at full HP, per AGENTS.md's request.
     roomEnemies.delete(conn.roomSlug);
+    // Same reasoning again for the training dummy (see ensureArenaDummy) — nobody's there to see
+    // it, so it's dropped outright rather than sitting mid-fight for whoever wanders in next.
+    roomDummies.delete(conn.roomSlug);
   }
 }
 
@@ -523,7 +675,7 @@ async function savePositions(entries: Array<{ userId: string; room: string; x: n
 /** Guests (userId === null) have nothing to persist. */
 function persistPosition(conn: Conn) {
   if (!conn.userId) return;
-  void savePositions([{ userId: conn.userId, room: conn.roomSlug, x: conn.x, y: conn.y, d: conn.d }]);
+  void savePositions([{ userId: conn.userId, room: persistedRoomSlug(conn.roomSlug), x: conn.x, y: conn.y, d: conn.d }]);
 }
 
 /**
@@ -586,11 +738,22 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   // translation step.
   const newId = typeof msg.id === "string" && msg.id ? msg.id : conn.id;
 
+  // STU-58: `verified.roomSlug` from the token is a plain type slug for a pomodoro room ("25-5",
+  // never "25-5#abcd1234") — resolve it to the actual instance to join (or bail out if that type's
+  // door is locked, see resolveJoinTarget's doc comment) before doing anything else. A no-op for
+  // every other room kind.
+  const resolution = resolveJoinTarget(verified.roomSlug, newId, Date.now());
+  if ("rejected" in resolution) {
+    send(ws, { type: "join_rejected", reason: "room_starting" });
+    return;
+  }
+  const roomSlug = resolution.slug;
+
   // A dropped connection stays in `rooms` during its grace period (see GRACE_MS) as a "ghost" —
   // frozen, but still occupying a slot. If this join reconnects that same (roomSlug, id), cancel
   // the pending removal and absorb the ghost's last known position instead of respawning; either
   // way the ghost itself has to go, so it doesn't double up with the live connection replacing it.
-  const key = graceKey(verified.roomSlug, newId);
+  const key = graceKey(roomSlug, newId);
   const pending = pendingRemoval.get(key);
   if (pending) {
     clearTimeout(pending);
@@ -611,7 +774,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
         staminaUpdatedAt: number;
       }
     | null = null;
-  const targetSet = rooms.get(verified.roomSlug);
+  const targetSet = rooms.get(roomSlug);
   if (targetSet) {
     for (const other of targetSet) {
       if (other !== conn && other.id === newId) {
@@ -638,22 +801,22 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
         break;
       }
     }
-    if (targetSet.size === 0) rooms.delete(verified.roomSlug);
+    if (targetSet.size === 0) rooms.delete(roomSlug);
   }
 
   // Capacity check happens before any mutation, so a rejected join doesn't first evict the
   // connection from whatever room it was already in. A re-join of the *same* room (token
   // refresh, or resuming from the ghost removed above) doesn't count itself against its own
   // limit.
-  const targetSetNow = rooms.get(verified.roomSlug);
-  const alreadyIn = conn.roomSlug === verified.roomSlug && (targetSetNow?.has(conn) ?? false);
+  const targetSetNow = rooms.get(roomSlug);
+  const alreadyIn = conn.roomSlug === roomSlug && (targetSetNow?.has(conn) ?? false);
   const occupancy = (targetSetNow?.size ?? 0) - (alreadyIn ? 1 : 0);
   if (occupancy >= MAX_PLAYERS_PER_ROOM) {
     send(ws, { type: "join_rejected", reason: "room_full" });
     return;
   }
 
-  const isLobbyTarget = verified.roomSlug === "lobby";
+  const isLobbyTarget = roomSlug === "lobby";
   // Fresh join into the lobby, naming the room just left (see `fromRoomSlug`'s doc comment in
   // types.ts) — resolved to that room's own lobby zone, same one RoomStage.tsx's `fromSlug`
   // resolves client-side, so both sides land in the same spot instead of the server improvising
@@ -670,19 +833,19 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   // too, same reasoning.
   let loaded: { x: number; y: number; d: Dir } | null = null;
   if (!resumeFrom && verified.userId && isLobbyTarget && !lobbyZoneRect) {
-    loaded = await fetchSavedPosition(verified.userId, verified.roomSlug);
+    loaded = await fetchSavedPosition(verified.userId, roomSlug);
     if (ws.readyState !== WebSocket.OPEN) return;
   }
 
   // Actually switching rooms (not just refreshing the same one) — save where we stood in the
   // old room before leaving it, same as a real departure would (see the grace-expiry timeout).
-  if (conn.roomSlug !== verified.roomSlug && (rooms.get(conn.roomSlug)?.has(conn) ?? false)) {
+  if (conn.roomSlug !== roomSlug && (rooms.get(conn.roomSlug)?.has(conn) ?? false)) {
     persistPosition(conn);
   }
 
   leaveRoom(conn);
   conn.id = newId;
-  conn.roomSlug = verified.roomSlug;
+  conn.roomSlug = roomSlug;
   conn.isLobby = conn.roomSlug === "lobby";
   conn.userId = verified.userId;
   conn.nick = typeof msg.nick === "string" ? msg.nick.slice(0, 40) : null;
@@ -729,6 +892,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.gd = resumeFrom?.gd ?? conn.d;
   joinRoom(conn);
   ensureArenaEnemy(conn.roomSlug);
+  ensureArenaDummy(conn.roomSlug);
 }
 
 const wss = new WebSocketServer({ server: httpServer });
@@ -774,6 +938,8 @@ wss.on("connection", (ws, req) => {
     rollDy: 0,
     chargeStartAt: null,
     meleeCooldownUntil: 0,
+    emoteCooldownUntil: 0,
+    flashGrenadeCooldownUntil: 0,
     staminaAt: stats.staminaMax,
     staminaUpdatedAt: Date.now(),
     speed: stats.moveSpeed,
@@ -862,6 +1028,55 @@ wss.on("connection", (ws, req) => {
       spawnMelee(conn);
       return;
     }
+    // STU-45: deliberately only isDead(conn), not isFrozen(conn) — emotes must keep working
+    // during the work phase, unlike every other action above (see EMOTE_COOLDOWN_MS's doc
+    // comment for why this cooldown, not withinRateLimit, is what stops spam).
+    if (msg.type === "emote") {
+      if (isDead(conn)) return;
+      if (!(EMOJI_EMOTES as readonly string[]).includes(msg.emoji)) return;
+      const now = Date.now();
+      if (now < conn.emoteCooldownUntil) return;
+      conn.emoteCooldownUntil = now + EMOTE_COOLDOWN_MS;
+      broadcastToRoom(conn.roomSlug, { type: "emote", id: conn.id, emoji: msg.emoji });
+      return;
+    }
+    // STU-35: like `emote`, deliberately only isDead(conn), not isFrozen(conn) — a flash grenade
+    // is a cosmetic/visual effect, not combat, so it isn't blocked by the work-phase freeze
+    // either. Ownership (does this connection's player actually have one left) is NOT checked
+    // here — that's a Postgres concern the client already resolved via consume_flash_grenade
+    // before sending this (see the ClientMessage's doc comment in shared/types.ts); this cooldown
+    // is only defense-in-depth against resending faster than that round-trip.
+    if (msg.type === "useItem") {
+      if (isDead(conn)) return;
+      if (msg.item !== "flashGrenade") return;
+      const now = Date.now();
+      if (now < conn.flashGrenadeCooldownUntil) return;
+      conn.flashGrenadeCooldownUntil = now + FLASH_GRENADE_COOLDOWN_MS;
+      broadcastToRoom(conn.roomSlug, { type: "itemEffect", id: conn.id, item: "flashGrenade" });
+      return;
+    }
+    // STU-58: a request, not an assertion, same as `roll` — silently ignored unless this
+    // connection is actually standing in a pomodoro instance that's still `waiting` (already
+    // started, or not a pomodoro room at all, both just no-op here).
+    if (msg.type === "startSession") {
+      const instance = pomodoroInstances.get(conn.roomSlug);
+      if (!instance || instance.state !== "waiting") return;
+      const now = Date.now();
+      instance.state = "work";
+      instance.startedAt = now;
+      // The instance that just started is no longer anyone's "open door" — spin up a fresh empty
+      // one as the type's new door, locked until DOOR_REOPEN_MS (see shared/constants.ts).
+      const freshSlug = newInstanceSlug(instance.typeSlug);
+      pomodoroInstances.set(freshSlug, {
+        slug: freshSlug,
+        typeSlug: instance.typeSlug,
+        state: "waiting",
+        startedAt: null,
+        joinableAt: now + DOOR_REOPEN_MS,
+      });
+      openInstanceByType.set(instance.typeSlug, freshSlug);
+      return;
+    }
     if (msg.type === "profile") {
       conn.nick = typeof msg.nick === "string" ? msg.nick.slice(0, 40) : null;
       if (typeof msg.color === "string" && msg.color) conn.color = msg.color;
@@ -938,6 +1153,44 @@ setInterval(() => {
       send(conn.ws, { type: "respawn_redirect" });
     }
   }
+  // STU-58: pomodoro instance phase transitions + end-of-session teardown, resolved in its own
+  // pass before movement for the same reason respawns are above — ejecting a whole instance's
+  // connections into the lobby room mutates `rooms` mid-iteration, which is unsafe to interleave
+  // with the per-room movement loop right after this.
+  for (const instance of [...pomodoroInstances.values()]) {
+    if (instance.state === "waiting" || instance.startedAt === null) continue;
+    const cfg = POMODORO_TYPES.get(instance.typeSlug);
+    if (!cfg) continue;
+    const workMs = cfg.workMin * 60_000;
+    const breakMs = cfg.breakMin * 60_000;
+    const elapsed = now - instance.startedAt;
+    if (instance.state === "work" && elapsed >= workMs) {
+      instance.state = "break";
+      continue;
+    }
+    if (instance.state === "break" && elapsed >= workMs + breakMs) {
+      const set = rooms.get(instance.slug);
+      if (set) {
+        for (const conn of [...set]) {
+          persistPosition(conn);
+          leaveRoom(conn);
+          conn.roomSlug = "lobby";
+          conn.isLobby = true;
+          const spawn = clampPos(worldW(true) / 2, worldH(true) / 2, true);
+          conn.x = spawn.x;
+          conn.y = spawn.y;
+          conn.inputDx = 0;
+          conn.inputDy = 0;
+          joinRoom(conn);
+          send(conn.ws, { type: "session_ended_redirect" });
+        }
+      }
+      pomodoroInstances.delete(instance.slug);
+      // Never actually the type's open door (a started instance always got replaced by a fresh
+      // one in the `startSession` handler) — guarded anyway in case that invariant ever changes.
+      if (openInstanceByType.get(instance.typeSlug) === instance.slug) openInstanceByType.delete(instance.typeSlug);
+    }
+  }
   for (const set of rooms.values()) {
     for (const conn of set) {
       if (isDead(conn)) {
@@ -991,7 +1244,10 @@ setInterval(() => {
   // chases this tick's positions, before the ball-physics pass below so a swing thrown just now
   // resolves in the same tick, exactly like a player's own strike would.
   for (const [slug, set] of rooms) {
-    if (slug === ARENA_ROOM_SLUG) tickEnemy(slug, set, now, dt);
+    if (slug === ARENA_ROOM_SLUG) {
+      tickEnemy(slug, set, now, dt);
+      tickDummy(slug, now);
+    }
   }
   // Faza F3: ball/melee-hitbox physics and the single, authoritative "who got hit" decision —
   // same collision geometry as `hits()` in RoomStage.tsx, just decided once here instead of once
@@ -1075,6 +1331,53 @@ setInterval(() => {
         }
         continue; // one hit ends the ball/hitbox, same as hitting a player
       }
+      // No player or enemy in the way: the room's training dummy (see roomDummies' doc comment) is
+      // the last thing this ball/hitbox can hit, same "skip the owner" rule as above (never
+      // applies in practice — nothing ever owns a ball as the dummy — but kept for symmetry).
+      const dummy = target || enemyHit ? null : roomDummies.get(slug);
+      const dummyHit =
+        dummy && dummy.deadUntil === 0 && b.owner !== dummy.id
+          ? (() => {
+              const nx = Math.max(dummy.x - HIT_PAD, Math.min(b.x, dummy.x + DUMMY_W + HIT_PAD));
+              const ny = Math.max(dummy.y - HIT_PAD, Math.min(b.y, dummy.y + DUMMY_H + HIT_PAD));
+              return Math.hypot(b.x - nx, b.y - ny) <= b.r;
+            })()
+          : false;
+      if (dummyHit && dummy) {
+        // Same "decide the kill before mutating hp" reasoning as the enemy/player paths above.
+        const killed = dummy.hp > 0 && dummy.hp - b.dmg <= 0;
+        const hits = roomHits.get(slug) ?? [];
+        hits.push({
+          targetId: dummy.id,
+          ownerId: b.owner,
+          melee: Boolean(b.melee),
+          x: b.x,
+          y: b.y,
+          r: b.r,
+          color: b.color,
+          dmg: b.dmg,
+          killed,
+        });
+        roomHits.set(slug, hits);
+        // Only ever moves here, from an actual hit — see DUMMY_MAX_HP's doc comment in
+        // shared/constants.ts for why nothing else (in particular, no timer) is allowed to touch
+        // this while the dummy is still alive.
+        dummy.hp = Math.max(0, dummy.hp - b.dmg);
+        if (killed) {
+          dummy.deadUntil = now + DUMMY_RESPAWN_MS;
+          let owner: Conn | null = null;
+          for (const c of set) {
+            if (c.id === b.owner) {
+              owner = c;
+              break;
+            }
+          }
+          // Same mob-kill reward path as the arena enemy's own kill above — the "loot" this issue
+          // asked for.
+          void reportCombatEvent(owner?.userId ?? null, null, true);
+        }
+        continue; // one hit ends the ball/hitbox, same as hitting a player
+      }
       if (target) {
         // Decided before mutating target.hp below, so the HitEvent (which the killer's own client
         // uses to trigger the "KILL"/reward callout — see the `killed` doc comment in
@@ -1132,6 +1435,16 @@ setInterval(() => {
 
 setInterval(() => {
   const now = Date.now();
+  // STU-58: computed once per broadcast, not per room — only the lobby room's own message
+  // actually carries this (see the `doors` field below), so the lobby grid can dim a type's door
+  // for DOOR_REOPEN_MS right after someone starts it. A type with no instance yet (nobody has
+  // joined it since boot) defaults to open, same as a freshly created one always is.
+  const doorStates: Record<string, boolean> = {};
+  for (const typeSlug of POMODORO_TYPES.keys()) {
+    const openSlug = openInstanceByType.get(typeSlug);
+    const openInstance = openSlug ? pomodoroInstances.get(openSlug) : undefined;
+    doorStates[typeSlug] = !openInstance || now >= openInstance.joinableAt;
+  }
   for (const [slug, set] of rooms) {
     const players: PlayerState[] = [...set].map((c) => ({
       id: c.id,
@@ -1167,6 +1480,12 @@ setInterval(() => {
           },
         ]
       : [];
+    const roomDummy = roomDummies.get(slug);
+    const dummy: DummyState | undefined = roomDummy
+      ? { id: roomDummy.id, x: roomDummy.x, y: roomDummy.y, hp: roomDummy.hp, maxHp: DUMMY_MAX_HP, dead: roomDummy.deadUntil > 0 }
+      : undefined;
+    const instance = pomodoroInstances.get(slug);
+    const cfg = instance ? POMODORO_TYPES.get(instance.typeSlug) : undefined;
     const msg: ServerMessage = {
       type: "state",
       schemaVersion: SCHEMA_VERSION,
@@ -1175,6 +1494,11 @@ setInterval(() => {
       hits,
       enemies,
       at: Date.now(),
+      ...(dummy ? { dummy } : {}),
+      ...(instance && cfg
+        ? { pomodoro: { state: instance.state, startedAt: instance.startedAt, workMin: cfg.workMin, breakMin: cfg.breakMin } }
+        : {}),
+      ...(slug === "lobby" ? { doors: doorStates } : {}),
     };
     for (const conn of set) send(conn.ws, msg);
   }
@@ -1187,7 +1511,7 @@ setInterval(() => {
   const entries: Array<{ userId: string; room: string; x: number; y: number; d: number }> = [];
   for (const set of rooms.values()) {
     for (const conn of set) {
-      if (conn.userId) entries.push({ userId: conn.userId, room: conn.roomSlug, x: conn.x, y: conn.y, d: conn.d });
+      if (conn.userId) entries.push({ userId: conn.userId, room: persistedRoomSlug(conn.roomSlug), x: conn.x, y: conn.y, d: conn.d });
     }
   }
   void savePositions(entries);

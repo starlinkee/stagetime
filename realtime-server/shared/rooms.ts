@@ -18,7 +18,6 @@
  */
 
 import { SCREEN_W, SCREEN_H } from "./constants";
-import { getPhase, type Phase } from "./timer";
 
 export type RoomKind = "pomodoro" | "stopwatch" | "shop" | "arena";
 
@@ -27,30 +26,18 @@ interface RoomMeta {
   kind: RoomKind;
   workMin?: number;
   breakMin?: number;
-  /** Same meaning as PomodoroRoomConfig.offsetMs in src/lib/timer.ts — must match the value
-   * pomodoroVariants() in src/lib/rooms.ts computes for the same slug, or this server and the
-   * client would disagree about which phase (work/break) a given variant is currently in. */
-  offsetMs?: number;
 }
 
-/** Same count/slug/offsetMs formula as pomodoroVariants() in src/lib/rooms.ts. */
-function pomodoroSlugs(slugBase: string, workMin: number, breakMin: number): RoomMeta[] {
-  const cycleMs = (workMin + breakMin) * 60_000;
-  const count = Math.ceil((workMin + breakMin) / breakMin);
-  return Array.from({ length: count }, (_, i) => ({
-    slug: `${slugBase}-${i + 1}`,
-    kind: "pomodoro" as const,
-    workMin,
-    breakMin,
-    offsetMs: Math.round((i / count) * cycleMs),
-  }));
-}
-
-/** Same roster and order as ROOMS in src/lib/rooms.ts (colors/names omitted — irrelevant here). */
+/**
+ * Same roster and order as ROOMS in src/lib/rooms.ts (colors/names omitted — irrelevant here).
+ * STU-58: one door per pomodoro type, not N phase-offset variants — each type's actual work/break
+ * cycle is now decided per on-demand instance (see PomodoroInstance in server.ts), not by a global
+ * wall-clock offset, so there's nothing left here for a variant's `offsetMs` to encode.
+ */
 const ROOM_META: RoomMeta[] = [
-  ...pomodoroSlugs("25-5", 25, 5),
-  ...pomodoroSlugs("20-5", 20, 5),
-  ...pomodoroSlugs("50-10", 50, 10),
+  { slug: "25-5", kind: "pomodoro", workMin: 25, breakMin: 5 },
+  { slug: "20-5", kind: "pomodoro", workMin: 20, breakMin: 5 },
+  { slug: "50-10", kind: "pomodoro", workMin: 50, breakMin: 10 },
   { slug: "timer", kind: "stopwatch" },
   { slug: "shop", kind: "shop" },
   { slug: "arena", kind: "arena" },
@@ -118,17 +105,15 @@ function buildLobbyZoneRects(): ReadonlyMap<string, Rect> {
 /** slug -> lobby zone rect, for every room in ROOM_META. */
 export const LOBBY_ZONE_RECTS: ReadonlyMap<string, Rect> = buildLobbyZoneRects();
 
-const ROOM_META_BY_SLUG: ReadonlyMap<string, RoomMeta> = new Map(ROOM_META.map((r) => [r.slug, r]));
-
 /**
- * Which phase (work/break) `roomSlug` is in right now, or `null` for a room with no pomodoro
- * cycle (stopwatch/shop/lobby) — those never gate anything. Used by server.ts to freeze movement
- * and combat for the whole room while it's in "work" (see isFrozen there): a pure function of the
- * server's own clock, so it needs no state and can't drift from what every client's own
- * getTimerState (src/lib/timer.ts) computes for the same room.
+ * STU-58: workMin/breakMin for every pomodoro type slug — server.ts's on-demand instance registry
+ * (PomodoroInstance) reads this to know how long a started instance's work/break phases actually
+ * last. There's no more per-room `getRoomPhase` here: with instances started on demand instead of
+ * running on a shared wall-clock offset, "what phase is this room in" is now instance state only
+ * server.ts holds, not a pure function of time.
  */
-export function getRoomPhase(roomSlug: string, nowMs: number): Phase | null {
-  const meta = ROOM_META_BY_SLUG.get(roomSlug);
-  if (!meta || meta.kind !== "pomodoro" || meta.workMin === undefined || meta.breakMin === undefined) return null;
-  return getPhase(nowMs, meta.workMin, meta.breakMin, meta.offsetMs);
-}
+export const POMODORO_TYPES: ReadonlyMap<string, { workMin: number; breakMin: number }> = new Map(
+  ROOM_META.filter((r): r is RoomMeta & { workMin: number; breakMin: number } => r.kind === "pomodoro" && r.workMin !== undefined && r.breakMin !== undefined).map(
+    (r) => [r.slug, { workMin: r.workMin, breakMin: r.breakMin }],
+  ),
+);

@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useRef } from "react";
 import { playSessionEndChime } from "@/lib/chime";
-import { formatMs, getTimerState, type Phase, type PomodoroRoomConfig } from "@/lib/timer";
+import { formatMs, getSessionTimerState, type Phase, type PomodoroRoomConfig } from "@/lib/timer";
 import { useServerNow } from "@/lib/useServerClock";
+import type { PomodoroSessionState } from "@realtime-shared/types";
 
 function Counter({
   label,
@@ -24,20 +25,26 @@ function Counter({
   );
 }
 
-export function RoomTimer({ room }: { room: PomodoroRoomConfig }) {
+/**
+ * STU-58: `session` comes from the realtime-server's own broadcast (see PomodoroSessionState),
+ * relayed by RoomStage.tsx via `onPomodoroState` — never computed locally. `null` covers both
+ * "not connected yet" and "not a pomodoro room", same as before this session model existed.
+ */
+export function RoomTimer({ room, session }: { room: PomodoroRoomConfig; session: PomodoroSessionState | null }) {
   const now = useServerNow();
-  const s = now === null ? null : getTimerState(now, room);
+  const s = now === null || !session ? null : getSessionTimerState(now, session, room);
   const remainingLabel = s ? formatMs(s.remainingMs) : null;
   const isWork = s?.phase === "work";
+  const isWaiting = s?.phase === "waiting";
 
   // Pokazuje pozostały czas fazy w tytule karty, żeby było go widać bez przełączania się na tę
   // kartę (STU-7) — tylko przy zmianie wyświetlanej sekundy, nie co tick zegara (250ms). Reset
   // tytułu w osobnym efekcie (tylko przy odmontowaniu), żeby nie migać nim przy każdej sekundzie.
   // Hooki muszą biec przed ewentualnym wczesnym returnem (rules-of-hooks) — stąd `s` może być null.
   useEffect(() => {
-    if (!remainingLabel) return;
+    if (!remainingLabel || isWaiting) return;
     document.title = `${remainingLabel} · ${isWork ? "Work" : "Break"} — StudyQuest.Party`;
-  }, [remainingLabel, isWork]);
+  }, [remainingLabel, isWork, isWaiting]);
   useEffect(() => {
     return () => {
       document.title = "StudyQuest.Party";
@@ -54,6 +61,10 @@ export function RoomTimer({ room }: { room: PomodoroRoomConfig }) {
   }, [phase]);
 
   if (!s) return <p className="text-zinc-400">Syncing clock…</p>;
+
+  if (isWaiting) {
+    return <p className="text-zinc-400">Nobody's started this session yet — hold E on the button in the middle to start it for everyone here.</p>;
+  }
 
   const progress = 1 - s.remainingMs / s.phaseMs;
   const workMs = room.workMin * 60_000;

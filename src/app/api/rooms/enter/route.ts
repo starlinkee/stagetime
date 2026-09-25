@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { getRoom } from "@/lib/rooms";
 import { mintRoomEntryTicket, ROOM_ENTRY_COOKIE } from "@/lib/roomEntryTicket";
 import { getSupabase } from "@/lib/supabase";
-import { getTimerState } from "@/lib/timer";
 
 /**
  * Wywoływane z RoomStage.tsx dopiero po przytrzymaniu E w strefie wyjścia przez roomEnterMs() —
@@ -19,10 +18,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "unknown room" }, { status: 400 });
   }
 
-  // Pokoje pomodoro wpuszczają tylko na przerwie — stopwatch (bez fazy work/break) nie podlega.
-  if (room.kind === "pomodoro" && getTimerState(Date.now(), room).phase === "work") {
-    return NextResponse.json({ error: "work-in-progress" }, { status: 403 });
-  }
+  // STU-58: pomodoro rooms no longer gate entry here — there's no more global work/break clock to
+  // check against (each door starts its own session on demand), and the realtime-server's own
+  // join flow is the actual authority over whether a door is open right now (see resolveJoinTarget
+  // in realtime-server/src/server.ts, which rejects a join during the post-start lock window).
 
   // Shop wymaga konta — RoomStage.tsx blokuje to już po stronie klienta (kwadrat pokazuje kłódkę
   // i nie wysyła w ogóle tego żądania bez sesji), to tylko druga linia obrony, żeby samo POST-owanie

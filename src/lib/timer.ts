@@ -1,4 +1,4 @@
-export type Phase = "work" | "break";
+export type Phase = "waiting" | "work" | "break";
 
 export interface PomodoroRoomConfig {
   slug: string;
@@ -6,14 +6,8 @@ export interface PomodoroRoomConfig {
   kind: "pomodoro";
   workMin: number;
   breakMin: number;
-  /** Kolor kwadratu pokoju w lobby (odcień wspólny dla wariantów tego samego typu). */
+  /** Kolor kwadratu pokoju w lobby. */
   color?: string;
-  /**
-   * Przesunięcie fazy względem EPOCH_MS — warianty tego samego typu są rozłożone równomiernie
-   * w cyklu (liczba wariantów zależy od typu, patrz pomodoroVariants w lib/rooms.ts), tak żeby
-   * zawsze przynajmniej jeden był akurat na przerwie.
-   */
-  offsetMs?: number;
 }
 
 /** Pokój z prywatnym stoperem każdej osoby (bez wspólnych cykli pracy/przerwy). */
@@ -44,41 +38,38 @@ export interface ArenaRoomConfig {
 
 export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig | ShopRoomConfig | ArenaRoomConfig;
 
-export interface TimerState {
+export interface SessionTimerState {
   phase: Phase;
-  /** ms do końca bieżącej fazy */
+  /** ms do końca bieżącej fazy (dla "waiting": pełna długość fazy work, nic jeszcze nie płynie). */
   remainingMs: number;
   /** długość bieżącej fazy w ms */
   phaseMs: number;
-  /** numer cyklu od EPOCH_MS (od 1) */
-  cycle: number;
 }
 
 const MIN = 60_000;
 
-/** Wspólny punkt startu wszystkich pokoi: od tej chwili każdy pokój odlicza swoje cykle w nieskończoność. */
-export const EPOCH_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
-
 /**
- * Czysta funkcja: stan timera zależy wyłącznie od czasu serwera i konfiguracji pokoju.
- * Cykle (praca + przerwa) biegną nieprzerwanie od EPOCH_MS, bez żadnych resetów.
+ * STU-58: instance-relative, not a pure function of wall-clock time — a pomodoro room no longer
+ * runs on a shared, always-ticking global cycle (there's no more EPOCH_MS/offsetMs). Each room
+ * instance starts its own work/break cycle on demand (see PomodoroSessionState in
+ * @realtime-shared/types, set from the realtime-server's own instance state — RoomStage.tsx is the
+ * only thing that ever calls this, fed by that server broadcast, never a locally-guessed clock).
+ * `session` is `null`/`state: "waiting"` before anyone's started it — the client shows the full
+ * work length instead of counting down, and there's nothing running yet to disagree about.
  */
-export function getTimerState(
-  nowMs: number,
-  room: Pick<PomodoroRoomConfig, "workMin" | "breakMin" | "offsetMs">,
-): TimerState {
-  const work = room.workMin * MIN;
-  const brk = room.breakMin * MIN;
-  const cycleMs = work + brk;
-
-  const elapsed = nowMs - EPOCH_MS + (room.offsetMs ?? 0);
-  const idx = Math.floor(elapsed / cycleMs);
-  const inCycle = elapsed - idx * cycleMs;
-
-  if (inCycle < work) {
-    return { phase: "work", remainingMs: work - inCycle, phaseMs: work, cycle: idx + 1 };
+export function getSessionTimerState(
+  now: number,
+  session: { state: Exclude<Phase, "waiting"> | "waiting"; startedAt: number | null },
+  room: Pick<PomodoroRoomConfig, "workMin" | "breakMin">,
+): SessionTimerState {
+  const workMs = room.workMin * MIN;
+  const breakMs = room.breakMin * MIN;
+  if (session.state === "waiting" || session.startedAt === null) {
+    return { phase: "waiting", remainingMs: workMs, phaseMs: workMs };
   }
-  return { phase: "break", remainingMs: cycleMs - inCycle, phaseMs: brk, cycle: idx + 1 };
+  const elapsed = Math.max(0, now - session.startedAt);
+  if (elapsed < workMs) return { phase: "work", remainingMs: workMs - elapsed, phaseMs: workMs };
+  return { phase: "break", remainingMs: Math.max(0, workMs + breakMs - elapsed), phaseMs: breakMs };
 }
 
 export function formatMs(ms: number): string {

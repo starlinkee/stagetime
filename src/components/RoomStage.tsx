@@ -13,16 +13,16 @@ import { playAttackSound, playHitSound } from "@/lib/chime";
 import { setHowToPlay } from "@/lib/howToPlay";
 import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
-import { formatMs, getTimerState } from "@/lib/timer";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
-import { safeCharacter, safeColor, useMyProfile } from "@/lib/useProfile";
+import { BALL_SKINS, safeBallSkin, safeCharacter, safeColor, useMyProfile } from "@/lib/useProfile";
+import type { BallSkin } from "@/lib/useProfile";
 import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
 import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
 import { levelFromXp, xpForMinutes } from "@/lib/xp";
-import type { ClientMessage, DummyState, EnemyState, HitEvent, ServerBall, ServerMessage } from "@realtime-shared/types";
+import type { ClientMessage, DummyState, EnemyState, HitEvent, PomodoroSessionState, ServerBall, ServerMessage } from "@realtime-shared/types";
 import {
   BALL_SPEED,
   CHARGE_MS,
@@ -32,6 +32,7 @@ import {
   DMG_MIN,
   DUMMY_H,
   DUMMY_W,
+  EMOJI_EMOTES,
   ENEMY_H,
   ENEMY_W,
   GHOST_OPACITY,
@@ -57,6 +58,7 @@ import {
   STAMINA_COST_PER_SHOT,
   STAMINA_MAX,
   STAMINA_REGEN_PER_SEC,
+  START_HOLD_MS,
   STRIKE_DMG,
   STRIKE_MS,
   STRIKE_R,
@@ -70,8 +72,9 @@ import {
 import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "@realtime-shared/obstacles";
 import { clampPos } from "@realtime-shared/physics";
 
-/** Kolor etykiety fazy pod kwadratem pokoju: praca na czerwono (nie da się teraz wejść), przerwa na zielono. */
-const PHASE_COLOR = { work: "#ef4444", break: "#22c55e" } as const;
+/** STU-58: reserved zone slug for a pomodoro room's center "start session" button — special-cased
+ * in the E-hold handler below the same way `zone.slug === "lobby"` already is for the exit zone. */
+const START_SESSION_ZONE_SLUG = "start-session";
 
 /** Pisanie w polu/textarea/select nie może być przechwycone przez sterowanie postacią ani skrótem otwierającym czat. */
 function isTypingTarget(el: EventTarget | null) {
@@ -98,6 +101,16 @@ const SPAWN_MARGIN = 80;
 const NO_NAME = "[no-name]";
 /** Klucz w sessionStorage strefy, z której gracz właśnie wyszedł — patrz `fromSlug` niżej. */
 const SPAWN_FROM_KEY = "stagetime:spawnFrom";
+/**
+ * STU-43: klucz w sessionStorage dla `netKey` (id połączenia po stronie realtime-server) — patrz
+ * `netKey` niżej. Bez tego, odświeżenie strony (pełny remount, nie tylko zerwanie WebSocketu)
+ * generowało nowe losowe id przy każdym wejściu, więc grace-period reconnect w
+ * realtime-server/src/server.ts (patrz graceKey/pendingRemoval, GRACE_MS) nigdy nie trafiał —
+ * serwer widział to jako zupełnie nowe połączenie, nie powrót starego w tym samym oknie.
+ * sessionStorage (nie localStorage) celowo: nowa karta/okno ma dostać świeże id, tak jak dziś,
+ * tylko odświeżenie *tej samej* karty ma się doklejać do tego samego ghosta.
+ */
+const NET_KEY_STORAGE_KEY = "stagetime:netKey";
 /**
  * Zmiana pokoju (router.push) odmontowuje i montuje RoomStage od nowa — jeśli gracz cały czas
  * trzyma E, nowa instancja od razu widziałaby ją jako wciśniętą (dzięki auto-repeat klawiatury)
@@ -147,6 +160,11 @@ const clientSpeed = () => (REALTIME_SERVER_URL ? DEFAULT_PLAYER_SPEED : playerSp
 /** Jak długo wisi dymek z wiadomością nad postacią, zanim zniknie sam. */
 const BUBBLE_MS = 6000;
 
+/** STU-45: jak długo wisi dymek-emotka — krócej niż BUBBLE_MS, bo to gest, nie wiadomość do
+ * doczytania. Osobna od EMOTE_COOLDOWN_MS (shared/constants.ts), która ogranicza jak często
+ * serwer w ogóle przyjmie kolejną emotkę od tego samego połączenia. */
+const EMOTE_BUBBLE_MS = 2200;
+
 /**
  * Jak długo wisi popup "+1 🪙 · +XP" nad postacią po co-minutowym tick-u nagrody, zanim go
  * usuniemy ze stanu (musi być >= czasu animacji pp-reward w globals.css, żeby fade dograł do końca).
@@ -190,6 +208,10 @@ type Ball = {
   /** Atak wręcz zamiast rzuconej kuli: stoi w miejscu i znika po `until` zamiast po opuszczeniu sceny. */
   melee?: boolean;
   until?: number;
+  /** STU-41: which of BALL_SKINS this ball renders as — the shooter's own equipped skin at fire
+   * time, stamped onto the ball once (a skin change mid-flight doesn't retroactively repaint
+   * already-fired balls, same as color already works). */
+  skin?: string;
 };
 type Shard = {
   x: number;
@@ -250,8 +272,9 @@ export type RoomZone = {
   w: number;
   h: number;
   kind?: "nav" | "action";
-  /** Pokój pomodoro — długości faz i przesunięcie do wyliczenia etykiety "Work"/"Break" pod kwadratem. */
-  phase?: { workMin: number; breakMin: number; offsetMs?: number };
+  /** Pokój pomodoro — długości faz (nagroda/opis pod kwadratem). STU-58: w lobby ten kwadrat jest
+   * zawsze "drzwiami" (waiting instance) — zamknięte 2s po starcie, patrz `doors` w RoomStage. */
+  phase?: { workMin: number; breakMin: number };
   /** Kolor obrysu/wypełnienia kwadratu w lobby, odróżniający typ i wariant pokoju. */
   color?: string;
   /** Wejście tylko dla zalogowanych (np. Shop) — bez konta kwadrat pokazuje kłódkę zamiast numeru/nazwy. */
@@ -301,6 +324,10 @@ type Meta = {
    * path as cosmetic/color, no gameplay effect. Undefined/unrecognized falls back to "classic"
    * (see CharacterSprite.tsx). */
   character?: string;
+  /** STU-41: ball ("kula") skin slug — same Presence-only, no-gameplay-effect path as
+   * cosmetic/character (see BALL_SKINS in RoomStage.tsx and 0038_ball_skin.sql). Undefined/
+   * unrecognized falls back to the first entry in BALL_SKINS. */
+  ballSkin?: string;
 };
 /** Pozycja lewego górnego rogu postaci w jednostkach świata, plus kierunek i czy trwa przewrót (roll). */
 type Pos = {
@@ -331,6 +358,10 @@ const asDir = (d: unknown): Dir =>
 
 /** Jak często (ms) zapisujemy pozycję w bazie, o ile się zmieniła. */
 const SAVE_EVERY = 2000;
+
+/** STU-43: musi być wyraźnie krótsze niż TICKET_TTL_MS (roomEntryTicket.ts, 15s) — patrz
+ * refreshTicket's doc comment. */
+const ROOM_TICKET_REFRESH_MS = 8000;
 
 /** Ostatnia zapisana pozycja konta w pokoju (null: brak zapisu albo brak dostępu do bazy). */
 async function fetchSpawn(userId: string, room: string): Promise<Pos | null> {
@@ -393,7 +424,7 @@ function orbAt(x: number, y: number, p: number) {
 }
 
 /** Wypuszcza kulę znad postaci stojącej w (x, y) w kierunku d. */
-function launch(balls: Ball[], x: number, y: number, d: Dir, p: number, color: string, owner: string) {
+function launch(balls: Ball[], x: number, y: number, d: Dir, p: number, color: string, owner: string, skin?: string) {
   const { r, cx, cy } = orbAt(x, y, p);
   const [ux, uy] = DIRS[d];
   const n = Math.hypot(ux, uy);
@@ -405,6 +436,7 @@ function launch(balls: Ball[], x: number, y: number, d: Dir, p: number, color: s
     r,
     color,
     owner,
+    skin,
   });
 }
 
@@ -425,7 +457,13 @@ function strike(balls: Ball[], x: number, y: number, d: Dir, color: string, owne
   });
 }
 
-function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, glow: number) {
+/**
+ * STU-41: `skin` (one of BALL_SKINS, see src/lib/useProfile.ts) only changes what gets drawn
+ * *around/on top of* the base orb below — the base gradient/glow/outline is "classic" and every
+ * other skin still draws it first, then layers its own extra shapes on top, so a ball never looks
+ * broken if `skin` is an old/unrecognized value (falls through to the base look only).
+ */
+function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, glow: number, skin?: string) {
   ctx.save();
   ctx.shadowColor = color;
   ctx.shadowBlur = 6 + glow * 18;
@@ -441,6 +479,54 @@ function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: numbe
   ctx.lineWidth = 2;
   ctx.strokeStyle = "rgba(24,24,27,0.5)";
   ctx.stroke();
+
+  if (skin === "ring") {
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (skin === "spiky") {
+    const spikes = 8;
+    ctx.fillStyle = "#ffffff";
+    for (let i = 0; i < spikes; i++) {
+      const a = (i / spikes) * Math.PI * 2;
+      const tipX = cx + Math.cos(a) * (r + 4);
+      const tipY = cy + Math.sin(a) * (r + 4);
+      const baseA1 = a - 0.18;
+      const baseA2 = a + 0.18;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(cx + Math.cos(baseA1) * r, cy + Math.sin(baseA1) * r);
+      ctx.lineTo(cx + Math.cos(baseA2) * r, cy + Math.sin(baseA2) * r);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (skin === "striped") {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.strokeStyle = "rgba(255,255,255,0.7)";
+    ctx.lineWidth = Math.max(1, r * 0.28);
+    for (let i = -2; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.moveTo(cx - r + i * r * 0.9, cy - r);
+      ctx.lineTo(cx - r + i * r * 0.9 + r * 2, cy + r);
+      ctx.stroke();
+    }
+    ctx.restore();
+  } else if (skin === "halo") {
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, r + 6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -626,6 +712,25 @@ function ChatBubble({ text }: { text: string }) {
   );
 }
 
+/** STU-45: dymek-emotka nad postacią, ten sam fade co ChatBubble (klasa .chat-fade) ale krótszy
+ * czas życia (EMOTE_BUBBLE_MS) i bez tła — sam duży emoji, żeby nie mylił się z prawdziwą
+ * wiadomością czatu. Działa też podczas fazy work (patrz dispatch "emote" w server.ts). */
+function EmoteBubble({ emoji }: { emoji: string }) {
+  return (
+    <div className="chat-fade pointer-events-none absolute bottom-full left-1/2 mb-5 -translate-x-1/2 text-3xl leading-none drop-shadow">
+      {emoji}
+    </div>
+  );
+}
+
+/** STU-35: pełnoekranowy flash po użyciu granatu — `flashKey` zmienia się przy każdym
+ * "itemEffect", żeby zremontować ten div i zrestartować animację nawet gdy dwa granaty wybuchną
+ * jeden po drugim. `key` na samym div (nie na rodzicu) wystarcza do remountu. */
+function FlashOverlay({ flashKey }: { flashKey: number }) {
+  if (flashKey === 0) return null;
+  return <div key={flashKey} className="flash-grenade-fade pointer-events-none fixed inset-0 z-50 bg-white" />;
+}
+
 /**
  * Cały ekran jest sceną: własną postacią (biała bez konta, w kolorze profilu po zalogowaniu)
  * chodzi się strzałkami, a postaci wszystkich osób z pokoju są widoczne dla każdego.
@@ -640,6 +745,7 @@ export function RoomStage({
   onZoneAction,
   xpRunning = true,
   phase,
+  onPomodoroState,
 }: {
   roomSlug: string;
   zones?: RoomZone[];
@@ -658,7 +764,15 @@ export function RoomStage({
    * src/lib/useStudyXp.ts), więc po starcie pracy odliczanie realnie zaczyna się od zera, a nie
    * dolicza czas spędzony na przerwie.
    */
-  phase?: { workMin: number; breakMin: number; offsetMs?: number };
+  phase?: { workMin: number; breakMin: number };
+  /**
+   * STU-58: relays this room's own live pomodoro session state (from the realtime-server's own
+   * broadcast — see PomodoroSessionState in @realtime-shared/types) to the caller, e.g. so a
+   * sibling `<RoomTimer session={...}/>` outside this component can render the same waiting/work/
+   * break UI without a second WS connection. `null` while not connected, or for a room with no
+   * `phase` at all.
+   */
+  onPomodoroState?: (session: PomodoroSessionState | null) => void;
   /**
    * Slug strefy z `zones`, w której zawsze — niezależnie od zapisanej w bazie pozycji — staje
    * postać, np. strefa wyjścia, żeby wejście do pokoju kończyło się dokładnie przy wyjściu i dało
@@ -702,15 +816,34 @@ export function RoomStage({
     serverNowRef.current = serverNow;
   }, [serverNow]);
   const profile = useMyProfile();
+  // STU-35: the big network/input useEffect below reads this via a ref, not `profile` directly —
+  // that effect is created once (see its own deps) and would otherwise close over whatever
+  // `profile` looked like at that time, silently ignoring later flashGrenades/useFlashGrenade
+  // updates. Same "keep a ref in sync for a long-lived closure" idea as myRespawnAtRef elsewhere
+  // in this file.
+  const profileRef = useRef(profile);
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
   const color = session ? profile.color : "#ffffff";
   const nick = session ? profile.nickname : null;
   const cosmetic = session ? profile.cosmetic : null;
   const character = session ? profile.character : "classic";
+  // STU-41: guests (no session) always render/fire the default skin — same reasoning as
+  // character/cosmetic above, there's no profile row to read a choice from.
+  const ballSkin: BallSkin = session ? profile.ballSkin : "classic";
+  const ballSkinRef = useRef(ballSkin);
+  useEffect(() => {
+    ballSkinRef.current = ballSkin;
+  }, [ballSkin]);
   const userId = session?.user.id ?? null;
-  // Whether THIS room is currently in its "work" phase — null when the room has no pomodoro
-  // phase (stopwatch/shop) or before the server clock is synced, in which case it doesn't gate
-  // anything (see xpAccruing below).
-  const roomPhase = phase && serverNow !== null ? getTimerState(serverNow, phase).phase : null;
+  // STU-58: this room's own live pomodoro session state, relayed from the realtime-server's own
+  // "state" broadcast (see the WS message handler below, which calls setPomodoroSession) — no
+  // longer a pure function of the server clock, since a room's work/break cycle now starts on
+  // demand instead of running on a fixed schedule. `null` before connected, or for a room with no
+  // `phase` at all (see xpAccruing below).
+  const [pomodoroSession, setPomodoroSession] = useState<PomodoroSessionState | null>(null);
+  const roomPhase = pomodoroSession?.state ?? null;
   // Pokój bez `phase` (Timer Room, patrz src/components/TimerRoom.tsx) ma indywidualny stoper —
   // tick nagrody widzi tylko właściciel, nie jest rozgłaszany do innych w pokoju. Zdefiniowane tu
   // (przed xpAccruing), bo obie strony nowego podziału nagród (heartbeat vs lump sum niżej) go
@@ -723,49 +856,41 @@ export function RoomStage({
   // supabase/migrations/0026_room_session_reward.sql) — `xpRunning` still gates the Timer Room's
   // own stopwatch-running condition. Own XP then updates live via useMyProfile's Realtime sub.
   const xpAccruing = !isSharedTick && xpRunning && (roomPhase === null || roomPhase === "work");
-  // Work → break transition (this room only, never the lobby itself, which has no `phase`):
-  // shows a "Congratulations" screen for CONGRATS_MS, then sends everyone in the room back to
-  // the lobby, and (pomodoro rooms only) pays out the whole session's XP/coins in one lump sum —
-  // see room_session_complete's doc comment in supabase/migrations/0026_room_session_reward.sql
-  // for why this can't be claimed for a cycle you weren't actually present for. `roomPhase` is a
-  // pure function of the server clock (see getTimerState), so every client watching the same room
-  // sees the transition — and computes the same `cycle` number — at the same instant, without
-  // needing a server broadcast for either.
+  // Work → break transition (this room only, never the lobby itself, which has no `phase`): shows
+  // a "Congratulations" popup and (pomodoro rooms only) pays out the whole session's XP/coins in
+  // one lump sum — see room_session_complete's doc comment in
+  // supabase/migrations/0026_room_session_reward.sql. STU-58: unlike before, this no longer sends
+  // anyone back to the lobby itself — the room stays open (movement/combat unfrozen) until the
+  // realtime-server's own tick loop ends the session and ejects everyone via
+  // `session_ended_redirect` (see the WS message handler below), which is also what makes it safe
+  // to award the reward here: you can only ever be inside a work-phase instance if you were
+  // present when it started (the door locks the instant it does — see resolveJoinTarget in
+  // realtime-server/src/server.ts), so there's no "joined mid-work" case left to guard against.
   //
-  // Detecting the edge off the immediately-previous sample (instead of "have we handled this
-  // room's current work cycle yet") missed it for a backgrounded tab (STU-46): the 250ms tick
-  // driving `roomPhase` (useServerNow) gets throttled or fully paused by the browser while
-  // hidden, so the effect can go a whole cycle without running and, when it finally wakes back
-  // up, sees `roomPhase` already past "break" with no "work" sample in between to compare against
-  // — same client, same mount, still present the whole time, just never got to observe the exact
-  // instant. `seenWorkCycleRef` latches the cycle we were actually watching during "work" so the
-  // very next "break" we observe for that same cycle still fires, no matter how coarse the tick
-  // that catches it was; `handledCycleRef` then keeps that one shot from firing twice.
-  const seenWorkCycleRef = useRef<number | null>(null);
-  const handledCycleRef = useRef<number | null>(null);
+  // Idempotency: `pomodoroSession.startedAt` is unique per on-demand session run (never reused,
+  // unlike the old global "cycle number since EPOCH_MS"), so `handledStartedAtRef` just needs to
+  // dedupe against it directly — no more "did we ever actually observe work for this one" latch,
+  // since the join-lock above already guarantees that.
+  const handledStartedAtRef = useRef<number | null>(null);
   const [showCongrats, setShowCongrats] = useState(false);
   useEffect(() => {
-    if (!isSharedTick || !phase || serverNow === null) return;
-    const cycle = getTimerState(serverNow, phase).cycle;
-    if (roomPhase === "work") {
-      seenWorkCycleRef.current = cycle;
-      return;
-    }
-    if (roomPhase !== "break" || seenWorkCycleRef.current !== cycle || handledCycleRef.current === cycle) return;
-    handledCycleRef.current = cycle;
+    if (!isSharedTick || !phase || !pomodoroSession) return;
+    if (pomodoroSession.state !== "break" || pomodoroSession.startedAt === null) return;
+    if (handledStartedAtRef.current === pomodoroSession.startedAt) return;
+    handledStartedAtRef.current = pomodoroSession.startedAt;
     setShowCongrats(true);
     if (userId) {
       const dXp = xpForMinutes(phase.workMin);
       const dCoins = coinsForMinutes(phase.workMin);
       void getSupabase()
-        ?.rpc("room_session_complete", { p_room: roomSlug, p_cycle: cycle })
+        ?.rpc("room_session_complete", { p_room: roomSlug, p_cycle: pomodoroSession.startedAt })
         .then(({ data, error }) => {
           if (error) {
             console.error("room_session_complete", error);
             return;
           }
           const row = (Array.isArray(data) ? data[0] : data) as { credited: boolean } | undefined;
-          // `credited` false means this cycle was already paid out for this account (e.g. a
+          // `credited` false means this session was already paid out for this account (e.g. a
           // reconnect firing the effect twice) — no popup, no rebroadcast, nothing double-paid.
           if (!row?.credited) return;
           triggerReward("me", dCoins, dXp);
@@ -776,15 +901,14 @@ export function RoomStage({
           });
         });
     }
-  }, [roomPhase]);
+  }, [pomodoroSession, isSharedTick, phase, userId, roomSlug]);
   useEffect(() => {
     if (!showCongrats) return;
-    const timer = setTimeout(() => {
-      window.sessionStorage.setItem(SPAWN_FROM_KEY, roomSlug);
-      router.push("/");
-    }, CONGRATS_MS);
+    // Only hides the popup — STU-58 moved the actual "send everyone back to the lobby" to the
+    // server, at the end of break (see session_ended_redirect above), not CONGRATS_MS.
+    const timer = setTimeout(() => setShowCongrats(false), CONGRATS_MS);
     return () => clearTimeout(timer);
-  }, [showCongrats, roomSlug, router]);
+  }, [showCongrats]);
   // Explicit "Leave room" button (see JSX below) — the only way out of a pomodoro room during its
   // "work" phase now that movement (and so the walk-to-the-exit-zone E-hold flow) is frozen for
   // the whole phase (see AGENTS.md's realtime-server section / isFrozen in
@@ -811,7 +935,14 @@ export function RoomStage({
   // Klucz tej karty w kanale; pozycje innych trzymamy osobno od Presence. Stały przez cały
   // czas życia komponentu (nie per-efekt), żeby ten sam klucz mógł posłużyć zarówno kanałowi
   // Supabase, jak i (na gałęzi podglądowej) serwerowi ruchu — patrz REALTIME_SERVER_URL.
-  const [netKey] = useState(() => crypto.randomUUID());
+  const [netKey] = useState(() => {
+    if (typeof window === "undefined") return crypto.randomUUID();
+    const existing = window.sessionStorage.getItem(NET_KEY_STORAGE_KEY);
+    if (existing) return existing;
+    const fresh = crypto.randomUUID();
+    window.sessionStorage.setItem(NET_KEY_STORAGE_KEY, fresh);
+    return fresh;
+  });
   const keyRef = useRef("");
   const posRef = useRef<Record<string, Pos>>({});
   // Smoothed display position for each remote player, separate from posRef (the raw, stepped
@@ -863,6 +994,23 @@ export function RoomStage({
       for (const t of Object.values(timers)) clearTimeout(t);
     };
   }, []);
+  // STU-45: dymki-emotki, kluczowane tak samo jak `bubbles` niżej ("me" albo `p.id` z othersRef) —
+  // ustawiane wprost z obsługi wiadomości "emote" w efekcie sieciowym poniżej. Deklarowane tutaj
+  // (przed tamtym efektem), nie obok `bubbles`, bo inaczej setter byłby użyty w domknięciu przed
+  // własną deklaracją (react-hooks/immutability) — patrz `rewards`/`setRewards` powyżej, ten sam
+  // powód.
+  const [emoteBubbles, setEmoteBubbles] = useState<Record<string, { emoji: string; id: string }>>({});
+  const emoteBubbleTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(() => {
+    const timers = emoteBubbleTimers.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
+  // STU-35: room-wide flash-grenade overlay — `flashSeq` just needs to change on every
+  // "itemEffect" broadcast so the overlay's key changes and its fade animation restarts. Same
+  // "declare before the network effect" reasoning as emoteBubbles above.
+  const [flashSeq, setFlashSeq] = useState(0);
   // Poprzednie totale z heartbeatu (useStudyXp) — do wyliczenia delty przy kolejnym tick-u; null
   // dopóki nie przyszedł pierwszy (p_reset) heartbeat, który tylko synchronizuje zegar.
   const prevStudyRef = useRef<{ xp: number; coins: number } | null>(null);
@@ -1002,6 +1150,15 @@ export function RoomStage({
   useEffect(() => {
     onZoneActionRef.current = onZoneAction;
   }, [onZoneAction]);
+  // STU-58: relays pomodoroSession (defined above) to the caller — ref, same "don't restart the
+  // WS-owning effect over a callback identity change" reasoning as onZoneActionRef.
+  const onPomodoroStateRef = useRef(onPomodoroState);
+  useEffect(() => {
+    onPomodoroStateRef.current = onPomodoroState;
+  }, [onPomodoroState]);
+  useEffect(() => {
+    onPomodoroStateRef.current?.(pomodoroSession);
+  }, [pomodoroSession]);
 
   // Zalogowany zaczyna tam, gdzie zostawił postać; kanał pokoju czeka na tę pozycję,
   // żeby inni nie zobaczyli najpierw losowego miejsca.
@@ -1143,6 +1300,22 @@ export function RoomStage({
       if (document.visibilityState === "hidden") persist();
     };
 
+    // STU-43: keeps this room's one-time entry ticket (see proxy.ts/roomEntryTicket.ts) fresh
+    // for as long as this page stays mounted. proxy.ts now re-mints a new ticket on every request
+    // that passes it, but that only ever fires on an actual navigation/reload — a tab that's sat
+    // open (no refresh) for longer than TICKET_TTL_MS since its last load would still find an
+    // expired ticket the moment it *does* refresh, bouncing to lobby exactly like the bug this
+    // ticket fixes. Re-POSTing here periodically means the cookie is never more than
+    // ROOM_TICKET_REFRESH_MS stale, regardless of how long the tab sat idle before a refresh.
+    const refreshTicket = () => {
+      void fetch("/api/rooms/enter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: roomSlug }),
+      }).catch(() => {});
+    };
+    const ticketTimer = setInterval(refreshTicket, ROOM_TICKET_REFRESH_MS);
+
     // Serwer ruchu (realtime-server/) — tylko na gałęzi podglądowej, patrz REALTIME_SERVER_URL.
     // Serwer jest źródłem prawdy o własnej pozycji: co event "state" nadpisujemy nią lokalne
     // przewidywanie (patrz reconciliation w tick() niżej) — dzięki temu sfałszowana lokalnie
@@ -1169,15 +1342,25 @@ export function RoomStage({
     // Kierunek koryguje się jednorazowo, nie płynnie (to dyskretna orientacja sprite'a, nie
     // pozycja) — osobna flaga, żeby nie stosować go ponownie co klatkę dopóki nie przyjdzie nowy.
     let serverDirPending = false;
+    // STU-58: this room's own live session state, mirrored from the server's "state" broadcast
+    // (see the message handler below, which also calls setPomodoroSession for the React-facing
+    // value) — read here instead of React state so frozenByWork() below stays a cheap synchronous
+    // check, same reasoning as myHpNow mirroring myHp.
+    let pomodoroSessionLocal: PomodoroSessionState | null = null;
+    // STU-58 (lobby only): per pomodoro-type-slug door state from the server's own lobby
+    // broadcast (see the message handler below) — read only by the zone draw loop.
+    let doorsLocal: Record<string, boolean> = {};
     // Czy TEN pokój jest teraz w fazie "work" — realtime-server odrzuca ruch/roll/charge/fire
     // przez cały ten czas (patrz isFrozen w realtime-server/src/server.ts), więc lokalna predykcja
     // musi się zatrzymać w tej samej chwili, inaczej trzymanie strzałki wygląda jak ruch, dopóki
-    // reconciliation nie ściągnie z powrotem na miejsce. Ta sama, czysta funkcja zegara co
-    // getTimerState gdzie indziej w tym pliku — zero komunikacji z serwerem ruchu potrzebnej, żeby
-    // się z nim zgadzać. Nie dotyczy strefy E (wejście/wyjście z pokoju) — wyjście podczas pracy
-    // zostaje możliwe (z ostrzeżeniem), patrz zone-hold logika niżej.
-    const frozenByWork = () =>
-      Boolean(phase && serverNowRef.current !== null && getTimerState(serverNowRef.current, phase).phase === "work");
+    // reconciliation nie ściągnie z powrotem na miejsce. STU-58: to już nie czysta funkcja zegara —
+    // czyta stan sesji przysłany przez serwer (patrz pomodoroSessionLocal wyżej), bo pokój startuje
+    // na żądanie, nie według stałego harmonogramu. Nie dotyczy strefy E (wejście/wyjście z pokoju)
+    // — wyjście podczas pracy zostaje możliwe (z ostrzeżeniem), patrz zone-hold logika niżej.
+    const frozenByWork = () => pomodoroSessionLocal?.state === "work";
+    // STU-58: the center "start session" button needs its own, longer hold — every other zone
+    // (room entry/exit, other "action" buttons) keeps using the admin-configurable roomEnterMs().
+    const holdMsFor = (z: RoomZone) => (z.slug === START_SESSION_ZONE_SLUG ? START_HOLD_MS : roomEnterMs());
 
     const scheduleReconnect = () => {
       if (wsCleanedUp) return;
@@ -1247,7 +1430,41 @@ export function RoomStage({
           router.push("/");
           return;
         }
+        if (msg.type === "session_ended_redirect") {
+          // STU-58: same "server already moved us, only our own router can navigate" reasoning as
+          // respawn_redirect above — this room's on-demand session just finished its break phase
+          // and was torn down server-side (see the tick loop in realtime-server/src/server.ts).
+          window.sessionStorage.removeItem(SPAWN_FROM_KEY);
+          router.push("/");
+          return;
+        }
+        if (msg.type === "emote") {
+          // STU-45: immediate one-off broadcast, not part of "state" — see broadcastToRoom's doc
+          // comment in realtime-server/src/server.ts. `msg.id` is conn.id, same id space as
+          // netKey (mine) / othersRef.current keys (everyone else), so no lookup needed.
+          const k = msg.id === netKey ? "me" : msg.id;
+          setEmoteBubbles((b) => ({ ...b, [k]: { emoji: msg.emoji, id: msg.id } }));
+          clearTimeout(emoteBubbleTimers.current[k]);
+          emoteBubbleTimers.current[k] = setTimeout(() => {
+            setEmoteBubbles((b) => {
+              const rest = { ...b };
+              delete rest[k];
+              return rest;
+            });
+          }, EMOTE_BUBBLE_MS);
+          return;
+        }
+        if (msg.type === "itemEffect") {
+          // STU-35: same immediate, not-part-of-"state" broadcast as "emote" — purely a
+          // rendering cue, see FlashOverlay below. Everyone in the room sees it, including the
+          // player who threw it, so no `msg.id === netKey` branch is needed here.
+          if (msg.item === "flashGrenade") setFlashSeq((n) => n + 1);
+          return;
+        }
         if (msg.type !== "state") return;
+        pomodoroSessionLocal = msg.pomodoro ?? null;
+        setPomodoroSession(msg.pomodoro ?? null);
+        if (msg.doors) doorsLocal = msg.doors;
         for (const p of msg.players) {
           if (p.id === netKey) {
             serverMe = { x: p.x, y: p.y, d: p.d, gx: p.gx, gy: p.gy, gd: p.gd };
@@ -1309,11 +1526,17 @@ export function RoomStage({
           if (!nextEnemyIds.has(id)) delete enemyPosRef.current[id];
         }
         setEnemies(Object.fromEntries(msg.enemies.map((e) => [e.id, e])));
+        // Room-owned training dummy (see ARENA_ROOM_SLUG) — absent whenever this room has none.
+        setDummy(msg.dummy ?? null);
         // Faza F4 (docs/combat_sync_plan.md): the server is the only judge of hits now — replace
         // ballsRef wholesale with its list (rendering only, no local physics/collision against
         // it) instead of simulating balls locally the way the pre-migration code did. `predictedRef`
         // (below, tick()) still gives the shooter's own shot instant local feedback in the
         // meantime; everyone's hit flash/particles come exclusively from `msg.hits` here.
+        // STU-41: ServerBall carries no skin (it's purely decorative, see Meta.ballSkin's doc
+        // comment) — the client already knows every owner's chosen skin (its own via
+        // ballSkinRef, everyone else's via othersRef.current, both fed by Presence), so it's
+        // looked up here by owner instead of round-tripping through realtime-server.
         ballsRef.current = msg.balls.map(
           (b: ServerBall): Ball => ({
             x: b.x,
@@ -1325,6 +1548,7 @@ export function RoomStage({
             owner: b.owner,
             melee: b.melee,
             until: b.until,
+            skin: b.owner === netKey ? ballSkinRef.current : othersRef.current[b.owner]?.ballSkin,
           }),
         );
         // predictedRef only ever holds this connection's own shots, so the moment the server
@@ -1418,7 +1642,7 @@ export function RoomStage({
           // preview. It flies under the same rule as a real ball (out-of-bounds, see tick()
           // below) rather than a short fixed timer, and gets handed off to ballsRef the moment
           // the server's own broadcast confirms it — see the "state" handler above.
-          launch(predictedRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
+          launch(predictedRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me", ballSkinRef.current);
           if (ws && ws.readyState === WebSocket.OPEN) {
             const fire: ClientMessage = { type: "fire", chargeMs };
             ws.send(JSON.stringify(fire));
@@ -1428,7 +1652,7 @@ export function RoomStage({
             setMyStamina(predictedStamina);
           }
         } else {
-          launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me");
+          launch(ballsRef.current, x, y, dir, p, colorRef.current, keyRef.current || "me", ballSkinRef.current);
         }
       }
       // Still emitted in both modes (and even when the cooldown blocked the shot above) — other
@@ -1463,13 +1687,17 @@ export function RoomStage({
       // Kwadraty pokoi: podświetlone, gdy postać w nich stoi; pasek postępu podczas trzymania E.
       for (const z of zonesRef.current) {
         const active = z.slug === eHoldSlug && eHoldStart !== null;
-        const phaseState = z.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, z.phase) : null;
-        // Strefa wymagająca konta (np. Shop) bez zalogowania — zamknięta niezależnie od fazy.
+        // STU-58: a pomodoro zone in the lobby is always someone's "door" (the type's current
+        // waiting instance) — `doorsLocal` (from the lobby's own "state" broadcast) says whether
+        // it's joinable right now, true (open) by default before the first broadcast arrives.
+        const doorOpen = z.phase ? (doorsLocal[z.slug] ?? true) : true;
+        // Strefa wymagająca konta (np. Shop) bez zalogowania — zamknięta niezależnie od stanu drzwi.
         const authLocked = Boolean(z.requiresAuth) && !userIdRef.current;
-        const workClosedPre = phaseState?.phase === "work";
-        // Pokój zamknięty (praca w toku albo wymaga konta) ledwo widoczny, żeby wzrok od razu
-        // szedł na jedyny otwarty (aktualnie dostępny) pokój — patrz reset globalAlpha po pętli.
-        const closed = (authLocked || workClosedPre) && !active;
+        const doorClosed = Boolean(z.phase) && !doorOpen;
+        // Pokój zamknięty (drzwi zablokowane na DOOR_REOPEN_MS po starcie albo wymaga konta) ledwo
+        // widoczny, żeby wzrok od razu szedł na jedyny otwarty (aktualnie dostępny) pokój — patrz
+        // reset globalAlpha po pętli.
+        const closed = (authLocked || doorClosed) && !active;
         ctx.globalAlpha = closed ? 0.18 : 0.85;
         ctx.lineWidth = active ? 3 : 1.5;
         ctx.strokeStyle = active ? "#ffffff" : (z.color ?? "rgba(255,255,255,0.4)");
@@ -1481,8 +1709,8 @@ export function RoomStage({
         ctx.fillStyle = "rgba(255,255,255,0.85)";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        if (authLocked || phaseState?.phase === "work") {
-          // Zablokowane (praca w toku albo trzeba się zalogować) — kłódka zamiast numeru pokoju.
+        if (authLocked || doorClosed) {
+          // Zablokowane (drzwi właśnie się zamknęły albo trzeba się zalogować) — kłódka zamiast numeru pokoju.
           ctx.font = "28px sans-serif";
           ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
         } else {
@@ -1495,15 +1723,14 @@ export function RoomStage({
         // w pokoju, ale tylko gdy ktoś tam jest.
         const occupants = occupancyRef.current?.[z.slug];
         const isExitHere = roomSlug !== "lobby" && z.slug === "lobby";
-        // Pokój zamknięty (trwa faza work): kłódka, bez nagrody i tekstów wejścia (bo i tak nie
-        // można teraz wejść), ale nadal liczba osób w środku (STU-39) — patrz warunek niżej,
-        // `isExitHere || !workClosed`, który przepuszcza occupants-branch mimo workClosed.
-        const workClosed = phaseState?.phase === "work";
+        // Pokój zamknięty (drzwi właśnie się zamknęły): kłódka, bez nagrody i tekstów wejścia (bo i
+        // tak nie można teraz wejść), ale nadal liczba osób w środku (STU-39) — patrz warunek
+        // niżej, `isExitHere || !doorClosed`, który przepuszcza occupants-branch mimo doorClosed.
         // Nagroda XP tego pokoju i długość faz: pod numerem/kłódką, zawsze widoczna (nie tylko
         // stojąc na kwadracie) — dla pomodoro to praca+przerwa w minutach i nagroda za całą sesję
         // pracy, dla stopwatch/timer stała stawka za ciągłą obecność (patrz STUDY_SECONDS_PER_XP
         // w src/lib/xp.ts).
-        if ((z.kind ?? "nav") === "nav" && !isExitHere && !z.noReward && !workClosed) {
+        if ((z.kind ?? "nav") === "nav" && !isExitHere && !z.noReward && !doorClosed) {
           ctx.fillStyle = "rgba(255,255,255,0.7)";
           ctx.font = "600 14px sans-serif";
           ctx.fillText(z.phase ? `${z.phase.workMin}+${z.phase.breakMin} min` : "no timer", z.x + z.w / 2, z.y + z.h / 2 + 14);
@@ -1517,7 +1744,7 @@ export function RoomStage({
             z.y + z.h / 2 + 30,
           );
         }
-        if (inZone(x, y, z) && (z.kind ?? "nav") === "nav" && (isExitHere || !workClosed)) {
+        if (inZone(x, y, z) && (z.kind ?? "nav") === "nav" && (isExitHere || !doorClosed)) {
           if (isExitHere) {
             ctx.fillStyle = "#22c55e";
             ctx.font = "700 16px sans-serif";
@@ -1547,32 +1774,12 @@ export function RoomStage({
           ctx.fillText(z.kind === "shop" ? "✨ NEW ITEMS" : "✨ NEW ROOM", z.x + z.w / 2, z.y + z.h + 10 + bounce);
         }
         if (active && eHoldStart !== null) {
-          const p = Math.min(1, (t - eHoldStart) / roomEnterMs());
+          const p = Math.min(1, (t - eHoldStart) / holdMsFor(z));
           const barW = z.w - 16;
           ctx.fillStyle = "rgba(255,255,255,0.25)";
           ctx.fillRect(z.x + 8, z.y + z.h - 14, barW, 6);
           ctx.fillStyle = "#ffffff";
           ctx.fillRect(z.x + 8, z.y + z.h - 14, barW * p, 6);
-        }
-        // Pod kwadratem pomodoro: czy właśnie trwa "Work" (czerwony, zablokowany) czy "Break"
-        // (zielony), ile zostało do końca fazy i pasek postępu — jak w RoomTimer w samym pokoju.
-        if (phaseState) {
-          const state = phaseState;
-          const phaseColor = PHASE_COLOR[state.phase];
-          ctx.fillStyle = phaseColor;
-          ctx.font = "700 19px sans-serif";
-          ctx.fillText(
-            `${state.phase === "work" ? "WORK" : "STARTS IN"} · ${formatMs(state.remainingMs)}`,
-            z.x + z.w / 2,
-            z.y + z.h + 24,
-          );
-          const barW = z.w - 16;
-          const barY = z.y + z.h + 36;
-          const progress = 1 - state.remainingMs / state.phaseMs;
-          ctx.fillStyle = "rgba(255,255,255,0.2)";
-          ctx.fillRect(z.x + 8, barY, barW, 6);
-          ctx.fillStyle = phaseColor;
-          ctx.fillRect(z.x + 8, barY, barW * progress, 6);
         }
       }
       ctx.globalAlpha = 0.85;
@@ -1581,14 +1788,14 @@ export function RoomStage({
       if (chargeStart !== null) {
         const p = Math.min(1, (t - chargeStart) / CHARGE_MS);
         const { r, cx, cy } = orbAt(x, y, p);
-        drawOrb(ctx, cx, cy, r * pulse(p), colorRef.current, p);
+        drawOrb(ctx, cx, cy, r * pulse(p), colorRef.current, p, ballSkinRef.current);
       }
       for (const [k, start] of Object.entries(chargingRef.current)) {
         const pos = othersDisplayRef.current[k] ?? posRef.current[k];
         if (!pos) continue;
         const p = Math.min(1, (t - start) / CHARGE_MS);
         const { r, cx, cy } = orbAt(pos.x, pos.y, p);
-        drawOrb(ctx, cx, cy, r * pulse(p), othersRef.current[k]?.color ?? "#ffffff", p);
+        drawOrb(ctx, cx, cy, r * pulse(p), othersRef.current[k]?.color ?? "#ffffff", p, othersRef.current[k]?.ballSkin);
       }
       // predictedRef is empty in the legacy (no REALTIME_SERVER_URL) branch, so this concat is a
       // no-op there — see predictedRef's own doc comment.
@@ -1598,7 +1805,7 @@ export function RoomStage({
           const life = b.until !== undefined ? Math.max(0, (b.until - t) / STRIKE_MS) : 1;
           drawOrb(ctx, b.x, b.y, b.r * (0.6 + 0.4 * life), b.color, 0.9 * life);
         } else {
-          drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6);
+          drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6, b.skin);
         }
       }
       // Błysk uderzenia na trafionych postaciach.
@@ -1872,8 +2079,22 @@ export function RoomStage({
         if (!(zone.kind === "action" && eActionFired)) {
           eHoldStart = t;
         }
-      } else if (t - eHoldStart >= roomEnterMs()) {
-        if (zone.kind === "action") {
+      } else if (t - eHoldStart >= holdMsFor(zone)) {
+        if (zone.slug === START_SESSION_ZONE_SLUG) {
+          if (!eActionFired) {
+            eActionFired = true;
+            // STU-58: sent straight over this room's own WS connection (not onZoneActionRef —
+            // there's no page-level React callback that could relay it back down into the
+            // connection RoomStage itself owns). The server ignores it unless this connection is
+            // actually standing in a pomodoro instance still `waiting` (see the "startSession"
+            // handler in realtime-server/src/server.ts), so no client-side gating needed here.
+            if (REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
+              const start: ClientMessage = { type: "startSession" };
+              ws.send(JSON.stringify(start));
+            }
+            eHoldStart = null;
+          }
+        } else if (zone.kind === "action") {
           if (!eActionFired) {
             eActionFired = true;
             // Data zdarzenia to chwila NACIŚNIĘCIA E (początek trzymania), nie chwila potwierdzenia
@@ -1884,8 +2105,7 @@ export function RoomStage({
           }
         } else if (!entered) {
           const isExit = zone.slug === "lobby";
-          const zonePhase =
-            zone.phase && serverNowRef.current !== null ? getTimerState(serverNowRef.current, zone.phase).phase : null;
+          const zonePhase = zone.phase ? (pomodoroSessionLocal?.state ?? null) : null;
           if (!isExit && zone.requiresAuth && !userIdRef.current) {
             // Strefa zamknięta bez konta (np. Shop) — nie ma sensu nawet pytać serwera o bilet.
             if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
@@ -2114,6 +2334,49 @@ export function RoomStage({
         if (!eLocked) eDown = true;
         return;
       }
+      // STU-45: Digit1..Digit6 send EMOJI_EMOTES[0..5] — deliberately not gated by
+      // frozenByWork() like Space/KeyC above, since emotes must keep working during the work
+      // phase (see the "emote" handler's doc comment in realtime-server/src/server.ts). Only
+      // dead players are blocked, same as the server's own isDead(conn) check.
+      if (e.code.startsWith("Digit") && !e.repeat) {
+        const n = Number(e.code.slice(5));
+        const emoji = EMOJI_EMOTES[n - 1];
+        if (emoji && !myDead && REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
+          const emote: ClientMessage = { type: "emote", emoji };
+          ws.send(JSON.stringify(emote));
+        }
+        return;
+      }
+      // STU-35: flash grenade, gated like Space/KeyC above (myDead || frozenByWork()) since this
+      // is an attack item, unlike emote (Digit1..6) which deliberately isn't. Ownership is
+      // checked client-side first (profileRef.current.flashGrenades, an optimistic read that can
+      // be briefly stale — harmless, see useFlashGrenade's doc comment) via the atomic Postgres
+      // RPC in supabase/migrations/0037_flash_grenade_item.sql; only on that RPC's success do we
+      // ask realtime-server to actually broadcast the room-wide effect.
+      if (e.code === "KeyG" && !e.repeat) {
+        if (!myDead && !frozenByWork()) {
+          const p = profileRef.current;
+          if (p.flashGrenades > 0) {
+            void p.useFlashGrenade().then((res) => {
+              if (res.ok && ws && ws.readyState === WebSocket.OPEN) {
+                const use: ClientMessage = { type: "useItem", item: "flashGrenade" };
+                ws.send(JSON.stringify(use));
+              }
+            });
+          }
+        }
+        return;
+      }
+      // STU-41: cycles through BALL_SKINS — free, no ownership check needed (unlike KeyG above),
+      // just a Postgres write via saveBallSkin (src/lib/useProfile.ts). Not gated by
+      // myDead/frozenByWork: picking a skin isn't an attack, it has no gameplay effect at all.
+      if (e.code === "KeyB" && !e.repeat) {
+        const current = safeBallSkin(profileRef.current.ballSkin);
+        const idx = BALL_SKINS.indexOf(current);
+        const next = BALL_SKINS[(idx + 1) % BALL_SKINS.length];
+        void profileRef.current.saveBallSkin(next);
+        return;
+      }
       if (e.code === "KeyC") {
         if (!e.repeat) {
           const now = performance.now();
@@ -2180,6 +2443,7 @@ export function RoomStage({
     return () => {
       persist();
       clearInterval(saveTimer);
+      clearInterval(ticketTimer);
       wsCleanedUp = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
@@ -2254,7 +2518,8 @@ export function RoomStage({
         if (!REALTIME_SERVER_URL) {
           const px = clampPos(x, y, isLobby);
           const c = othersRef.current[k]?.color ?? "#ffffff";
-          launch(ballsRef.current, px.x, px.y, asDir(d), clamp01(p), c, k);
+          const skin = othersRef.current[k]?.ballSkin;
+          launch(ballsRef.current, px.x, px.y, asDir(d), clamp01(p), c, k, skin);
         }
       })
       .on("broadcast", { event: "strike" }, ({ payload }) => {
@@ -2366,7 +2631,7 @@ export function RoomStage({
   useEffect(() => {
     colorRef.current = color;
     userIdRef.current = userId;
-    metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId, cosmetic, character };
+    metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId, cosmetic, character, ballSkin };
     const channel = channelRef.current;
     if (channel?.state === "joined" && activeRef.current) void channel.track({ ...metaRef.current, ...myPos.current });
     // realtime-server only learns nick/color from the original `join` — this profile fetch
@@ -2378,7 +2643,7 @@ export function RoomStage({
       const profileMsg: ClientMessage = { type: "profile", nick, color };
       socket.send(JSON.stringify(profileMsg));
     }
-  }, [color, nick, cosmetic, character, profile.xp, userId]);
+  }, [color, nick, cosmetic, character, ballSkin, profile.xp, userId]);
 
   useEffect(() => () => {
     if (entryErrorTimer.current) clearTimeout(entryErrorTimer.current);
@@ -2411,13 +2676,14 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking)";
+      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking) · tap 1-6 to emote (works even during work) · tap B to cycle your ball skin";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
+    if (session && profile.flashGrenades > 0) text += ` · tap G to throw a flash grenade (${profile.flashGrenades} left)`;
     setHowToPlay(text);
     return () => setHowToPlay(null);
-  }, [zones, chat.available, chat.canSend]);
+  }, [zones, chat.available, chat.canSend, session, profile.flashGrenades]);
 
   // Dymki: tylko dla naprawdę nowych wiadomości (nie dla historii wczytanej przy montowaniu).
   const [bubbles, setBubbles] = useState<Record<string, { text: string; id: string }>>({});
@@ -2567,9 +2833,24 @@ export function RoomStage({
     }
   };
 
+  // STU-58: on-demand pomodoro sessions need real server-side authority over "who was in the room
+  // when start fired" and the door lock — there's no sensible peer-to-peer fallback for that (see
+  // AGENTS.md's rollout-flag section), so a pomodoro room (isSharedTick) simply doesn't run
+  // without realtime-server configured, rather than silently falling back to the old client-only
+  // simulation. Every other room kind is unaffected.
+  if (isSharedTick && !REALTIME_SERVER_URL) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
+        <p className="text-lg font-semibold text-zinc-200">This room needs the realtime server to run.</p>
+        <p className="text-sm text-zinc-400">NEXT_PUBLIC_REALTIME_SERVER_URL isn't configured on this deploy.</p>
+      </div>
+    );
+  }
+
   // Warstwa na cały ekran, pod treścią strony: postacie są „za” tekstem i czatem, lekko przygaszone.
   return (
     <>
+    <FlashOverlay flashKey={flashSeq} />
     {showCongrats && (
       <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-zinc-950/90 text-center backdrop-blur-sm">
         <p className="text-4xl font-bold text-amber-400">🎉 Congratulations!</p>
@@ -2766,6 +3047,7 @@ export function RoomStage({
                 }}
               >
                 {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
+                {emoteBubbles[k] && <EmoteBubble emoji={emoteBubbles[k].emoji} />}
                 {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
                 <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
                 <CharacterSprite
@@ -2817,6 +3099,22 @@ export function RoomStage({
             </div>
           );
         })}
+        {dummy && !dummy.dead && (
+          <div
+            className="absolute left-0 top-0 flex flex-col items-center opacity-90"
+            style={{ transform: `translate(${dummy.x}px, ${dummy.y}px)`, width: DUMMY_W }}
+          >
+            <div className="mb-1 rounded-full bg-zinc-900/80 px-2 py-0.5 text-xs font-bold text-zinc-100 outline outline-1 outline-black/40">
+              {dummy.hp.toLocaleString()}
+            </div>
+            <div
+              className="flex items-center justify-center rounded-full bg-amber-900/60 text-5xl shadow-lg"
+              style={{ width: DUMMY_W, height: DUMMY_H }}
+            >
+              🎯
+            </div>
+          </div>
+        )}
         {myCorpse && (
           <div
             className="absolute left-0 top-0 opacity-40 grayscale"
@@ -2840,6 +3138,7 @@ export function RoomStage({
           className={`absolute left-0 top-0 opacity-70 will-change-transform ${superseded ? "invisible" : ""}`}
         >
           {bubbles.me && <ChatBubble text={bubbles.me.text} />}
+          {emoteBubbles.me && <EmoteBubble emoji={emoteBubbles.me.emoji} />}
           {rewards.me && <RewardPopup coins={rewards.me.coins} xp={rewards.me.xp} id={rewards.me.id} />}
           <NameTag name={nick} xp={session ? profile.xp : undefined} />
           <CharacterSprite

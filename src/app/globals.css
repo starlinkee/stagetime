@@ -119,6 +119,14 @@ body {
 }
 .chat-fade { animation: chat-fade 6s ease-in forwards; }
 
+/* STU-35: pełnoekranowy flash granatu — pełna jasność natychmiast, potem gaśnie. Czas trwania
+   MUSI się zgadzać z FLASH_GRENADE_FLASH_MS w RoomStage.tsx. */
+@keyframes flash-grenade {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.flash-grenade-fade { animation: flash-grenade 700ms ease-out forwards; }
+
 /* Podświetlenie przycisku "Sign in with Discord" (STU-21): pulsujący glow, żeby przyciągał wzrok
    osób grających jako gość ("[no-name]") zamiast ginąć obok reszty nagłówka. */
 @keyframes discord-pulse {

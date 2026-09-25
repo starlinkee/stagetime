@@ -32,6 +32,16 @@ const COLOR_RE = /^#[0-9a-f]{6}$/;
 export type CharacterSlug = "classic" | "pixel" | "girl";
 const DEFAULT_CHARACTER: CharacterSlug = "classic";
 
+/** STU-41: 5 ball ("kula") skins (see supabase/migrations/0038_ball_skin.sql). Free — unlike
+ * cosmetic/character there's no coin cost, so switching is a plain column update, not an RPC. */
+export const BALL_SKINS = ["classic", "ring", "spiky", "striped", "halo"] as const;
+export type BallSkin = (typeof BALL_SKINS)[number];
+const DEFAULT_BALL_SKIN: BallSkin = "classic";
+/** Ball skin from the database, or the default when missing/unrecognized. */
+export function safeBallSkin(skin: string | null | undefined): BallSkin {
+  return (BALL_SKINS as readonly string[]).includes(skin ?? "") ? (skin as BallSkin) : DEFAULT_BALL_SKIN;
+}
+
 /** Character slug from the database, or the default when missing/unrecognized. */
 export function safeCharacter(character: string | null | undefined): CharacterSlug {
   return character === "pixel" || character === "girl" ? character : DEFAULT_CHARACTER;
@@ -64,6 +74,10 @@ export type Profiles = Record<string, Profile>;
 type CosmeticFields = { cosmetic: string | null; cosmeticExpiresAt: string | null };
 /** Raw character column as stored. */
 type CharacterFields = { character: string | null };
+/** STU-35: raw flash-grenade stock, see supabase/migrations/0037_flash_grenade_item.sql. */
+type FlashGrenadeFields = { flashGrenades: number };
+/** STU-41: raw ball-skin column as stored. */
+type BallSkinFields = { ballSkin: string | null };
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
 function activeCosmetic(f: CosmeticFields): string | null {
@@ -102,6 +116,15 @@ export type MyProfile = {
   /** Character look (see supabase/migrations/0031_character_selection.sql) — same Presence-only
    * path as cosmetic/color, no gameplay effect. */
   character: CharacterSlug;
+  /** STU-35: how many flash grenades this player can still use — see
+   * supabase/migrations/0037_flash_grenade_item.sql. Unlike cosmetic/character, this has a real
+   * gameplay effect, so *using* one (not just owning one) is validated by realtime-server, not
+   * just Postgres — see the "useItem" handler in realtime-server/src/server.ts. Private, like
+   * coins: not shown for other players. */
+  flashGrenades: number;
+  /** STU-41: equipped ball skin (see supabase/migrations/0038_ball_skin.sql) — same Presence-only,
+   * no-gameplay-effect path as cosmetic/character. */
+  ballSkin: BallSkin;
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -125,6 +148,17 @@ export type MyProfile = {
    * equipped, enforced server-side by the same RPC.
    */
   purchaseCharacter: (character: CharacterSlug) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * STU-35: consumes one flash grenade (atomic check-and-decrement RPC, see
+   * supabase/migrations/0037_flash_grenade_item.sql — same shape as purchaseCosmetic but no coin
+   * cost). Only decrements the Postgres stock; the caller still has to tell realtime-server to
+   * actually trigger the room-wide flash (see the "useItem" ClientMessage in RoomStage.tsx) —
+   * this function alone has no visible effect.
+   */
+  useFlashGrenade: () => Promise<{ ok: true; remaining: number } | { ok: false; error: string }>;
+  /** STU-41: switches ball skin — free, direct column update (see saveBallSkin's grant in
+   * supabase/migrations/0038_ball_skin.sql), same shape as `save` (color) above, not an RPC. */
+  saveBallSkin: (skin: BallSkin) => Promise<boolean>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -147,7 +181,11 @@ export function useMyProfile(): MyProfile {
   const fallback = session ? displayName(session).slice(0, MAX_NICKNAME) : null;
   // Trzymamy id razem z nickiem: po przelogowaniu nie pokazujemy cudzej nazwy.
   const [loaded, setLoaded] = useState<
-    ({ userId: string } & Profile & { coins: number } & CosmeticFields & CharacterFields) | null
+    | ({ userId: string } & Profile & { coins: number } & CosmeticFields &
+        CharacterFields &
+        FlashGrenadeFields &
+        BallSkinFields)
+    | null
   >(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -156,7 +194,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -178,6 +216,8 @@ export function useMyProfile(): MyProfile {
           cosmetic: data?.cosmetic ?? null,
           cosmeticExpiresAt: data?.cosmetic_expires_at ?? null,
           character: data?.character_slug ?? null,
+          flashGrenades: data?.flash_grenades ?? 0,
+          ballSkin: data?.ball_skin ?? null,
         });
       });
     return () => {
@@ -188,7 +228,12 @@ export function useMyProfile(): MyProfile {
   useEffect(() => {
     const onSaved = (e: Event) => {
       const next = (
-        e as CustomEvent<{ userId: string } & Profile & { coins: number } & CosmeticFields & CharacterFields>
+        e as CustomEvent<
+          { userId: string } & Profile & { coins: number } & CosmeticFields &
+            CharacterFields &
+            FlashGrenadeFields &
+            BallSkinFields
+        >
       ).detail;
       if (next.userId === userId) setLoaded(next);
     };
@@ -219,6 +264,8 @@ export function useMyProfile(): MyProfile {
             cosmetic?: string | null;
             cosmetic_expires_at?: string | null;
             character_slug?: string | null;
+            flash_grenades?: number;
+            ball_skin?: string | null;
           };
           if (!p.nickname) return;
           setLoaded({
@@ -235,6 +282,8 @@ export function useMyProfile(): MyProfile {
             cosmetic: p.cosmetic ?? null,
             cosmeticExpiresAt: p.cosmetic_expires_at ?? null,
             character: p.character_slug ?? null,
+            flashGrenades: p.flash_grenades ?? 0,
+            ballSkin: p.ball_skin ?? null,
           });
         },
       )
@@ -256,6 +305,8 @@ export function useMyProfile(): MyProfile {
   const currentCosmetic = loaded?.userId === userId ? loaded.cosmetic : null;
   const currentCosmeticExpiresAt = loaded?.userId === userId ? loaded.cosmeticExpiresAt : null;
   const currentCharacter = loaded?.userId === userId ? safeCharacter(loaded.character) : DEFAULT_CHARACTER;
+  const currentFlashGrenades = loaded?.userId === userId ? loaded.flashGrenades : 0;
+  const currentBallSkin = loaded?.userId === userId ? safeBallSkin(loaded.ballSkin) : DEFAULT_BALL_SKIN;
 
   const save = useCallback(
     async (color: string) => {
@@ -302,6 +353,8 @@ export function useMyProfile(): MyProfile {
             cosmetic: currentCosmetic,
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
           },
         }),
       );
@@ -321,6 +374,8 @@ export function useMyProfile(): MyProfile {
       currentCosmetic,
       currentCosmeticExpiresAt,
       currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
     ],
   );
 
@@ -360,6 +415,8 @@ export function useMyProfile(): MyProfile {
             cosmetic: currentCosmetic,
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
           },
         }),
       );
@@ -379,6 +436,8 @@ export function useMyProfile(): MyProfile {
       currentCosmetic,
       currentCosmeticExpiresAt,
       currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
     ],
   );
 
@@ -421,6 +480,8 @@ export function useMyProfile(): MyProfile {
             cosmetic: newCosmetic,
             cosmeticExpiresAt: newExpiresAt,
             character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
           },
         }),
       );
@@ -439,6 +500,8 @@ export function useMyProfile(): MyProfile {
       currentMobKills,
       currentCoins,
       currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
     ],
   );
 
@@ -481,6 +544,8 @@ export function useMyProfile(): MyProfile {
             cosmetic: currentCosmetic,
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: newCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
           },
         }),
       );
@@ -500,6 +565,115 @@ export function useMyProfile(): MyProfile {
       currentCoins,
       currentCosmetic,
       currentCosmeticExpiresAt,
+      currentFlashGrenades,
+      currentBallSkin,
+    ],
+  );
+
+  const useFlashGrenade = useCallback(async () => {
+    if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
+    if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+    // Same atomic check-and-decrement pattern as purchaseCosmetic (0027/0035), see
+    // supabase/migrations/0037_flash_grenade_item.sql — no coins involved, just stock.
+    const { data, error } = await sb.rpc("consume_flash_grenade");
+    if (error) {
+      console.error("consume_flash_grenade", error);
+      const message = error.message === "no_flash_grenades" ? "No flash grenades left." : `Failed: ${saveHint(error)}`;
+      return { ok: false as const, error: message };
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as { flash_grenades?: number } | null;
+    const remaining = Number(row?.flash_grenades ?? Math.max(0, currentFlashGrenades - 1));
+    saved.dispatchEvent(
+      new CustomEvent("saved", {
+        detail: {
+          userId,
+          nickname: currentNickname,
+          color: currentColor,
+          xp: currentXp,
+          ballsShot: currentBallsShot,
+          fistSwings: currentFistSwings,
+          kills: currentKills,
+          deaths: currentDeaths,
+          mobKills: currentMobKills,
+          coins: currentCoins,
+          cosmetic: currentCosmetic,
+          cosmeticExpiresAt: currentCosmeticExpiresAt,
+          character: currentCharacter,
+          flashGrenades: remaining,
+          ballSkin: currentBallSkin,
+        },
+      }),
+    );
+    return { ok: true as const, remaining };
+  }, [
+    sb,
+    userId,
+    currentNickname,
+    currentColor,
+    currentXp,
+    currentBallsShot,
+    currentFistSwings,
+    currentKills,
+    currentDeaths,
+    currentMobKills,
+    currentCoins,
+    currentCosmetic,
+    currentCosmeticExpiresAt,
+    currentCharacter,
+    currentFlashGrenades,
+    currentBallSkin,
+  ]);
+
+  const saveBallSkin = useCallback(
+    async (skin: BallSkin) => {
+      if (!sb || !userId) return false;
+      // Free, direct column update — no RPC, see the grant in
+      // supabase/migrations/0038_ball_skin.sql. Unlike color this never fails on a bad value from
+      // this function's own caller (BallSkin is a closed union), only on RLS/network errors.
+      const { error } = await sb.from("profiles").update({ ball_skin: skin, updated_at: new Date().toISOString() }).eq("id", userId);
+      if (error) {
+        console.error("profiles update (ball_skin)", error);
+        return false;
+      }
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            mobKills: currentMobKills,
+            coins: currentCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: skin,
+          },
+        }),
+      );
+      return true;
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentMobKills,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
+      currentCharacter,
+      currentFlashGrenades,
     ],
   );
 
@@ -521,11 +695,15 @@ export function useMyProfile(): MyProfile {
     coins: mine?.coins ?? 0,
     cosmetic: mine ? activeCosmetic(mine) : null,
     character: mine ? safeCharacter(mine.character) : DEFAULT_CHARACTER,
+    flashGrenades: mine?.flashGrenades ?? 0,
+    ballSkin: mine ? safeBallSkin(mine.ballSkin) : DEFAULT_BALL_SKIN,
     error,
     save,
     purchaseColor,
     purchaseCosmetic,
     purchaseCharacter,
+    useFlashGrenade,
+    saveBallSkin,
   };
 }
 
