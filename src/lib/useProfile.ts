@@ -1067,9 +1067,10 @@ export function useMyProfile(): MyProfile {
     character: mine ? safeCharacter(mine.character) : DEFAULT_CHARACTER,
     flashGrenades: mine?.flashGrenades ?? 0,
     ballSkin: mine ? safeBallSkin(mine.ballSkin) : DEFAULT_BALL_SKIN,
-    // Sygnalizowani goście dostają taki sam startowy zapas jak nowe konto z Postgresa (default 10
-    // w supabase/migrations/0040_shuriken_ammo.sql) — bez tego niezalogowany gracz startuje z 0.
-    shurikenAmmo: mine?.shurikenAmmo ?? 10,
+    // Goście nie mają wiersza w `profiles`, więc nie ma czego liczyć — a useShuriken() i tak
+    // odrzuca użycie bez userId (patrz doc comment tej funkcji), więc pokazywanie tu jakiegokolwiek
+    // fałszywego zapasu tylko myli niezalogowanego gracza.
+    shurikenAmmo: mine?.shurikenAmmo ?? 0,
     equippedHelm: mine?.equippedHelm ?? null,
     equippedArmor: mine?.equippedArmor ?? null,
     equippedBoots: mine?.equippedBoots ?? null,
