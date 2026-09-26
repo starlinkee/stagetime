@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { verifyEntryToken } from "../shared/entryToken";
-import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "../shared/obstacles";
+import { circleIntersectsObstacles, LOBBY_LAMPS, obstaclesFor, resolveObstacleMoveHitbox } from "../shared/obstacles";
 import { clampPos } from "../shared/physics";
 import { isArenaSlug, isLobbySlug, LOBBY_ZONE_RECTS, MAIN_LOBBY_SLUG, POMODORO_TYPES } from "../shared/rooms";
 import {
@@ -43,6 +43,7 @@ import {
   HITBOX_W,
   HIT_PAD,
   IMMUNITY_MS,
+  LAMP_INTERACT_RADIUS,
   ORB_R_MAX,
   ORB_R_MIN,
   PERSON_H,
@@ -377,6 +378,10 @@ const roomBalls = new Map<string, ServerBall[]>();
 /** Hits resolved since the last broadcast, drained into the next `state` message and cleared —
  * not cumulative, see the broadcast loop below. */
 const roomHits = new Map<string, HitEvent[]>();
+/** Per-room lamp on/off state, keyed by LOBBY_LAMPS' own ids (shared/obstacles.ts) — see the
+ * "toggleLamp" handler below. Only ever populated for lobby-slug rooms; a missing id (room or
+ * lamp) means off, same convention as the `lamps` field on the "state" ServerMessage. */
+const roomLamps = new Map<string, Map<string, boolean>>();
 
 /** Each room's own `players` array as of the last broadcast tick — the baseline the next tick's
  * diff is computed against (see the broadcast loop below). Keyed by PlayerState.id, not by Conn,
@@ -1279,6 +1284,25 @@ wss.on("connection", (ws, req) => {
       if (typeof msg.color === "string" && msg.color) conn.color = msg.color;
       return;
     }
+    // A request, not an assertion, same as `roll` above — silently ignored unless this connection
+    // is actually in a lobby room and standing close enough to the named lamp (LAMP_INTERACT_RADIUS).
+    if (msg.type === "toggleLamp") {
+      if (!isLobbySlug(conn.roomSlug)) return;
+      const lamp = LOBBY_LAMPS.find((l) => l.id === msg.id);
+      if (!lamp) return;
+      const cx = conn.x + PERSON_W / 2;
+      const cy = conn.y + PERSON_H / 2;
+      const lampCx = lamp.x + lamp.w / 2;
+      const lampCy = lamp.y + lamp.h / 2;
+      if (Math.hypot(cx - lampCx, cy - lampCy) > LAMP_INTERACT_RADIUS) return;
+      let lamps = roomLamps.get(conn.roomSlug);
+      if (!lamps) {
+        lamps = new Map();
+        roomLamps.set(conn.roomSlug, lamps);
+      }
+      lamps.set(lamp.id, !lamps.get(lamp.id));
+      return;
+    }
   });
 
   ws.on("close", () => {
@@ -1715,7 +1739,7 @@ setInterval(() => {
       ...(instance && cfg
         ? { pomodoro: { state: instance.state, startedAt: instance.startedAt, workMin: cfg.workMin, breakMin: cfg.breakMin } }
         : {}),
-      ...(isLobbySlug(slug) ? { doors: doorStates } : {}),
+      ...(isLobbySlug(slug) ? { doors: doorStates, lamps: Object.fromEntries(roomLamps.get(slug) ?? []) } : {}),
     };
     const prevPlayers = lastBroadcastPlayers.get(slug);
     const changedPlayers = prevPlayers ? players.filter((p) => !playerStateEqual(p, prevPlayers.get(p.id))) : players;

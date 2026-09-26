@@ -237,7 +237,15 @@ export type ClientMessage =
    * the WebSocket connects. Updates this connection's `nick`/`color` in place; never touches
    * position, unlike re-sending `join` would (see handleJoin in server.ts).
    */
-  | { type: "profile"; nick: string | null; color: string };
+  | { type: "profile"; nick: string | null; color: string }
+  /**
+   * A request, not an assertion, same as `roll`/`startSession` above: `id` names one of
+   * LOBBY_LAMPS' own ids (shared/obstacles.ts). The server alone decides whether this connection
+   * is actually standing close enough (LAMP_INTERACT_RADIUS in shared/constants.ts) and whether
+   * this room even has lamps at all (lobby only) before flipping that lamp's state and
+   * broadcasting it to the room in the next "state" message's `lamps` field.
+   */
+  | { type: "toggleLamp"; id: string };
 
 /**
  * One room-owned enemy (see ARENA_ROOM_SLUG/ENEMY_* in shared/constants.ts) — everyone in the
@@ -318,6 +326,12 @@ export type ServerMessage =
        * someone starts it (see shared/constants.ts).
        */
       doors?: Record<string, boolean>;
+      /**
+       * Only set on the lobby room's own broadcast (same gating as `doors` above): per-lamp
+       * on/off state, keyed by LOBBY_LAMPS' own ids (shared/obstacles.ts). Missing key means off
+       * (a lamp nobody has ever toggled) — see the "toggleLamp" ClientMessage above.
+       */
+      lamps?: Record<string, boolean>;
     }
   | { type: "join_rejected"; reason: "room_full" | "room_starting" }
   /**

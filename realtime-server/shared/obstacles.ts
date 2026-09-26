@@ -32,6 +32,9 @@ export type DecorItem = {
   solid?: boolean;
   /** CSS opacity (0-1) for the rendered <img>; omitted means fully opaque. */
   opacity?: number;
+  /** Stable id for an item with server-tracked toggle state (currently only the floor lamps —
+   * see LOBBY_LAMPS/buildLobbyLamps below). Omitted for every item with no such state. */
+  id?: string;
 };
 
 /** Native-pixel -> CSS-px scale, matched to PlayerSprite's 24px source -> 96px-tall box (4x). */
@@ -52,7 +55,7 @@ export const CENTER_ITEMS: DecorItem[] = [
   // texture under everything else rather than competing with the room-grid tiles on top of it.
   { file: "rug-fst", w: 450, h: 319, x: -54, y: -64, opacity: 0.35 },
   // Empty band above the room grid (world y 0-220, full width).
-  { file: "floor-lamp", w: 15, h: 46, x: 110, y: 2 },
+  { file: "floor-lamp", w: 15, h: 46, x: 110, y: 2, id: "lamp-center" },
   { file: "plant", w: 10, h: 23, x: 200, y: 10 },
   { file: "mug", w: 10, h: 9, x: 250, y: 30 },
   { file: "book-open", w: 11, h: 8, x: 20, y: 35 },
@@ -73,7 +76,7 @@ export const QUADRANT_ITEMS: Record<Quadrant, DecorItem[]> = {
   "top-left": [
     { file: "armchair", w: 22, h: 55, x: 20, y: 5, solid: true },
     { file: "bookshelf", w: 46, h: 47, x: 58, y: 3, solid: true },
-    { file: "floor-lamp", w: 15, h: 46, x: 110, y: 5 },
+    { file: "floor-lamp", w: 15, h: 46, x: 110, y: 5, id: "lamp-corner" },
   ],
   // Study desk.
   "top-right": [
@@ -95,6 +98,22 @@ export const QUADRANT_ITEMS: Record<Quadrant, DecorItem[]> = {
 };
 
 /**
+ * Each quadrant's own top-left corner in world space — shared by buildLobbyObstacles and
+ * buildLobbyLamps below so their placement math can't drift apart from LobbyDecor.tsx's own
+ * render, which computes the exact same origins.
+ */
+function lobbyQuadrantOrigins(width: number, height: number): Record<Quadrant, { x: number; y: number }> {
+  const marginX = width / 4;
+  const marginY = height / 4;
+  return {
+    "top-left": { x: 0, y: 0 },
+    "top-right": { x: width - marginX, y: 0 },
+    "bottom-left": { x: 0, y: height - marginY },
+    "bottom-right": { x: width - marginX, y: height - marginY },
+  };
+}
+
+/**
  * World-space no-go boxes for every `solid` item above, computed once at module load (positions
  * are static) — off the lobby world's own width/height (worldW(true)/worldH(true)), never
  * anything per-room, since decor only exists in the lobby (see LobbyDecor's doc comment). Same
@@ -106,12 +125,7 @@ function buildLobbyObstacles(): Rect[] {
   const height = worldH(true);
   const marginX = width / 4;
   const marginY = height / 4;
-  const origin: Record<Quadrant, { x: number; y: number }> = {
-    "top-left": { x: 0, y: 0 },
-    "top-right": { x: width - marginX, y: 0 },
-    "bottom-left": { x: 0, y: height - marginY },
-    "bottom-right": { x: width - marginX, y: height - marginY },
-  };
+  const origin = lobbyQuadrantOrigins(width, height);
   const rects: Rect[] = [];
   for (const [quadrant, items] of Object.entries(QUADRANT_ITEMS) as [Quadrant, DecorItem[]][]) {
     for (const item of items) {
@@ -139,6 +153,51 @@ function buildLobbyObstacles(): Rect[] {
 }
 
 export const LOBBY_OBSTACLES: ReadonlyArray<Rect> = buildLobbyObstacles();
+
+/** World-space rect for a `DecorItem` that has server-tracked toggle state, keyed by that item's
+ * own `id` (see DecorItem.id above). */
+export type LampRect = Rect & { id: string };
+
+/**
+ * World-space position of every floor lamp (the only decor item with an `id` today) — computed
+ * once at module load, same quadrant/content-square origin math as buildLobbyObstacles above, so
+ * this can't drift from where LobbyDecor.tsx actually draws each lamp. Used both by server.ts (to
+ * check a toggling player is actually standing near the lamp they're naming) and RoomStage.tsx
+ * (to draw its glow when lit).
+ */
+function buildLobbyLamps(): LampRect[] {
+  const width = worldW(true);
+  const height = worldH(true);
+  const marginX = width / 4;
+  const marginY = height / 4;
+  const origin = lobbyQuadrantOrigins(width, height);
+  const rects: LampRect[] = [];
+  for (const [quadrant, items] of Object.entries(QUADRANT_ITEMS) as [Quadrant, DecorItem[]][]) {
+    for (const item of items) {
+      if (!item.id) continue;
+      rects.push({
+        id: item.id,
+        x: origin[quadrant].x + item.x * DECOR_SCALE,
+        y: origin[quadrant].y + item.y * DECOR_SCALE,
+        w: item.w * DECOR_SCALE,
+        h: item.h * DECOR_SCALE,
+      });
+    }
+  }
+  for (const item of CENTER_ITEMS) {
+    if (!item.id) continue;
+    rects.push({
+      id: item.id,
+      x: marginX + item.x * DECOR_SCALE,
+      y: marginY + item.y * DECOR_SCALE,
+      w: item.w * DECOR_SCALE,
+      h: item.h * DECOR_SCALE,
+    });
+  }
+  return rects;
+}
+
+export const LOBBY_LAMPS: ReadonlyArray<LampRect> = buildLobbyLamps();
 
 /**
  * STU-34: cover in the arena so a fight isn't just standing in the open trading shots — same

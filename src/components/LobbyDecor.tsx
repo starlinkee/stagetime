@@ -10,11 +10,25 @@
  * component and the movement/combat server read, so a solid item's no-go box (see
  * LOBBY_OBSTACLES there) can never silently drift from where it's actually drawn.
  */
-import { CENTER_ITEMS, DECOR_SCALE, QUADRANT_ITEMS, type DecorItem, type Quadrant } from "@realtime-shared/obstacles";
+import { CENTER_ITEMS, DECOR_SCALE, LOBBY_LAMPS, QUADRANT_ITEMS, type DecorItem, type Quadrant } from "@realtime-shared/obstacles";
 
 const DECOR_DIR = "/map/props/decor";
 
-export function LobbyDecor({ width, height }: { width: number; height: number }) {
+/** Diameter (CSS px) of a lit lamp's glow — big enough to read as ambient light without swallowing
+ * nearby furniture. */
+const LAMP_GLOW_SIZE = 160;
+
+export function LobbyDecor({
+  width,
+  height,
+  lampsOn,
+}: {
+  width: number;
+  height: number;
+  /** Per-lamp on/off state keyed by LOBBY_LAMPS' own ids (realtime-server/shared/obstacles.ts) —
+   * from the server's own lobby broadcast (see RoomStage.tsx). Missing/false means off. */
+  lampsOn?: Record<string, boolean>;
+}) {
   // Quadrant margins are each exactly a quarter of the world (see CONTENT_OX/OY in RoomStage.tsx:
   // the lobby world is 2× the screen in both axes, so the empty border on every side is width/4 /
   // height/4 wide/tall).
@@ -71,6 +85,22 @@ export function LobbyDecor({ width, height }: { width: number; height: number })
             maxWidth: "none",
             imageRendering: "pixelated",
             opacity: item.opacity,
+          }}
+        />
+      ))}
+      {LOBBY_LAMPS.filter((lamp) => lampsOn?.[lamp.id]).map((lamp) => (
+        <div
+          key={`lamp-glow-${lamp.id}`}
+          style={{
+            position: "absolute",
+            // Centered on the lamp's shade, roughly its top quarter, not the whole sprite's box.
+            left: lamp.x + lamp.w / 2 - LAMP_GLOW_SIZE / 2,
+            top: lamp.y + lamp.h * 0.15 - LAMP_GLOW_SIZE / 2,
+            width: LAMP_GLOW_SIZE,
+            height: LAMP_GLOW_SIZE,
+            borderRadius: "50%",
+            background: "radial-gradient(circle, rgba(255,214,120,0.55) 0%, rgba(255,214,120,0.22) 40%, rgba(255,214,120,0) 72%)",
+            mixBlendMode: "screen",
           }}
         />
       ))}

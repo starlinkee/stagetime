@@ -52,6 +52,7 @@ import {
   IMMUNE_OPACITY,
   KILL_GOLD_REWARD,
   KILL_XP_REWARD,
+  LAMP_INTERACT_RADIUS,
   MAX_HP,
   ORB_R_MAX,
   ORB_R_MIN,
@@ -83,7 +84,7 @@ import {
   worldH,
   worldW,
 } from "@realtime-shared/constants";
-import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "@realtime-shared/obstacles";
+import { circleIntersectsObstacles, LOBBY_LAMPS, obstaclesFor, resolveObstacleMoveHitbox } from "@realtime-shared/obstacles";
 import { clampPos } from "@realtime-shared/physics";
 import { isArenaSlug, isLobbySlug } from "@realtime-shared/rooms";
 
@@ -1539,6 +1540,9 @@ export function RoomStage({
   const respawnRemainingSec = myRespawnAt > 0 ? Math.max(0, Math.ceil((myRespawnAt - nowTick) / 1000)) : 0;
   // Kto z innych właśnie się porusza (do animacji chodu) i timery wygaszania.
   const [walkers, setWalkers] = useState<Record<string, boolean>>({});
+  // Lobby floor-lamp on/off state, keyed by LOBBY_LAMPS' own ids — from the server's own lobby
+  // broadcast (see the "state" message handler below), same gating/shape as `doors`.
+  const [lampsOn, setLampsOn] = useState<Record<string, boolean>>({});
   const walkTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const ballsRef = useRef<Ball[]>([]);
   /** Mirrors the connect effect's local `ws` so the color/nick-change effect below (a separate
@@ -1933,6 +1937,7 @@ export function RoomStage({
         pomodoroSessionLocal = msg.pomodoro ?? null;
         setPomodoroSession(msg.pomodoro ?? null);
         if (msg.doors) doorsLocal = msg.doors;
+        if (msg.lamps) setLampsOn(msg.lamps);
         for (const p of msg.players) {
           if (p.id === netKey) {
             serverMe = { x: p.x, y: p.y, d: p.d, gx: p.gx, gy: p.gy, gd: p.gd };
@@ -2960,6 +2965,21 @@ export function RoomStage({
         return;
       }
       if (e.code === "KeyE") {
+        // Floor lamps: a plain tap, not a hold — checked before the zone-hold logic below so
+        // standing near a lamp never also arms a room-enter/exit hold. Lobby-only (LOBBY_LAMPS is
+        // empty everywhere else) and requires the authoritative server (no peer-to-peer fallback
+        // for this — see AGENTS.md on realtime-server owning shared room state).
+        if (!e.repeat && isLobby && ws && ws.readyState === WebSocket.OPEN) {
+          const p = myPos.current;
+          const cx = p.x + PERSON_W / 2;
+          const cy = p.y + PERSON_H / 2;
+          const nearLamp = LOBBY_LAMPS.find((l) => Math.hypot(cx - (l.x + l.w / 2), cy - (l.y + l.h / 2)) <= LAMP_INTERACT_RADIUS);
+          if (nearLamp) {
+            const toggle: ClientMessage = { type: "toggleLamp", id: nearLamp.id };
+            ws.send(JSON.stringify(toggle));
+            return;
+          }
+        }
         if (!eLocked) eDown = true;
         return;
       }
@@ -3899,7 +3919,7 @@ export function RoomStage({
         style={{ width: WORLD_W, height: WORLD_H }}
       >
         <DungeonBackground width={WORLD_W} height={WORLD_H} />
-        {isLobby && <LobbyDecor width={WORLD_W} height={WORLD_H} />}
+        {isLobby && <LobbyDecor width={WORLD_W} height={WORLD_H} lampsOn={lampsOn} />}
         {isArenaSlug(roomSlug) && <ArenaDecor />}
         {Object.entries(others).map(([k, o]) => {
           // respawnAt > 0: this player just died — o.x/o.y/o.d is their corpse, frozen where it

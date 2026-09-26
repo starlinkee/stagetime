@@ -283,6 +283,11 @@ export const ARENA_ROOM_SLUG = "arena";
  */
 export const START_HOLD_MS = 3000;
 export const DOOR_REOPEN_MS = 2000;
+/** How close (px, player box center to lamp rect) a player must be for the server to accept a
+ * "toggleLamp" request naming that lamp — see LOBBY_LAMPS in shared/obstacles.ts and the
+ * "toggleLamp" handler in server.ts. Wide enough to cover standing right next to a lamp from any
+ * side without requiring pixel-perfect alignment. */
+export const LAMP_INTERACT_RADIUS = 90;
 export const ENEMY_MAX_HP = 60;
 /** World units per second — slower than DEFAULT_PLAYER_SPEED so a chased player can outrun it. */
 export const ENEMY_SPEED = 140;
