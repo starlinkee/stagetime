@@ -109,7 +109,7 @@ export function ProfileMenu({ session }: { session: Session }) {
         <div
           role="dialog"
           aria-label="Profile settings"
-          className="absolute right-0 z-10 mt-2 w-72 rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-xl"
+          className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-zinc-800 bg-zinc-950 p-4 shadow-xl"
         >
           {ready ? (
             <ProfileForm

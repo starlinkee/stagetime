@@ -30,5 +30,19 @@ export function useHeaderPanel(id: string): [boolean, () => void, () => void] {
   const close = () => {
     if (current === id) setCurrent(null);
   };
+
+  // Escape closes whichever header panel is open — consistent with every other overlay in the
+  // app (chat, stats, ProfileMenu), so users always have a keyboard way out even if a panel's
+  // own Close button ends up out of view (e.g. positioned above the visible viewport).
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   return [open, toggle, close];
 }
