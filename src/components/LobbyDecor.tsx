@@ -88,11 +88,13 @@ export function LobbyDecor({
           }}
         />
       ))}
-      {/* One-off decorative photo, not part of the QUADRANT_ITEMS/obstacles system above (it's a
-          real photo, not a pixel-art sprite under DECOR_DIR, and it's purely visual — no solid
-          box needed). Tucked into the bottom-right quadrant's open corner, away from its plants. */}
+      {/* One-off decorative sprite, not part of the QUADRANT_ITEMS/obstacles system above (it's
+          not under DECOR_DIR and it's purely visual — no solid box needed). Tucked into the
+          bottom-right quadrant's open corner, away from its plants. Source PNG has a real alpha
+          channel (re-exported from the original house.jfif, whose "transparent" background was
+          actually a baked-in gray checkerboard — see archive/public/map/buildings/house.jfif). */}
       <img
-        src="/map/buildings/house.jfif"
+        src="/map/buildings/house.png"
         alt=""
         draggable={false}
         style={{
@@ -102,8 +104,7 @@ export function LobbyDecor({
           width: 45 * DECOR_SCALE,
           height: 45 * DECOR_SCALE,
           maxWidth: "none",
-          borderRadius: 6,
-          opacity: 0.9,
+          imageRendering: "pixelated",
         }}
       />
       {LOBBY_LAMPS.filter((lamp) => lampsOn?.[lamp.id]).map((lamp) => (
