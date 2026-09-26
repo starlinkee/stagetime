@@ -76,6 +76,9 @@ type CosmeticFields = { cosmetic: string | null; cosmeticExpiresAt: string | nul
 type CharacterFields = { character: string | null };
 /** STU-35: raw flash-grenade stock, see supabase/migrations/0037_flash_grenade_item.sql. */
 type FlashGrenadeFields = { flashGrenades: number };
+/** First consumable item (potion of swiftness), see supabase/migrations/0055_potion_of_swiftness.sql
+ * — same plain-stock-column shape as flashGrenades above, no coin-check-free like ammo. */
+type PotionFields = { potionsOfSwiftness: number };
 /** STU-41: raw ball-skin column as stored. */
 type BallSkinFields = { ballSkin: string | null };
 /** Third weapon (shuriken, weapon slot 3) ammo stock — derived, not stored directly. Since
@@ -193,6 +196,12 @@ export type MyProfile = {
    * just Postgres — see the "useItem" handler in realtime-server/src/server.ts. Private, like
    * coins: not shown for other players. */
   flashGrenades: number;
+  /** How many potions of swiftness this player can still drink — see
+   * supabase/migrations/0055_potion_of_swiftness.sql. Same "ownership is Postgres, *use* is
+   * realtime-server" split as flashGrenades: drinking one grants a real, timed +50% move speed
+   * buff (see POTION_OF_SWIFTNESS_* in realtime-server/shared/constants.ts), so realtime-server
+   * validates the "useItem" message that actually starts the buff. Private, like coins/flashGrenades. */
+  potionsOfSwiftness: number;
   /** STU-41: equipped ball skin (see supabase/migrations/0038_ball_skin.sql) — same Presence-only,
    * no-gameplay-effect path as cosmetic/character. */
   ballSkin: BallSkin;
@@ -257,6 +266,21 @@ export type MyProfile = {
    * this function alone has no visible effect.
    */
   useFlashGrenade: () => Promise<{ ok: true; remaining: number } | { ok: false; error: string }>;
+  /**
+   * Drinks one potion of swiftness (atomic check-and-decrement RPC, see
+   * supabase/migrations/0055_potion_of_swiftness.sql — no coins involved, just stock, same shape as
+   * useFlashGrenade). Only decrements the Postgres stock; the caller still has to tell
+   * realtime-server to actually start the speed buff (see the "useItem" ClientMessage in
+   * RoomStage.tsx) — this function alone has no visible effect.
+   */
+  usePotionOfSwiftness: () => Promise<{ ok: true; remaining: number } | { ok: false; error: string }>;
+  /**
+   * Buys one potion of swiftness from the chemist for POTION_OF_SWIFTNESS_COST coins (see
+   * src/lib/coins.ts and buy_potion_of_swiftness in
+   * supabase/migrations/0055_potion_of_swiftness.sql) — same atomic balance-check-and-grant RPC
+   * pattern as purchaseCosmetic/purchaseShurikenAmmo.
+   */
+  purchasePotionOfSwiftness: () => Promise<{ ok: true } | { ok: false; error: string }>;
   /** STU-41: switches ball skin — free, direct column update (see saveBallSkin's grant in
    * supabase/migrations/0038_ball_skin.sql), same shape as `save` (color) above, not an RPC. */
   saveBallSkin: (skin: BallSkin) => Promise<boolean>;
@@ -328,6 +352,7 @@ export function useMyProfile(): MyProfile {
     | ({ userId: string } & Profile & { coins: number } & CosmeticFields &
         CharacterFields &
         FlashGrenadeFields &
+        PotionFields &
         BallSkinFields &
         ShurikenAmmoFields &
         EquipmentFields)
@@ -340,7 +365,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, equipped_helm, equipped_armor, equipped_boots, equipped_extra_attack, equipped_extra_attack_qty, equipment_bag, equipment_bag_qty",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, potions_of_swiftness, ball_skin, equipped_helm, equipped_armor, equipped_boots, equipped_extra_attack, equipped_extra_attack_qty, equipment_bag, equipment_bag_qty",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -363,6 +388,7 @@ export function useMyProfile(): MyProfile {
           cosmeticExpiresAt: data?.cosmetic_expires_at ?? null,
           character: data?.character_slug ?? null,
           flashGrenades: data?.flash_grenades ?? 0,
+          potionsOfSwiftness: data?.potions_of_swiftness ?? 0,
           ballSkin: data?.ball_skin ?? null,
           shurikenAmmo: shurikenAmmoFromEquip(data?.equipped_extra_attack ?? null, Number(data?.equipped_extra_attack_qty ?? 0)),
           equippedHelm: data?.equipped_helm ?? null,
@@ -386,6 +412,7 @@ export function useMyProfile(): MyProfile {
           { userId: string } & Profile & { coins: number } & CosmeticFields &
             CharacterFields &
             FlashGrenadeFields &
+            PotionFields &
             BallSkinFields &
             ShurikenAmmoFields &
             EquipmentFields
@@ -421,6 +448,7 @@ export function useMyProfile(): MyProfile {
             cosmetic_expires_at?: string | null;
             character_slug?: string | null;
             flash_grenades?: number;
+            potions_of_swiftness?: number;
             ball_skin?: string | null;
             equipped_helm?: string | null;
             equipped_armor?: string | null;
@@ -450,6 +478,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: p.cosmetic_expires_at ?? null,
             character: p.character_slug ?? null,
             flashGrenades: p.flash_grenades ?? 0,
+            potionsOfSwiftness: p.potions_of_swiftness ?? 0,
             ballSkin: p.ball_skin ?? null,
             shurikenAmmo: shurikenAmmoFromEquip(equippedExtraAttack, equippedExtraAttackQty),
             equippedHelm: p.equipped_helm ?? null,
@@ -481,6 +510,7 @@ export function useMyProfile(): MyProfile {
   const currentCosmeticExpiresAt = loaded?.userId === userId ? loaded.cosmeticExpiresAt : null;
   const currentCharacter = loaded?.userId === userId ? safeCharacter(loaded.character) : DEFAULT_CHARACTER;
   const currentFlashGrenades = loaded?.userId === userId ? loaded.flashGrenades : 0;
+  const currentPotionsOfSwiftness = loaded?.userId === userId ? loaded.potionsOfSwiftness : 0;
   const currentBallSkin = loaded?.userId === userId ? safeBallSkin(loaded.ballSkin) : DEFAULT_BALL_SKIN;
   const currentShurikenAmmo = loaded?.userId === userId ? loaded.shurikenAmmo : 0;
   const currentEquippedHelm = loaded?.userId === userId ? loaded.equippedHelm : null;
@@ -537,6 +567,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: currentEquippedHelm,
@@ -566,6 +597,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -615,6 +647,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: currentEquippedHelm,
@@ -644,6 +677,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -696,6 +730,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: newExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: currentEquippedHelm,
@@ -724,6 +759,7 @@ export function useMyProfile(): MyProfile {
       currentCoins,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -776,6 +812,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: currentEquippedHelm,
@@ -806,6 +843,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -858,6 +896,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: newCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: currentEquippedHelm,
@@ -887,6 +926,7 @@ export function useMyProfile(): MyProfile {
       currentCosmetic,
       currentCosmeticExpiresAt,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -929,6 +969,7 @@ export function useMyProfile(): MyProfile {
           cosmeticExpiresAt: currentCosmeticExpiresAt,
           character: currentCharacter,
           flashGrenades: remaining,
+          potionsOfSwiftness: currentPotionsOfSwiftness,
           ballSkin: currentBallSkin,
           shurikenAmmo: currentShurikenAmmo,
           equippedHelm: currentEquippedHelm,
@@ -958,6 +999,153 @@ export function useMyProfile(): MyProfile {
     currentCosmeticExpiresAt,
     currentCharacter,
     currentFlashGrenades,
+    currentPotionsOfSwiftness,
+    currentBallSkin,
+    currentShurikenAmmo,
+    currentEquippedHelm,
+    currentEquippedArmor,
+    currentEquippedBoots,
+    currentEquippedExtraAttack,
+    currentEquippedExtraAttackQty,
+    currentEquipmentBag,
+    currentEquipmentBagQty,
+  ]);
+
+  const usePotionOfSwiftness = useCallback(async () => {
+    if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
+    if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+    // Same atomic check-and-decrement pattern as useFlashGrenade above, see
+    // supabase/migrations/0055_potion_of_swiftness.sql — no coins involved, just stock.
+    const { data, error } = await sb.rpc("consume_potion_of_swiftness");
+    if (error) {
+      console.error("consume_potion_of_swiftness", error);
+      const message =
+        error.message === "no_potions_of_swiftness" ? "No potions of swiftness left." : `Failed: ${saveHint(error)}`;
+      return { ok: false as const, error: message };
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as { potions_of_swiftness?: number } | null;
+    const remaining = Number(row?.potions_of_swiftness ?? Math.max(0, currentPotionsOfSwiftness - 1));
+    saved.dispatchEvent(
+      new CustomEvent("saved", {
+        detail: {
+          userId,
+          nickname: currentNickname,
+          color: currentColor,
+          xp: currentXp,
+          ballsShot: currentBallsShot,
+          fistSwings: currentFistSwings,
+          kills: currentKills,
+          deaths: currentDeaths,
+          mobKills: currentMobKills,
+          coins: currentCoins,
+          cosmetic: currentCosmetic,
+          cosmeticExpiresAt: currentCosmeticExpiresAt,
+          character: currentCharacter,
+          flashGrenades: currentFlashGrenades,
+          potionsOfSwiftness: remaining,
+          ballSkin: currentBallSkin,
+          shurikenAmmo: currentShurikenAmmo,
+          equippedHelm: currentEquippedHelm,
+          equippedArmor: currentEquippedArmor,
+          equippedBoots: currentEquippedBoots,
+          equippedExtraAttack: currentEquippedExtraAttack,
+          equippedExtraAttackQty: currentEquippedExtraAttackQty,
+          equipmentBag: currentEquipmentBag,
+          equipmentBagQty: currentEquipmentBagQty,
+        },
+      }),
+    );
+    return { ok: true as const, remaining };
+  }, [
+    sb,
+    userId,
+    currentNickname,
+    currentColor,
+    currentXp,
+    currentBallsShot,
+    currentFistSwings,
+    currentKills,
+    currentDeaths,
+    currentMobKills,
+    currentCoins,
+    currentCosmetic,
+    currentCosmeticExpiresAt,
+    currentCharacter,
+    currentFlashGrenades,
+    currentPotionsOfSwiftness,
+    currentBallSkin,
+    currentShurikenAmmo,
+    currentEquippedHelm,
+    currentEquippedArmor,
+    currentEquippedBoots,
+    currentEquippedExtraAttack,
+    currentEquippedExtraAttackQty,
+    currentEquipmentBag,
+    currentEquipmentBagQty,
+  ]);
+
+  const purchasePotionOfSwiftness = useCallback(async () => {
+    if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
+    if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+    // One RPC: balance check, coin deduction and the stock grant in one transaction (see
+    // supabase/migrations/0055_potion_of_swiftness.sql), same atomic pattern as purchaseCosmetic.
+    const { data, error } = await sb.rpc("buy_potion_of_swiftness");
+    if (error) {
+      console.error("buy_potion_of_swiftness", error);
+      const message = error.message === "insufficient_coins" ? "Not enough copper coins." : `Purchase failed: ${saveHint(error)}`;
+      return { ok: false as const, error: message };
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as { potions_of_swiftness?: number; coins?: number | string } | null;
+    const newPotions = Number(row?.potions_of_swiftness ?? currentPotionsOfSwiftness + 1);
+    const newCoins = Number(row?.coins ?? currentCoins);
+    saved.dispatchEvent(
+      new CustomEvent("saved", {
+        detail: {
+          userId,
+          nickname: currentNickname,
+          color: currentColor,
+          xp: currentXp,
+          ballsShot: currentBallsShot,
+          fistSwings: currentFistSwings,
+          kills: currentKills,
+          deaths: currentDeaths,
+          mobKills: currentMobKills,
+          coins: newCoins,
+          cosmetic: currentCosmetic,
+          cosmeticExpiresAt: currentCosmeticExpiresAt,
+          character: currentCharacter,
+          flashGrenades: currentFlashGrenades,
+          potionsOfSwiftness: newPotions,
+          ballSkin: currentBallSkin,
+          shurikenAmmo: currentShurikenAmmo,
+          equippedHelm: currentEquippedHelm,
+          equippedArmor: currentEquippedArmor,
+          equippedBoots: currentEquippedBoots,
+          equippedExtraAttack: currentEquippedExtraAttack,
+          equippedExtraAttackQty: currentEquippedExtraAttackQty,
+          equipmentBag: currentEquipmentBag,
+          equipmentBagQty: currentEquipmentBagQty,
+        },
+      }),
+    );
+    return { ok: true as const };
+  }, [
+    sb,
+    userId,
+    currentNickname,
+    currentColor,
+    currentXp,
+    currentBallsShot,
+    currentFistSwings,
+    currentKills,
+    currentDeaths,
+    currentMobKills,
+    currentCoins,
+    currentCosmetic,
+    currentCosmeticExpiresAt,
+    currentCharacter,
+    currentFlashGrenades,
+    currentPotionsOfSwiftness,
     currentBallSkin,
     currentShurikenAmmo,
     currentEquippedHelm,
@@ -997,6 +1185,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: skin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: currentEquippedHelm,
@@ -1027,6 +1216,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentShurikenAmmo,
       currentEquippedHelm,
       currentEquippedArmor,
@@ -1073,6 +1263,7 @@ export function useMyProfile(): MyProfile {
           cosmeticExpiresAt: currentCosmeticExpiresAt,
           character: currentCharacter,
           flashGrenades: currentFlashGrenades,
+          potionsOfSwiftness: currentPotionsOfSwiftness,
           ballSkin: currentBallSkin,
           shurikenAmmo: remaining,
           equippedHelm: currentEquippedHelm,
@@ -1102,6 +1293,7 @@ export function useMyProfile(): MyProfile {
     currentCosmeticExpiresAt,
     currentCharacter,
     currentFlashGrenades,
+    currentPotionsOfSwiftness,
     currentBallSkin,
     currentEquippedHelm,
     currentEquippedArmor,
@@ -1160,6 +1352,7 @@ export function useMyProfile(): MyProfile {
           cosmeticExpiresAt: currentCosmeticExpiresAt,
           character: currentCharacter,
           flashGrenades: currentFlashGrenades,
+          potionsOfSwiftness: currentPotionsOfSwiftness,
           ballSkin: currentBallSkin,
           shurikenAmmo: shurikenAmmoFromEquip(newEquippedExtraAttack, newEquippedExtraAttackQty),
           equippedHelm: currentEquippedHelm,
@@ -1189,6 +1382,7 @@ export function useMyProfile(): MyProfile {
     currentCosmeticExpiresAt,
     currentCharacter,
     currentFlashGrenades,
+    currentPotionsOfSwiftness,
     currentBallSkin,
     currentEquippedHelm,
     currentEquippedArmor,
@@ -1250,6 +1444,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
@@ -1280,6 +1475,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -1331,6 +1527,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: shurikenAmmoFromEquip(newEquippedExtraAttack, newEquippedExtraAttackQty),
             equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
@@ -1361,6 +1558,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentEquippedHelm,
       currentEquippedArmor,
@@ -1414,6 +1612,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: shurikenAmmoFromEquip(newEquippedExtraAttack, newEquippedExtraAttackQty),
             equippedHelm: row?.equipped_helm ?? (slot === "helm" ? null : currentEquippedHelm),
@@ -1444,6 +1643,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentEquippedHelm,
       currentEquippedArmor,
@@ -1484,6 +1684,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
+            potionsOfSwiftness: currentPotionsOfSwiftness,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
             equippedHelm: currentEquippedHelm,
@@ -1514,6 +1715,7 @@ export function useMyProfile(): MyProfile {
       currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
+      currentPotionsOfSwiftness,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -1545,6 +1747,7 @@ export function useMyProfile(): MyProfile {
     cosmetic: mine ? activeCosmetic(mine) : null,
     character: mine ? safeCharacter(mine.character) : DEFAULT_CHARACTER,
     flashGrenades: mine?.flashGrenades ?? 0,
+    potionsOfSwiftness: mine?.potionsOfSwiftness ?? 0,
     ballSkin: mine ? safeBallSkin(mine.ballSkin) : DEFAULT_BALL_SKIN,
     // Goście nie mają wiersza w `profiles`, więc nie ma czego liczyć — a useShuriken() i tak
     // odrzuca użycie bez userId (patrz doc comment tej funkcji), więc pokazywanie tu jakiegokolwiek
@@ -1564,6 +1767,8 @@ export function useMyProfile(): MyProfile {
     donateToFountain,
     purchaseCharacter,
     useFlashGrenade,
+    usePotionOfSwiftness,
+    purchasePotionOfSwiftness,
     saveBallSkin,
     useShuriken,
     purchaseShurikenAmmo,

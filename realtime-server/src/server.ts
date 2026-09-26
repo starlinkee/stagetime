@@ -48,6 +48,9 @@ import {
   ORB_R_MIN,
   PERSON_H,
   PERSON_W,
+  POTION_OF_SWIFTNESS_COOLDOWN_MS,
+  POTION_OF_SWIFTNESS_DURATION_MS,
+  POTION_OF_SWIFTNESS_SPEED_MULT,
   RESPAWN_MS,
   ROLL_COOLDOWN_MS,
   ROLL_MS,
@@ -199,6 +202,14 @@ type Conn = {
   // STU-35: same shape as emoteCooldownUntil, for the "useItem" flash-grenade broadcast — see
   // FLASH_GRENADE_COOLDOWN_MS's doc comment.
   flashGrenadeCooldownUntil: number;
+  // First consumable item: potion of swiftness — same defense-in-depth cooldown shape as
+  // flashGrenadeCooldownUntil, see POTION_OF_SWIFTNESS_COOLDOWN_MS's doc comment.
+  potionCooldownUntil: number;
+  // Timestamp until which this connection's move speed is multiplied by
+  // POTION_OF_SWIFTNESS_SPEED_MULT (shared/constants.ts) — same "server tracks the timed window,
+  // not the client" reasoning as rollUntil above, but additive with normal movement (and with
+  // rolling) instead of replacing it.
+  swiftUntil: number;
   // Stamina (fire-rate) state — see currentStamina() and the "fire" handler below, and
   // STAMINA_MAX's doc comment in shared/constants.ts for the model. `staminaAt` is the stamina
   // value *as of* `staminaUpdatedAt`, not the live value — currentStamina() projects it forward
@@ -1105,6 +1116,8 @@ wss.on("connection", (ws, req) => {
     },
     emoteCooldownUntil: 0,
     flashGrenadeCooldownUntil: 0,
+    potionCooldownUntil: 0,
+    swiftUntil: 0,
     staminaAt: stats.staminaMax,
     staminaUpdatedAt: Date.now(),
     staminaRegenDelayUntil: 0,
@@ -1277,11 +1290,27 @@ wss.on("connection", (ws, req) => {
     // is only defense-in-depth against resending faster than that round-trip.
     if (msg.type === "useItem") {
       if (isDead(conn)) return;
-      if (msg.item !== "flashGrenade") return;
-      const now = Date.now();
-      if (now < conn.flashGrenadeCooldownUntil) return;
-      conn.flashGrenadeCooldownUntil = now + FLASH_GRENADE_COOLDOWN_MS;
-      broadcastToRoom(conn.roomSlug, { type: "itemEffect", id: conn.id, item: "flashGrenade" });
+      if (msg.item === "flashGrenade") {
+        const now = Date.now();
+        if (now < conn.flashGrenadeCooldownUntil) return;
+        conn.flashGrenadeCooldownUntil = now + FLASH_GRENADE_COOLDOWN_MS;
+        broadcastToRoom(conn.roomSlug, { type: "itemEffect", id: conn.id, item: "flashGrenade" });
+        return;
+      }
+      // First consumable item: potion of swiftness. Ownership (does this connection's player
+      // actually have one left) is NOT checked here, same "Postgres owns the stock" split as
+      // flashGrenade above — consume_potion_of_swiftness already ran before the client sent this.
+      // Unlike flashGrenade, this actually changes this connection's own move speed for the next
+      // POTION_OF_SWIFTNESS_DURATION_MS (see the movement tick below), on top of a broadcast so
+      // other players in the room see the drink happen too.
+      if (msg.item === "potionOfSwiftness") {
+        const now = Date.now();
+        if (now < conn.potionCooldownUntil) return;
+        conn.potionCooldownUntil = now + POTION_OF_SWIFTNESS_COOLDOWN_MS;
+        conn.swiftUntil = now + POTION_OF_SWIFTNESS_DURATION_MS;
+        broadcastToRoom(conn.roomSlug, { type: "itemEffect", id: conn.id, item: "potionOfSwiftness" });
+        return;
+      }
       return;
     }
     // STU-58: a request, not an assertion, same as `roll` — silently ignored unless this
@@ -1479,7 +1508,10 @@ setInterval(() => {
       }
       if (!dx && !dy) continue;
       const norm = !rolling && dx && dy ? Math.SQRT1_2 : 1;
-      const speed = conn.speed * (rolling ? ROLL_SPEED_MULT : 1);
+      // Potion of swiftness (see swiftUntil's doc comment) stacks multiplicatively on top of a
+      // roll instead of being overridden by it — the two are independent timed multipliers.
+      const swift = now < conn.swiftUntil;
+      const speed = conn.speed * (rolling ? ROLL_SPEED_MULT : 1) * (swift ? POTION_OF_SWIFTNESS_SPEED_MULT : 1);
       const nx = conn.x + dx * speed * dt * norm;
       const ny = conn.y + dy * speed * dt * norm;
       const clamped = clampPos(nx, ny, conn.isLobby);

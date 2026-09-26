@@ -49,3 +49,14 @@ export const CHARACTER_CHANGE_COST = 10;
 export const SHURIKEN_AMMO_START = 10;
 export const SHURIKEN_AMMO_PACK = 2;
 export const SHURIKEN_AMMO_COST = 10;
+
+/**
+ * First consumable item (a new item type, distinct from cosmetics/equipment/ammo above): potion
+ * of swiftness, sold by the chemist NPC in the Shop (src/components/ShopRoom.tsx) — +50% move
+ * speed for POTION_OF_SWIFTNESS_DURATION_MINUTES minutes (see POTION_OF_SWIFTNESS_SPEED_MULT and
+ * POTION_OF_SWIFTNESS_DURATION_MS in realtime-server/shared/constants.ts, which are the values
+ * that actually apply the buff). Cost here is a display-only copy; buy_potion_of_swiftness in
+ * supabase/migrations/0056_potion_of_swiftness.sql is what actually charges the player.
+ */
+export const POTION_OF_SWIFTNESS_COST = 40;
+export const POTION_OF_SWIFTNESS_DURATION_MINUTES = 1;

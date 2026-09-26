@@ -220,9 +220,13 @@ export type ClientMessage =
    * FLASH_GRENADE_COOLDOWN_MS's doc comment in server.ts); *owning* one is checked separately, by
    * the client against Postgres (see consume_flash_grenade in
    * supabase/migrations/0037_flash_grenade_item.sql) before it ever sends this message — this
-   * message only gates the shared, room-wide effect, not the stock.
+   * message only gates the shared, room-wide effect, not the stock. `"potionOfSwiftness"` is the
+   * first consumable item (see POTION_OF_SWIFTNESS_* in shared/constants.ts) — unlike flashGrenade
+   * it's not purely cosmetic, it starts a real, timed +50% move-speed buff for this connection
+   * alone (see `swiftUntil` in server.ts), so it isn't broadcast room-wide the way `itemEffect`
+   * below is for flashGrenade.
    */
-  | { type: "useItem"; item: "flashGrenade" }
+  | { type: "useItem"; item: "flashGrenade" | "potionOfSwiftness" }
   /**
    * STU-58: held for START_HOLD_MS on the room's center action zone. A request, not an assertion,
    * same as `roll` above — the server alone decides whether this connection's current room
@@ -346,7 +350,7 @@ export type ServerMessage =
    * above) to every connection in the room the instant someone's flash grenade goes off — purely
    * a rendering cue (full-screen white flash), no HP/damage tie-in, see RoomStage.tsx.
    */
-  | { type: "itemEffect"; id: string; item: "flashGrenade" }
+  | { type: "itemEffect"; id: string; item: "flashGrenade" | "potionOfSwiftness" }
   /**
    * Sent only to the one connection that just respawned (never part of `state`) — the server has
    * already moved it into the lobby room server-side (position/hp/immunity reset), but rooms are

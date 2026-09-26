@@ -144,6 +144,21 @@ export const EMOJI_EMOTES = ["👍", "😂", "❤️", "😮", "😢", "🔥", "
  * supabase/migrations/0037_flash_grenade_item.sql), not the actual supply limit; the real "how
  * many do you have" check happens in Postgres before the client ever sends this message. */
 export const FLASH_GRENADE_COOLDOWN_MS = 2_000;
+
+/**
+ * First consumable item (a new item type, distinct from cosmetics/equipment/ammo above): potion
+ * of swiftness, sold by the chemist NPC in the Shop (src/components/ShopRoom.tsx) — +50% move
+ * speed for one minute. Same "ownership is Postgres, *use* is realtime-server" split as flash
+ * grenades: owning one (supabase/migrations/0056_potion_of_swiftness.sql) is checked client-side
+ * before this item's `useItem` message is ever sent; POTION_OF_SWIFTNESS_COOLDOWN_MS below is only
+ * defense-in-depth against resending faster than that Postgres round-trip, not the actual supply
+ * limit. Unlike ROLL_SPEED_MULT (a short, input-triggered dash) this multiplier applies for a
+ * whole timed window (see `swiftUntil` in server.ts) stacked on top of normal movement, not in
+ * place of it.
+ */
+export const POTION_OF_SWIFTNESS_SPEED_MULT = 1.5;
+export const POTION_OF_SWIFTNESS_DURATION_MS = 60_000;
+export const POTION_OF_SWIFTNESS_COOLDOWN_MS = 2_000;
 /**
  * Combat hitbox (ball/melee collision), and — since STU-53 — solid-obstacle collision too (see
  * resolveObstacleMoveHitbox in shared/obstacles.ts) — narrower and shorter than the full

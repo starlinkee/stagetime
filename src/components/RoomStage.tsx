@@ -67,6 +67,7 @@ import {
   ORB_R_MIN,
   PERSON_H,
   PERSON_W,
+  POTION_OF_SWIFTNESS_DURATION_MS,
   ROLL_COOLDOWN_MS,
   ROLL_MS,
   ROLL_SPEED_MULT,
@@ -1537,6 +1538,9 @@ export function RoomStage({
   // "itemEffect" broadcast so the overlay's key changes and its fade animation restarts. Same
   // "declare before the network effect" reasoning as emoteBubbles above.
   const [flashSeq, setFlashSeq] = useState(0);
+  // First consumable item: potion of swiftness — local-only HUD countdown (see KeyH's doc comment
+  // above for why this isn't the source of truth for the actual speed buff). 0 means no active buff.
+  const [swiftUntil, setSwiftUntil] = useState(0);
   // Poprzednie totale z heartbeatu (useStudyXp) — do wyliczenia delty przy kolejnym tick-u; null
   // dopóki nie przyszedł pierwszy (p_reset) heartbeat, który tylko synchronizuje zegar.
   const prevStudyRef = useRef<{ xp: number; coins: number } | null>(null);
@@ -1640,6 +1644,9 @@ export function RoomStage({
     return () => clearInterval(id);
   }, []);
   const respawnRemainingSec = myRespawnAt > 0 ? Math.max(0, Math.ceil((myRespawnAt - nowTick) / 1000)) : 0;
+  // First consumable item: potion of swiftness — same nowTick-driven countdown shape as
+  // respawnRemainingSec above, purely a HUD readout (server alone decides the actual buff window).
+  const swiftRemainingSec = swiftUntil > 0 ? Math.max(0, Math.ceil((swiftUntil - nowTick) / 1000)) : 0;
   // Kto z innych właśnie się porusza (do animacji chodu) i timery wygaszania.
   const [walkers, setWalkers] = useState<Record<string, boolean>>({});
   // Lobby floor-lamp on/off state, keyed by LOBBY_LAMPS' own ids — from the server's own lobby
@@ -3127,6 +3134,27 @@ export function RoomStage({
         }
         return;
       }
+      // First consumable item: potion of swiftness, gated like KeyG above (attack items and
+      // consumables alike are blocked while dead/frozen). Same "check Postgres stock first, only
+      // tell realtime-server on success" split as flash grenade above; realtime-server alone
+      // applies the actual +50% move-speed buff (see swiftUntil in server.ts) once it sees this
+      // "useItem" message, so `swiftUntilRef` here is purely a local HUD countdown, not the source
+      // of truth for movement.
+      if (e.code === "KeyH" && !e.repeat) {
+        if (!myDead && !frozenByWork()) {
+          const p = profileRef.current;
+          if (p.potionsOfSwiftness > 0) {
+            void p.usePotionOfSwiftness().then((res) => {
+              if (res.ok && ws && ws.readyState === WebSocket.OPEN) {
+                const use: ClientMessage = { type: "useItem", item: "potionOfSwiftness" };
+                ws.send(JSON.stringify(use));
+                setSwiftUntil(Date.now() + POTION_OF_SWIFTNESS_DURATION_MS);
+              }
+            });
+          }
+        }
+        return;
+      }
       // STU-41: cycles through BALL_SKINS — free, no ownership check needed (unlike KeyG above),
       // just a Postgres write via saveBallSkin (src/lib/useProfile.ts). Not gated by
       // myDead/frozenByWork: picking a skin isn't an attack, it has no gameplay effect at all.
@@ -3610,9 +3638,11 @@ export function RoomStage({
     // visitor — only mention it once there's a session to actually save it to.
     if (session) text += " · tap B to cycle your ball skin";
     if (session && profile.flashGrenades > 0) text += ` · tap G to throw a flash grenade (${profile.flashGrenades} left)`;
+    if (session && profile.potionsOfSwiftness > 0)
+      text += ` · tap H to drink a potion of swiftness, +50% speed for 1 minute (${profile.potionsOfSwiftness} left)`;
     setHowToPlay(text);
     return () => setHowToPlay(null);
-  }, [zones, chat.available, chat.canSend, session, profile.flashGrenades]);
+  }, [zones, chat.available, chat.canSend, session, profile.flashGrenades, profile.potionsOfSwiftness]);
 
   // Dymki: tylko dla naprawdę nowych wiadomości (nie dla historii wczytanej przy montowaniu).
   const [bubbles, setBubbles] = useState<Record<string, { text: string; id: string }>>({});
@@ -3961,6 +3991,11 @@ export function RoomStage({
             style={{ width: `${(Math.max(0, myStamina) / myStaminaMax) * 100}%` }}
           />
         </div>
+      </div>
+    )}
+    {swiftRemainingSec > 0 && (
+      <div className="pointer-events-none fixed left-1/2 top-4 z-30 -translate-x-1/2 rounded-full bg-sky-500/20 px-3 py-1 text-sm font-semibold text-sky-300 shadow-lg outline outline-2 outline-black/30">
+        Swift! +50% speed ({swiftRemainingSec}s)
       </div>
     )}
     {respawnRemainingSec > 0 && (

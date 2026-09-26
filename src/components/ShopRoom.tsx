@@ -7,6 +7,8 @@ import {
   CHARACTER_CHANGE_COST,
   FLOWER_COST,
   FLOWER_HOURS,
+  POTION_OF_SWIFTNESS_COST,
+  POTION_OF_SWIFTNESS_DURATION_MINUTES,
   SHURIKEN_AMMO_COST,
   SHURIKEN_AMMO_PACK,
   SPARKLES_COST,
@@ -69,9 +71,16 @@ const GUNMAN_ZONE: RoomZone = { slug: GUNMAN_ZONE_SLUG, name: "Gunman", kind: "a
  * there" split as the gunman above (ammo bought here, hotbar/hp shown elsewhere). */
 const GEAR_ZONE_SLUG = "gear-specialist";
 const GEAR_ZONE: RoomZone = { slug: GEAR_ZONE_SLUG, name: "Gear specialist", kind: "action", x: 383, y: 280, w: 220, h: 140 };
-/** The three sellers sit evenly spaced (120° apart) on a circle around the shop floor, Florist
- * closest to the entrance, Gear specialist and Gunman mirrored either side further back. */
-const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, FLORIST_ZONE, GUNMAN_ZONE, GEAR_ZONE];
+/** First consumable item (see POTION_OF_SWIFTNESS_COST in src/lib/coins.ts): the chemist NPC sells
+ * potions of swiftness for coins — a real, timed gameplay effect (unlike the cosmetics above), so
+ * the atomic balance-check-and-grant happens server-side (see buy_potion_of_swiftness in
+ * supabase/migrations/0056_potion_of_swiftness.sql), same "coins never disappear before the item
+ * is granted" guarantee as buy_shuriken_ammo. */
+const CHEMIST_ZONE_SLUG = "chemist";
+const CHEMIST_ZONE: RoomZone = { slug: CHEMIST_ZONE_SLUG, name: "Chemist", kind: "action", x: 953, y: 610, w: 220, h: 140 };
+/** Florist and Chemist sit at the back corners, Gear specialist and Gunman mirrored either side
+ * closer to the entrance. */
+const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, FLORIST_ZONE, GUNMAN_ZONE, GEAR_ZONE, CHEMIST_ZONE];
 
 /**
  * Pokój-sklep: wejście już wymaga konta (patrz RoomZone.requiresAuth w lobby i sprawdzenie w
@@ -88,6 +97,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     cosmetic,
     character,
     shurikenAmmo,
+    potionsOfSwiftness,
     equippedHelm,
     equippedArmor,
     equippedBoots,
@@ -96,6 +106,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     purchaseCharacter,
     purchaseShurikenAmmo,
     purchaseEquipment,
+    purchasePotionOfSwiftness,
   } = useMyProfile();
   const [floristOpen, setFloristOpen] = useState(false);
   const [activeItem, setActiveItem] = useState<CosmeticSlug | null>(null);
@@ -112,6 +123,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   const [gearOpen, setGearOpen] = useState(false);
   const [gearBusy, setGearBusy] = useState(false);
   const [gearError, setGearError] = useState<string | null>(null);
+  const [chemistOpen, setChemistOpen] = useState(false);
+  const [chemistBusy, setChemistBusy] = useState(false);
+  const [chemistError, setChemistError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!toast) return;
@@ -128,6 +142,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     } else if (slug === GEAR_ZONE_SLUG) {
       setGearError(null);
       setGearOpen(true);
+    } else if (slug === CHEMIST_ZONE_SLUG) {
+      setChemistError(null);
+      setChemistOpen(true);
     }
   }, []);
 
@@ -170,6 +187,12 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     setGearOpen(false);
     setGearError(null);
   }, [gearBusy]);
+
+  const closeChemist = useCallback(() => {
+    if (chemistBusy) return;
+    setChemistOpen(false);
+    setChemistError(null);
+  }, [chemistBusy]);
 
   const owned = activeItem !== null && cosmetic === activeItem;
 
@@ -250,10 +273,24 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     [gearBusy, purchaseEquipment],
   );
 
+  const buyPotion = useCallback(async () => {
+    if (chemistBusy) return;
+    setChemistBusy(true);
+    setChemistError(null);
+    const result = await purchasePotionOfSwiftness();
+    setChemistBusy(false);
+    if (!result.ok) {
+      setChemistError(result.error);
+      return;
+    }
+    setToast("Potion of swiftness added to your bag!");
+  }, [chemistBusy, purchasePotionOfSwiftness]);
+
   const activeItemInfo = activeItem ? COSMETIC_ITEMS[activeItem] : null;
   const canAfford = activeItemInfo ? coins >= activeItemInfo.cost : false;
   const canAffordCharacter = coins >= CHARACTER_CHANGE_COST;
   const canAffordShurikens = coins >= SHURIKEN_AMMO_COST;
+  const canAffordPotion = coins >= POTION_OF_SWIFTNESS_COST;
 
   const zones = useMemo(() => SHOP_ZONES, []);
 
@@ -269,7 +306,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
       <div className="flex w-full max-w-2xl flex-col items-center gap-2 text-center">
         <p className="text-sm text-zinc-500">
           Hold E on a floor button to visit the florist for cosmetics and a character change, the gunman
-          for shurikens, or the gear specialist for helm/armor/boots.
+          for shurikens, the gear specialist for helm/armor/boots, or the chemist for potions.
         </p>
         {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
       </div>
@@ -510,6 +547,57 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
                 className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {chemistOpen && ready && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Chemist"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-zinc-100">Chemist</h2>
+              <span className="flex items-center gap-1 rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-300">
+                {POTION_OF_SWIFTNESS_COST} copper coins
+              </span>
+            </div>
+            <p className="mb-5 text-center text-sm text-zinc-400">
+              Potion of swiftness: +50% move speed for {POTION_OF_SWIFTNESS_DURATION_MINUTES} minute after drinking
+              (press H). You have <span className="font-semibold text-zinc-100">{potionsOfSwiftness}</span> in your bag.
+            </p>
+            <div className="mb-3 flex flex-col gap-1 text-center text-sm text-zinc-400">
+              <span>Your balance</span>
+              <span className={`text-lg font-semibold ${canAffordPotion ? "text-zinc-100" : "text-rose-400"}`}>
+                {coins.toFixed(1)} coins
+              </span>
+            </div>
+            {!canAffordPotion && (
+              <p className="mb-3 text-center text-sm text-rose-400">
+                You need {(POTION_OF_SWIFTNESS_COST - coins).toFixed(1)} more copper coins.
+              </p>
+            )}
+            {chemistError && <p className="mb-3 text-center text-sm text-rose-400">{chemistError}</p>}
+            <div className="flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={closeChemist}
+                disabled={chemistBusy}
+                className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void buyPotion()}
+                disabled={chemistBusy || !canAffordPotion}
+                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {chemistBusy ? "Processing…" : "Buy 1 potion of swiftness"}
               </button>
             </div>
           </div>
