@@ -4172,7 +4172,7 @@ export function RoomStage({
               )}
               {/* Ammo-gated, not stamina-gated (see WEAPON_SLOTS' doc comment) — shows the live
                   Postgres-backed count instead of a fixed per-shot cost. Only once equipped. */}
-              {shurikenEquipped && (
+              {slot.id === "shuriken" && shurikenEquipped && (
                 <span className={`text-[10px] font-bold leading-none ${profile.shurikenAmmo > 0 ? "text-amber-300" : "text-rose-400"}`}>
                   {profile.shurikenAmmo}
                 </span>
