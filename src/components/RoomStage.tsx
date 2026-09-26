@@ -21,6 +21,7 @@ import { MAX_DM_BODY, useConversations, useThread } from "@/lib/useDirectMessage
 import { useFriends } from "@/lib/useFriends";
 import {
   BALL_SKINS,
+  POTION_ITEM_SLUG,
   SHURIKEN_ITEM_SLUG,
   safeBallSkin,
   safeCharacter,
@@ -902,18 +903,32 @@ function equipBonusLabel(item: (typeof EQUIPMENT_ITEMS)[number]): string {
   return "";
 }
 
-/** Display name for a backpack slot's slug — EQUIPMENT_ITEMS covers gear, plus the one stackable
- * non-gear item (shurikens, see SHURIKEN_ITEM_SLUG in useProfile.ts and
- * supabase/migrations/0045_shuriken_bag_item.sql). */
+/** Display name for a backpack slot's slug — EQUIPMENT_ITEMS covers gear, plus the two stackable
+ * non-gear items (shurikens, see SHURIKEN_ITEM_SLUG in useProfile.ts and
+ * supabase/migrations/0045_shuriken_bag_item.sql; potions of swiftness, see POTION_ITEM_SLUG and
+ * supabase/migrations/0058_usable_slots.sql). */
 function bagItemName(slug: string): string {
   if (slug === SHURIKEN_ITEM_SLUG) return "Shurikens";
+  if (slug === POTION_ITEM_SLUG) return "Potion of swiftness";
   return EQUIPMENT_ITEMS.find((i) => i.slug === slug)?.name ?? slug;
 }
 
-/** Drag payload while moving a gear item between the equip slots and the backpack grid — dragged
- * either out of a backpack slot (`kind: "bag"`) or off an equip slot (`kind: "equip"`), see the
- * inventory panel's drop handlers below. */
-type EquipDragPayload = { kind: "bag"; index: number; slug: string } | { kind: "equip"; slot: EquipSlot; slug: string };
+/** Icon for a backpack/usable-slot slug, or null to fall back to the plain text label — only
+ * consumables have art today (a blue potion bottle from the modern-items-pack sprite sheet, see
+ * public/map/items/modern-items-pack/sliced/bottles), gear stays text-only. */
+function bagItemIconSrc(slug: string): string | null {
+  if (slug === POTION_ITEM_SLUG) return "/map/items/modern-items-pack/sliced/bottles/bottle_blue_cap.png";
+  return null;
+}
+
+/** Drag payload while moving an item between the equip slots and the backpack grid — dragged
+ * either out of a backpack slot (`kind: "bag"`), off a gear/extraAttack equip slot
+ * (`kind: "equip"`), or off one of the two usable slots (`kind: "usable"`, see UsableSlotBox
+ * below) — see the inventory panel's drop handlers below. */
+type EquipDragPayload =
+  | { kind: "bag"; index: number; slug: string }
+  | { kind: "equip"; slot: EquipSlot; slug: string }
+  | { kind: "usable"; index: 1 | 2; slug: string };
 
 /**
  * STU-77: one equip slot (helm/armor/boots), top-left of the inventory panel — a drop target for a
@@ -1057,6 +1072,83 @@ function ExtraAttackSlotBox({
 }
 
 /**
+ * 0058: one of the two usable equip slots — same drag-to-equip gesture as ExtraAttackSlotBox
+ * above, but generalized to a caller-chosen index (1 or 2) instead of a single fixed slot, since a
+ * player can equip up to two consumable stacks at once (only "potion_of_swiftness" exists today,
+ * see POTION_ITEM_SLUG in useProfile.ts and supabase/migrations/0058_usable_slots.sql).
+ */
+function UsableSlotBox({
+  index,
+  equippedSlug,
+  qty,
+  busy,
+  dragging,
+  onDragStart,
+  onDragEnd,
+  onDrop,
+}: {
+  index: 1 | 2;
+  equippedSlug: string | null;
+  qty: number;
+  busy: boolean;
+  dragging: EquipDragPayload | null;
+  onDragStart: (payload: EquipDragPayload) => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
+}) {
+  const icon = equippedSlug ? bagItemIconSrc(equippedSlug) : null;
+  const canDrop = dragging?.kind === "bag";
+  return (
+    <div
+      draggable={!!equippedSlug && !busy}
+      onDragStart={() => equippedSlug && onDragStart({ kind: "usable", index, slug: equippedSlug })}
+      onDragEnd={onDragEnd}
+      onDragOver={(e) => {
+        if (canDrop) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        if (canDrop) onDrop();
+      }}
+      title={equippedSlug ? "Drag to an empty backpack slot to unequip" : undefined}
+      className={`rounded-lg bg-zinc-900 px-2.5 py-1.5 ${equippedSlug ? "cursor-grab active:cursor-grabbing" : ""} ${
+        canDrop ? "ring-2 ring-amber-400" : ""
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-zinc-400">Usable {index}</span>
+        {equippedSlug ? (
+          <span className="flex items-center gap-1.5 font-semibold text-zinc-200">
+            {icon && (
+              // eslint-disable-next-line @next/next/no-img-element -- small fixed-size inventory icon, not worth next/image's overhead
+              <img src={icon} alt="" className="h-4 w-4 object-contain" />
+            )}
+            {bagItemName(equippedSlug)}
+          </span>
+        ) : (
+          <svg
+            aria-label="Empty"
+            className="h-4 w-4 text-zinc-600"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <line x1="7" y1="7" x2="17" y2="17" />
+          </svg>
+        )}
+      </div>
+      <p className={`mt-1 text-[11px] ${equippedSlug ? "text-emerald-400" : "text-zinc-500"}`}>
+        {equippedSlug ? `x${qty} · press H to drink` : "Drag a consumable here from the backpack"}
+      </p>
+    </div>
+  );
+}
+
+/**
  * One of the 8 backpack slots (4x2 grid, for now — see EQUIPMENT_BAG_SIZE) — an owned-but-unequipped item, draggable onto a
  * matching equip slot to wear it or onto another backpack slot to reorder. Also a drop target for
  * an equip slot being dragged off (unequip), as long as it's empty.
@@ -1073,8 +1165,8 @@ function BagSlotBox({
 }: {
   index: number;
   slug: string | null;
-  /** Stack size — always 1 for gear, can be >1 for the stackable "shuriken" slug (see
-   * SHURIKEN_ITEM_SLUG in useProfile.ts). */
+  /** Stack size — always 1 for gear, can be >1 for a stackable slug (see SHURIKEN_ITEM_SLUG/
+   * POTION_ITEM_SLUG in useProfile.ts). */
   qty: number;
   busy: boolean;
   dragging: EquipDragPayload | null;
@@ -1083,6 +1175,7 @@ function BagSlotBox({
   onDrop: () => void;
 }) {
   const name = slug ? bagItemName(slug) : null;
+  const icon = slug ? bagItemIconSrc(slug) : null;
   const canDrop = dragging !== null && (slug === null || dragging.kind === "bag");
   return (
     // Draggable/drop-target on the whole square, not just the item name — see EquipSlotBox's
@@ -1099,12 +1192,16 @@ function BagSlotBox({
         if (canDrop) onDrop();
       }}
       title={name ?? undefined}
-      className={`relative flex aspect-square items-center justify-center rounded-lg border p-1 text-center ${
+      className={`relative flex aspect-square flex-col items-center justify-center gap-0.5 rounded-lg border p-1 text-center ${
         name ? "border-zinc-700 bg-zinc-900 cursor-grab active:cursor-grabbing" : "border-dashed border-zinc-800 bg-zinc-950/40"
       } ${canDrop ? "ring-2 ring-amber-400" : ""}`}
     >
       {name && (
         <>
+          {icon && (
+            // eslint-disable-next-line @next/next/no-img-element -- small fixed-size inventory icon, not worth next/image's overhead
+            <img src={icon} alt="" className="h-5 w-5 object-contain" />
+          )}
           <span className="select-none text-[10px] font-medium leading-tight text-zinc-200">{name}</span>
           {qty > 1 && (
             <span className="absolute bottom-0.5 right-1 text-[9px] font-bold leading-none text-amber-300">x{qty}</span>
@@ -1141,11 +1238,17 @@ function CharacterInfoPanel({
   equippedBoots,
   equippedExtraAttack,
   equippedExtraAttackQty,
+  equippedUsable1,
+  equippedUsable1Qty,
+  equippedUsable2,
+  equippedUsable2Qty,
   equipmentBag,
   equipmentBagQty,
   onEquipFromBag,
   onUnequipToBag,
   onMoveBagItem,
+  onEquipUsableFromBag,
+  onUnequipUsableToBag,
   equipBusy,
 }: {
   nick: string | null;
@@ -1166,25 +1269,35 @@ function CharacterInfoPanel({
   equippedBoots: string | null;
   equippedExtraAttack: string | null;
   equippedExtraAttackQty: number;
+  equippedUsable1: string | null;
+  equippedUsable1Qty: number;
+  equippedUsable2: string | null;
+  equippedUsable2Qty: number;
   equipmentBag: (string | null)[];
   equipmentBagQty: number[];
   onEquipFromBag: (bagIndex: number) => void;
   onUnequipToBag: (slot: EquipSlot, bagIndex: number) => void;
   onMoveBagItem: (fromIndex: number, toIndex: number) => void;
+  onEquipUsableFromBag: (bagIndex: number, usableIndex: 1 | 2) => void;
+  onUnequipUsableToBag: (usableIndex: 1 | 2, bagIndex: number) => void;
   equipBusy: boolean;
 }) {
   const { level, intoLevel, forNextLevel } = levelFromXp(xp);
   const [dragging, setDragging] = useState<EquipDragPayload | null>(null);
-  const handleDrop = (target: { kind: "equip"; slot: EquipSlot } | { kind: "bag"; index: number }) => {
+  const handleDrop = (target: { kind: "equip"; slot: EquipSlot } | { kind: "bag"; index: number } | { kind: "usable"; index: 1 | 2 }) => {
     if (!dragging) return;
     const payload = dragging;
     setDragging(null);
     if (target.kind === "equip") {
       if (payload.kind === "bag") onEquipFromBag(payload.index);
+    } else if (target.kind === "usable") {
+      if (payload.kind === "bag") onEquipUsableFromBag(payload.index, target.index);
     } else if (payload.kind === "bag") {
       if (payload.index !== target.index) onMoveBagItem(payload.index, target.index);
-    } else {
+    } else if (payload.kind === "equip") {
       onUnequipToBag(payload.slot, target.index);
+    } else {
+      onUnequipUsableToBag(payload.index, target.index);
     }
   };
   return (
@@ -1249,6 +1362,26 @@ function CharacterInfoPanel({
             onDragStart={setDragging}
             onDragEnd={() => setDragging(null)}
             onDrop={() => handleDrop({ kind: "equip", slot: "extraAttack" })}
+          />
+          <UsableSlotBox
+            index={1}
+            equippedSlug={equippedUsable1}
+            qty={equippedUsable1Qty}
+            busy={equipBusy}
+            dragging={dragging}
+            onDragStart={setDragging}
+            onDragEnd={() => setDragging(null)}
+            onDrop={() => handleDrop({ kind: "usable", index: 1 })}
+          />
+          <UsableSlotBox
+            index={2}
+            equippedSlug={equippedUsable2}
+            qty={equippedUsable2Qty}
+            busy={equipBusy}
+            dragging={dragging}
+            onDragStart={setDragging}
+            onDragEnd={() => setDragging(null)}
+            onDrop={() => handleDrop({ kind: "usable", index: 2 })}
           />
         </div>
 
@@ -3817,6 +3950,26 @@ export function RoomStage({
     },
     [profile],
   );
+  const onEquipUsableFromBag = useCallback(
+    async (bagIndex: number, usableIndex: 1 | 2) => {
+      setEquipBusy(true);
+      setEquipError(null);
+      const res = await profile.equipUsableFromBag(bagIndex, usableIndex);
+      if (!res.ok) setEquipError(res.error);
+      setEquipBusy(false);
+    },
+    [profile],
+  );
+  const onUnequipUsableToBag = useCallback(
+    async (usableIndex: 1 | 2, bagIndex: number) => {
+      setEquipBusy(true);
+      setEquipError(null);
+      const res = await profile.unequipUsableToBag(usableIndex, bagIndex);
+      if (!res.ok) setEquipError(res.error);
+      setEquipBusy(false);
+    },
+    [profile],
+  );
   const [chatScope, setChatScope] = useState<"room" | "all" | "dm">("room");
   const [chatDraft, setChatDraft] = useState("");
   const [chatSending, setChatSending] = useState(false);
@@ -4336,11 +4489,17 @@ export function RoomStage({
               equippedBoots={profile.equippedBoots}
               equippedExtraAttack={profile.equippedExtraAttack}
               equippedExtraAttackQty={profile.equippedExtraAttackQty}
+              equippedUsable1={profile.equippedUsable1}
+              equippedUsable1Qty={profile.equippedUsable1Qty}
+              equippedUsable2={profile.equippedUsable2}
+              equippedUsable2Qty={profile.equippedUsable2Qty}
               equipmentBag={profile.equipmentBag}
               equipmentBagQty={profile.equipmentBagQty}
               onEquipFromBag={onEquipFromBag}
               onUnequipToBag={onUnequipToBag}
               onMoveBagItem={onMoveBagItem}
+              onEquipUsableFromBag={onEquipUsableFromBag}
+              onUnequipUsableToBag={onUnequipUsableToBag}
               equipBusy={equipBusy}
             />
           ) : (

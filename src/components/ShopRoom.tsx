@@ -590,14 +590,23 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
         >
           <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-zinc-100">Chemist</h2>
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-zinc-100">
+                {/* eslint-disable-next-line @next/next/no-img-element -- small fixed-size shop icon, not worth next/image's overhead */}
+                <img
+                  src="/map/items/modern-items-pack/sliced/bottles/bottle_blue_cap.png"
+                  alt=""
+                  className="h-6 w-6 object-contain"
+                />
+                Chemist
+              </h2>
               <span className="flex items-center gap-1 rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-300">
                 {POTION_OF_SWIFTNESS_COST} copper coins
               </span>
             </div>
             <p className="mb-5 text-center text-sm text-zinc-400">
               Potion of swiftness: +50% move speed for {POTION_OF_SWIFTNESS_DURATION_MINUTES} minute after drinking
-              (press H). You have <span className="font-semibold text-zinc-100">{potionsOfSwiftness}</span> in your bag.
+              (press H). You have <span className="font-semibold text-zinc-100">{potionsOfSwiftness}</span> equipped —
+              buying more tops up an equipped stack, otherwise it drops into your backpack (equip it from Tab).
             </p>
             <div className="mb-3 flex flex-col gap-1 text-center text-sm text-zinc-400">
               <span>Your balance</span>
