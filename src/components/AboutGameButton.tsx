@@ -7,17 +7,24 @@ import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 export function AboutGameButton() {
   const [open, toggle, close] = useHeaderPanel("aboutGame");
   const [accounts, setAccounts] = useState<number | null>(null);
+  const [players, setPlayers] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     fetch("/api/stats")
       .then((res) => res.json())
-      .then((data: { accounts: number | null }) => {
-        if (!cancelled) setAccounts(data.accounts);
+      .then((data: { accounts: number | null; players: number | null }) => {
+        if (!cancelled) {
+          setAccounts(data.accounts);
+          setPlayers(data.players);
+        }
       })
       .catch(() => {
-        if (!cancelled) setAccounts(null);
+        if (!cancelled) {
+          setAccounts(null);
+          setPlayers(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -35,13 +42,19 @@ export function AboutGameButton() {
             </button>
           </div>
           <p className="text-zinc-300">We&apos;re here to study... mostly.</p>
-          <div className="mt-3 border-t border-zinc-700 pt-2 text-zinc-400">
+          <div className="mt-3 space-y-1 border-t border-zinc-700 pt-2 text-zinc-400">
             {accounts === null ? (
               <span>Loading stats…</span>
             ) : (
-              <span>
+              <span className="block">
                 <span className="font-semibold text-zinc-200">{accounts.toLocaleString()}</span>{" "}
-                accounts created so far
+                real warriors
+              </span>
+            )}
+            {players !== null && (
+              <span className="block">
+                <span className="font-semibold text-zinc-200">{players.toLocaleString()}</span>{" "}
+                distinct players have entered the game
               </span>
             )}
           </div>
