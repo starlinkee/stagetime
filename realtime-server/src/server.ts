@@ -179,8 +179,9 @@ type Conn = {
   // Admin-panel per-weapon stat overrides (see AdminSettings in src/lib/adminSettings.ts and the
   // "weapons" field on the "input" ClientMessage) — own copy per connection, same reasoning as
   // `stats` below. Only ever different from the shared/constants.ts defaults when
-  // DEV_OVERRIDES_ENABLED is on; a real client otherwise can't touch another connection's own
-  // damage/speed/cooldown numbers.
+  // DEV_OVERRIDES_ENABLED is on, or this connection's own isAdmin (see its doc comment below) is
+  // true; a real (non-admin) client on production otherwise can't touch its own damage/speed/
+  // cooldown numbers, let alone another connection's.
   weapons: {
     ballSpeed: number;
     ballDmgMin: number;
@@ -209,8 +210,9 @@ type Conn = {
   // STU-66: regen is held flat until this timestamp after a fire/slash spend — see
   // STAMINA_REGEN_DELAY_MS's doc comment in shared/constants.ts and currentStamina() below.
   staminaRegenDelayUntil: number;
-  // Normally always stats.moveSpeed — only ever different when DEV_OVERRIDES_ENABLED and the
-  // client sent an `input.speedOverride` (admin panel), see the "input" handler below.
+  // Normally always stats.moveSpeed — only ever different when the admin-panel override gate
+  // below is open (DEV_OVERRIDES_ENABLED, or this connection's own isAdmin) and the client sent
+  // an `input.speedOverride`, see the "input" handler below.
   speed: number;
   // This connection's own copy of CharacterStats (see its doc comment in shared/types.ts) — a
   // clone of DEFAULT_CHARACTER_STATS today since there's no character choice yet, but every rule
@@ -235,6 +237,11 @@ type Conn = {
   // diff-only `players` list (changed-since-last-room-broadcast) would otherwise leave a
   // freshly-joined connection never learning about anyone already standing still in the room.
   needsFullState: boolean;
+  // STU-83: from the signed entry token's `isAdmin` claim (see resolveIsAdmin in
+  // src/app/api/realtime/token/route.ts and public.admins) — set once per join, never trusted
+  // from any other client-supplied field. Widens the DEV_OVERRIDES_ENABLED gate below so an admin
+  // account can use the admin panel's live-tuning overrides on production too.
+  isAdmin: boolean;
 };
 
 /** Frozen (no movement, no roll/charge/fire/slash) while waiting out RESPAWN_MS. */
@@ -995,6 +1002,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.stats.damageReduction = DEFAULT_CHARACTER_STATS.damageReduction + verified.equip.damageReduction;
   conn.stats.moveSpeed = DEFAULT_CHARACTER_STATS.moveSpeed + verified.equip.moveSpeedBonus;
   conn.speed = conn.stats.moveSpeed;
+  conn.isAdmin = verified.isAdmin;
   // Only a reconnect-ghost resume carries HP/respawn/immunity forward — `loaded` (a saved
   // position from Postgres) and every other branch below are treated as a fresh life, same as a
   // brand-new connection.
@@ -1109,6 +1117,7 @@ wss.on("connection", (ws, req) => {
     gy: 0,
     gd: 2,
     needsFullState: true,
+    isAdmin: false,
   };
 
   send(ws, { type: "welcome", id: conn.id });
@@ -1128,11 +1137,15 @@ wss.on("connection", (ws, req) => {
     if (msg.type === "input") {
       conn.inputDx = toAxis(msg.dx);
       conn.inputDy = toAxis(msg.dy);
-      if (DEV_OVERRIDES_ENABLED && typeof msg.speedOverride === "number" && Number.isFinite(msg.speedOverride)) {
+      if (
+        (DEV_OVERRIDES_ENABLED || conn.isAdmin) &&
+        typeof msg.speedOverride === "number" &&
+        Number.isFinite(msg.speedOverride)
+      ) {
         conn.speed = Math.max(MIN_DEV_SPEED, Math.min(MAX_DEV_SPEED, msg.speedOverride));
       }
       if (
-        DEV_OVERRIDES_ENABLED &&
+        (DEV_OVERRIDES_ENABLED || conn.isAdmin) &&
         typeof msg.staminaRegenOverride === "number" &&
         Number.isFinite(msg.staminaRegenOverride)
       ) {
@@ -1150,9 +1163,9 @@ wss.on("connection", (ws, req) => {
         );
       }
       // Admin panel's per-weapon stat knobs (see AdminSettings in src/lib/adminSettings.ts) —
-      // same dev-only gate as speedOverride/staminaRegenOverride above. Any field left out (or not
-      // a finite number) keeps this connection's current value instead of resetting to a default.
-      if (DEV_OVERRIDES_ENABLED && msg.weapons) {
+      // same gate as speedOverride/staminaRegenOverride above. Any field left out (or not a finite
+      // number) keeps this connection's current value instead of resetting to a default.
+      if ((DEV_OVERRIDES_ENABLED || conn.isAdmin) && msg.weapons) {
         const w = msg.weapons;
         const clamp = (v: unknown, lo: number, hi: number, fallback: number) =>
           typeof v === "number" && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;

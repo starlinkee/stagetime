@@ -13,9 +13,14 @@ import {
 
 /**
  * Jedno miejsce ze wszystkimi ustawieniami "adminowskimi" apki (rzeczy, które admin chce
- * móc szybko przestroić bez zmian w kodzie). Domyślne wartości są tu; w wersji lokalnej
- * i na Vercel Preview (nigdy na produkcji) można je nadpisać z panelu w lewym dolnym rogu —
- * nadpisania trzymane są w localStorage i działają w całej apce na tej wersji przeglądarki.
+ * móc szybko przestroić bez zmian w kodzie). Domyślne wartości są tu; w wersji lokalnej,
+ * na Vercel Preview, i (STU-83) na produkcji dla kont z public.admins, można je nadpisać
+ * z panelu w headerze (patrz AdminPanel.tsx) — nadpisania trzymane są w localStorage i działają
+ * w całej apce na tej przeglądarce, dla tego konkretnego admina. Wysyłane do realtime-server
+ * (patrz RoomStage.tsx) tylko wtedy, gdy isAdminUiEnabled() jest prawdziwe — server.ts po swojej
+ * stronie weryfikuje to niezależnie, przez podpisany `isAdmin` w entry tokenie (patrz
+ * DEV_OVERRIDES_ENABLED w server.ts), więc nieadmin nigdy nie przekona serwera, nawet gdyby
+ * ręcznie wysłał te same pola.
  */
 export type AdminSettings = {
   /** Ile sekund trzeba przytrzymać E stojąc w kwadracie pokoju, żeby go otworzyć. */
@@ -87,11 +92,34 @@ export const ADMIN_SETTINGS_SCHEMA: AdminSettingDef[] = [
 
 const STORAGE_KEY = "stagetime:admin-settings";
 
-/** Panel admina i nadpisania ustawień działają tylko poza produkcją: lokalnie i na Vercel Preview. */
+/** STU-83: set once per session by AdminPanel.tsx, from useIsAdmin() (public.admins). Module-level
+ * (not React state) because isAdminUiEnabled() also has to work from plain functions outside
+ * React, like RoomStage.tsx's per-tick input-sending code. */
+let knownAdminAccount = false;
+
+/** Panel admina i nadpisania ustawień działają poza produkcją (lokalnie, Vercel Preview) dla
+ * każdego, i wszędzie — łącznie z produkcją — dla kont z public.admins (STU-83). */
 export function isAdminUiEnabled(): boolean {
+  return isNonProdEnv() || knownAdminAccount;
+}
+
+function isNonProdEnv(): boolean {
   const vercelEnv = process.env.NEXT_PUBLIC_VERCEL_ENV;
   if (vercelEnv) return vercelEnv !== "production";
   return process.env.NODE_ENV !== "production";
+}
+
+/** Called from AdminPanel.tsx once useIsAdmin() resolves. Re-reads localStorage on a false->true
+ * flip so an admin's overrides from a previous session on this browser aren't stuck ignored until
+ * their next explicit change — `current` below is otherwise computed once, at module load, before
+ * this resolves. */
+export function setAdminAccountFlag(isAdmin: boolean) {
+  const wasEnabled = isAdminUiEnabled();
+  knownAdminAccount = isAdmin;
+  if (!wasEnabled && isAdminUiEnabled()) {
+    current = { ...DEFAULT_ADMIN_SETTINGS, ...readOverrides() };
+    for (const l of listeners) l();
+  }
 }
 
 function readOverrides(): Partial<AdminSettings> {

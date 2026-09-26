@@ -39,6 +39,20 @@ async function resolveEquipBonuses(accessToken: string, userId: string): Promise
 }
 
 /**
+ * STU-83: is this account in public.admins (see supabase/migrations/0054_admins_table.sql)? Same
+ * request-scoped, caller's-own-RLS client as resolveEquipBonuses above — the "admins_select_own"
+ * policy only ever lets this query see the caller's own row, never the full roster.
+ */
+async function resolveIsAdmin(accessToken: string, userId: string): Promise<boolean> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) return false;
+  const sb = createClient(url, anonKey, { global: { headers: { Authorization: `Bearer ${accessToken}` } } });
+  const { data } = await sb.from("admins").select("user_id").eq("user_id", userId).maybeSingle();
+  return Boolean(data);
+}
+
+/**
  * Mints the short-lived signed token realtime-server requires on WS `join` (see
  * docs/stateful_server_plan.md, Faza A / A1). This is the only place `userId` is decided: we
  * verify the caller's Supabase access token server-side instead of trusting whatever userId a
@@ -68,6 +82,7 @@ export async function POST(request: Request) {
   const userId = data?.user?.id ?? null;
 
   const equip = accessToken && userId ? await resolveEquipBonuses(accessToken, userId) : undefined;
+  const isAdmin = accessToken && userId ? await resolveIsAdmin(accessToken, userId) : false;
 
-  return NextResponse.json({ token: mintEntryToken(secret, userId, slug as string, equip) });
+  return NextResponse.json({ token: mintEntryToken(secret, userId, slug as string, equip, isAdmin) });
 }

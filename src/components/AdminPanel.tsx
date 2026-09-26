@@ -1,27 +1,36 @@
 "use client";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import {
   ADMIN_SETTINGS_SCHEMA,
   DEFAULT_ADMIN_SETTINGS,
   isAdminUiEnabled,
   resetAdminSettings,
+  setAdminAccountFlag,
   setAdminSetting,
   useAdminSettings,
 } from "@/lib/adminSettings";
+import { useIsAdmin } from "@/lib/useIsAdmin";
 import { useHeaderPanel } from "@/lib/headerPanel";
 import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 
 /**
- * Przycisk w headerze + panel z ustawieniami admina. Widoczny tylko lokalnie
- * i na Vercel Preview (nigdy na produkcji, patrz isAdminUiEnabled) — zmiany działają
- * od razu w całej apce na tej wersji, trzymane w localStorage.
+ * Przycisk w headerze + panel z ustawieniami admina. Widoczny lokalnie i na Vercel Preview dla
+ * każdego, i (STU-83) na produkcji dla kont z public.admins (patrz useIsAdmin/isAdminUiEnabled) —
+ * zmiany działają od razu w całej apce na tej przeglądarce, trzymane w localStorage.
  */
 export function AdminPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [open, toggle] = useHeaderPanel("admin", containerRef);
   const settings = useAdminSettings();
+  const isAdminAccount = useIsAdmin();
 
-  if (!isAdminUiEnabled()) return null;
+  // Mirrors into adminSettings.ts's module-level flag so isAdminUiEnabled() also reads correctly
+  // from plain (non-React) call sites, like RoomStage.tsx's per-tick input-sending code.
+  useEffect(() => {
+    setAdminAccountFlag(isAdminAccount);
+  }, [isAdminAccount]);
+
+  if (!isAdminUiEnabled() && !isAdminAccount) return null;
 
   return (
     <div className="relative" ref={containerRef}>
