@@ -11,6 +11,7 @@
  * LOBBY_OBSTACLES there) can never silently drift from where it's actually drawn.
  */
 import { CENTER_ITEMS, DECOR_SCALE, LOBBY_LAMPS, QUADRANT_ITEMS, type DecorItem, type Quadrant } from "@realtime-shared/obstacles";
+import { SCREEN_W } from "@realtime-shared/constants";
 
 const DECOR_DIR = "/map/props/decor";
 
@@ -28,6 +29,40 @@ export const HOUSE_SIZE = 450;
  * per request (130 -> 260 -> 325). Overflows its 140px-tall zone box on purpose so the fountain
  * reads bigger than its floor trigger area — see fountainZone in src/app/page.tsx. */
 const FOUNTAIN_SIZE = 325;
+
+/**
+ * Ring constants for the three Pomodoro room doors — duplicated from src/app/page.tsx
+ * (RING_CENTER_X/Y, RING_RADIUS, RING_ANGLES_DEG) rather than imported, same convention already
+ * used by realtime-server/shared/rooms.ts's own copy (see its "must match" comment) — must stay
+ * in sync with page.tsx's values by hand.
+ */
+const LIBRARY_RING_CENTER_X = SCREEN_W / 2;
+const LIBRARY_RING_CENTER_Y = 550;
+const LIBRARY_RING_RADIUS = 320;
+
+/** CSS px square for each library backdrop sprite — bigger than the 180x100 pomodoro zone box
+ * (page.tsx's POMODORO_ZONE_W/H) so it reads as the room glimpsed through the doorway, with the
+ * zone's own colored box + label painted on top of it by RoomStage's canvas. */
+const LIBRARY_SPRITE_SIZE = 260;
+
+/** One isometric library room per Pomodoro door (slug must match POMODORO_ROOMS in
+ * src/lib/rooms.ts), picked for color-mood: "25-5" (blue) gets the cooler/neutral room, "20-5"
+ * (purple) gets the room with a matching purple-toned background, "50-10" (orange/rust) gets the
+ * warmest cream-toned room. Angle is the matching room's own RING_ANGLES_DEG entry in
+ * page.tsx. */
+const POMODORO_LIBRARY_SPRITES: { slug: string; file: string; angleDeg: number }[] = [
+  { slug: "25-5", file: "library-whiteblackcat", angleDeg: -90 },
+  { slug: "20-5", file: "library-redcat", angleDeg: -30 },
+  { slug: "50-10", file: "library-blackcat", angleDeg: 30 },
+];
+
+function libraryRingPos(angleDeg: number) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return {
+    x: LIBRARY_RING_CENTER_X + LIBRARY_RING_RADIUS * Math.cos(rad) - LIBRARY_SPRITE_SIZE / 2,
+    y: LIBRARY_RING_CENTER_Y + LIBRARY_RING_RADIUS * Math.sin(rad) - LIBRARY_SPRITE_SIZE / 2,
+  };
+}
 
 export function LobbyDecor({
   width,
@@ -123,8 +158,8 @@ export function LobbyDecor({
       {/* Fountain of Wealth's floor button (see FOUNTAIN_ZONE_SLUG in src/app/page.tsx) is drawn
           as a plain rounded-rect + label by RoomStage's canvas, on top of this component — this
           just gives that zone an actual fountain to stand behind the label. Position mirrors
-          fountainZone there: content-square-relative x/y (573, -50) of a 220x140 box (y nudged up
-          from 20 -> 0 -> -50 per request, kept in sync with fountainZone's own y), kept square and
+          fountainZone there: content-square-relative x/y (573, -150) of a 220x140 box (y nudged up
+          from 20 -> 0 -> -50 -> -150 per request, kept in sync with fountainZone's own y), kept square and
           centered in it since the source art is square. Source PNG has a real alpha channel (re-exported
           from the original basic-fountain.png, whose "transparent" background was actually a
           baked-in gray checkerboard floor — see
@@ -136,13 +171,36 @@ export function LobbyDecor({
         style={{
           position: "absolute",
           left: centerOrigin.x + 573 + (220 - FOUNTAIN_SIZE) / 2,
-          top: centerOrigin.y - 50 + (140 - FOUNTAIN_SIZE) / 2,
+          top: centerOrigin.y - 150 + (140 - FOUNTAIN_SIZE) / 2,
           width: FOUNTAIN_SIZE,
           height: FOUNTAIN_SIZE,
           maxWidth: "none",
           imageRendering: "pixelated",
         }}
       />
+      {/* Pomodoro room doors: each room's own isometric library backdrop, positioned on the same
+          ring as its zone box (see pomodoroZones/ringPos in src/app/page.tsx) so it sits directly
+          behind that zone's colored box + name label, painted on top by RoomStage's canvas. */}
+      {POMODORO_LIBRARY_SPRITES.map(({ slug, file, angleDeg }) => {
+        const pos = libraryRingPos(angleDeg);
+        return (
+          <img
+            key={`library-${slug}`}
+            src={`/map/buildings/${file}.png`}
+            alt=""
+            draggable={false}
+            style={{
+              position: "absolute",
+              left: centerOrigin.x + pos.x,
+              top: centerOrigin.y + pos.y,
+              width: LIBRARY_SPRITE_SIZE,
+              height: LIBRARY_SPRITE_SIZE,
+              maxWidth: "none",
+              imageRendering: "pixelated",
+            }}
+          />
+        );
+      })}
       {LOBBY_LAMPS.filter((lamp) => lampsOn?.[lamp.id]).map((lamp) => (
         <div
           key={`lamp-glow-${lamp.id}`}

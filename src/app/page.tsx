@@ -48,6 +48,12 @@ const stopwatchRooms = ROOMS.filter((r) => r.kind === "stopwatch");
 const shopRooms = ROOMS.filter((r) => r.kind === "shop");
 const arenaRooms = ROOMS.filter((r) => r.kind === "arena");
 
+// Each pomodoro door now has its own library backdrop (LobbyDecor.tsx's POMODORO_LIBRARY_SPRITES,
+// on the same ring position) instead of a plain colored square, so `hidden` (same flag
+// housePortalZone/fountainZone use) suppresses the box/name/reward text until the player is
+// actually standing on the door — see the `!z.hidden || inZone(...)` guards RoomStage.tsx added
+// around its reward/occupant text for this. The "E to enter room" prompt still shows once in
+// range, same as any other door.
 const pomodoroZones: RoomZone[] = pomodoroRooms.map((r) => ({
   slug: r.slug,
   name: r.name,
@@ -56,6 +62,7 @@ const pomodoroZones: RoomZone[] = pomodoroRooms.map((r) => ({
   h: POMODORO_ZONE_H,
   color: r.color,
   phase: { workMin: r.workMin, breakMin: r.breakMin },
+  hidden: true,
 }));
 
 const stopwatchZones: RoomZone[] = stopwatchRooms.map((r) => ({
@@ -147,7 +154,7 @@ const fountainZone: RoomZone = {
   name: "Fountain of Wealth",
   kind: "action",
   x: RING_CENTER_X - FOUNTAIN_ZONE_W / 2,
-  y: -50,
+  y: -150,
   w: FOUNTAIN_ZONE_W,
   h: FOUNTAIN_ZONE_H,
   color: "#ca8a04",
