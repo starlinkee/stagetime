@@ -12,24 +12,23 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Architektura Projektu: stan na 2026-09-23
 
 Ta appka to coworking z timerem Pomodoro (nie gra RPG). Repo **nie jest** monorepo — nie ma
-`/client`, `/server`, `/shared`, nie ma Colyseus, nie ma AI potworów ani FSM. Poniżej faktyczny
-podział, jaki dziś istnieje w kodzie.
+`/client`, `/server`, `/shared`, nie ma Colyseus, nie ma AI potworów ani FSM.
 
 ### `src/` — Next.js (App Router), warstwa prezentacji + część danych
-- Frontend hostowany typowo na Vercel; `src/app/api/*` to bezstanowe route handlery Next.js.
+- Frontend na Vercel; `src/app/api/*` to bezstanowe route handlery Next.js.
 - `src/components/RoomStage.tsx` — scena pokoju: rysowanie, input, i (za flagą, patrz niżej)
   klient sieciowy do `realtime-server`.
 - `src/lib/supabaseAdmin.ts` — jedyne miejsce w Next.js używające `SUPABASE_SERVICE_ROLE_KEY`
   (bypass RLS), wołane wyłącznie przez `src/app/api/internal/positions/route.ts` na potrzeby
   `realtime-server` (zapis/odczyt pozycji w imieniu gracza, którego sesji Next.js nie ma).
 - `src/app/api/realtime/token/route.ts` — mintuje krótkotrwały, podpisany token wejścia
-  (`@realtime-shared/entryToken`) na podstawie sesji Supabase Auth zalogowanego użytkownika;
-  `realtime-server` ufa wyłącznie temu tokenowi, nigdy danym podanym wprost przez klienta.
-- Supabase pozostaje: Auth (konta/sesje), Postgres (profile, XP, monety, `player_positions`,
-  czat), i nadal obsługuje presence oraz historię czatu przez Realtime — to się nie zmieniło.
+  (`@realtime-shared/entryToken`) na podstawie sesji Supabase Auth; `realtime-server` ufa
+  wyłącznie temu tokenowi, nigdy danym podanym wprost przez klienta.
+- Supabase: Auth (konta/sesje), Postgres (profile, XP, monety, `player_positions`, czat),
+  presence i historia czatu przez Realtime.
 
 ### `realtime-server/` — autorytatywny serwer WebSocket (Node + `ws`), deploy na Fly.io
-- Osobny pakiet npm w tym samym repo (własny `package.json`, `Dockerfile`, `fly.toml`; appka Fly
+- Osobny pakiet npm w tym samym repo (`package.json`, `Dockerfile`, `fly.toml`; appka Fly
   nazywa się `studyquest`). Nie Colyseus — świadomie własny, minimalny WebSocket server.
 - `realtime-server/shared/` (`types.ts`, `constants.ts`, `entryToken.ts`, `physics.ts`) to
   jedyne "shared" w tym repo — importowane z `src/` przez alias `@realtime-shared/*` w
@@ -49,104 +48,63 @@ podział, jaki dziś istnieje w kodzie.
   nie jest planowane, AI/FSM/przeciwników sterowanych komputerowo.
 
 ### Decyzja (2026-09-23): Colyseus przy dodaniu ekonomii / AI przeciwników
-HP już istnieje (patrz wyżej) i nie wymagało Colyseusa — poszło jako pola w `Conn`
-(`realtime-server/src/server.ts`, `hp`/`respawnAt`/`immuneUntil`) i logika w tej samej pętli tick,
-dokładnie ten sam wzorzec co dziś dla ruchu/walki (patrz sekcja `realtime-server/` wyżej). Ta sama
-zasada dotyczy ekonomii (transakcyjnej, nie tylko `coins` jak dziś) i AI przeciwników — **same w
-sobie nie wymagają i nie uzasadniają** przejścia na Colyseus. Colyseus rozwiązuje dwa problemy,
-których to repo dziś nie ma: matchmaking wielu pokoi i binarny delta-encoding stanu
-(`@colyseus/schema`) zamiast pełnego stanu jako JSON co broadcast.
-Sygnał, że warto to zrewidować: `BROADCAST_MS` wysyła pełny stan pokoju (nie diff) — to zaczyna
-realnie kosztować pasmo dopiero przy dużej liczbie encji (gracze + przeciwnicy + stan ekonomii) na
-pokój; przy dzisiejszym `MAX_PLAYERS_PER_ROOM` = 50 to nie jest wąskie gardło. Nie proponuj migracji
-na Colyseus tylko dlatego, że pojawia się ekonomia/AI — dopiero przy konkretnym, zmierzonym
-problemie z pasmem albo realną potrzebą matchmakingu wielu pokoi.
+HP poszło jako pola w `Conn` (`realtime-server/src/server.ts`) i logika w tej samej pętli tick —
+bez Colyseusa. Ekonomia i AI przeciwników **same w sobie nie uzasadniają** migracji: Colyseus
+rozwiązuje matchmaking wielu pokoi i delta-encoding stanu, czyli problemy, których to repo dziś
+nie ma (`MAX_PLAYERS_PER_ROOM` = 50, `rooms` to zwykła `Map` po `roomSlug`). Nie proponuj
+migracji na Colyseus tylko dlatego, że pojawia się ekonomia/AI.
 
-**Konkretne progi, przy których Colyseus staje się zasadny (rewizja tej decyzji, nie automat):**
-- Stały ruch w stronę >50 graczy w jednym pokoju (dziś to twardy limit `MAX_PLAYERS_PER_ROOM` w
-  `realtime-server/src/server.ts`) — podniesienie go w górę zamiast pozostania przy małych grupach
-  coworkingowych, dla których ten limit został ustawiony.
-- Wiele jednocześnie żywych pokoi z realną potrzebą matchmakingu (przydzielanie gracza do pokoju,
-  balansowanie obciążenia między pokojami/instancjami) — dziś `rooms` to zwykła `Map` po
-  `roomSlug`, bez żadnego mechanizmu wyboru/tworzenia pokoju za gracza.
-- Oba te warunki razem (dużo pokoi × dużo graczy na pokój) to sytuacja, w której ręczne broadcasty
-  pełnego JSON-a i ręczne zarządzanie `Map<roomSlug, Set<Conn>>` przestają się skalować i warto
-  wtedy realnie rozważyć Colyseus (albo inny framework tej klasy) zamiast dalej rozbudowywać
-  własny serwer.
+**Progi, przy których warto to zrewidować:** stały ruch w stronę >50 graczy/pokój, albo wiele
+jednocześnie żywych pokoi z realną potrzebą matchmakingu — a najbardziej oba naraz.
 
 ### Flaga rolloutu
-Całość powyższego (ruch + walka na serwerze) działa **tylko** gdy `NEXT_PUBLIC_REALTIME_SERVER_URL`
-jest ustawione w `src/`. Bez tej zmiennej `RoomStage.tsx` wraca do starego zachowania: ruch i
-"walka" liczone w 100% lokalnie u każdego klienta i rozgłaszane peer-to-peer przez Supabase
-Broadcast, bez żadnej wspólnej, autorytatywnej prawdy. Kierunek docelowy (ustalony
-2026-09-23): pełne przejście na wariant z `realtime-server` wszędzie, stopniowo wygaszając
-zależność od Vercel jako miejsca liczenia stanu rozgrywki — klient ma z czasem odpowiadać
+Ruch + walka na serwerze działają **tylko** gdy `NEXT_PUBLIC_REALTIME_SERVER_URL` jest ustawione
+w `src/`. Bez tej zmiennej `RoomStage.tsx` liczy ruch/walkę w 100% lokalnie u każdego klienta i
+rozgłasza peer-to-peer przez Supabase Broadcast, bez wspólnej autorytatywnej prawdy. Kierunek
+docelowy: pełne przejście na `realtime-server` wszędzie — klient ma z czasem odpowiadać
 wyłącznie za wygląd (rendering/animacje), nie za wynik.
 
 ### Deploy: Vercel jest już podpięty pod `git push` — nie wołaj `vercel --prod` ręcznie
-Projekt Vercel ma **aktywną integrację z GitHubiem** na branchu `main`: sam `git push origin main`
-już wywołuje deploy na produkcję (alias `stagetime-git-main-…`). Ręczne odpalenie `vercel --prod`
-po takim pushu ściga się z tym automatycznym deployem o ten sam `deploymentId` i **zawsze przegrywa**.
-
-Powtarzający się błąd, który to sygnalizuje:
+Projekt Vercel ma aktywną integrację z GitHubiem na branchu `main`: sam `git push origin main`
+wywołuje deploy na produkcję. Ręczny `vercel --prod` po tym pushu ściga się o ten sam
+`deploymentId` (`next.config.ts` = `VERCEL_ENV` prefix + `VERCEL_GIT_COMMIT_SHA`) i zawsze
+przegrywa, z błędem:
 ```
-A deployment with the user-configured deploymentId "<12-znakowy-sha>" already exists in this
-project. User-configured deployment IDs must be unique per project.
+A deployment with the user-configured deploymentId "<sha>" already exists in this project.
 ```
-`deploymentId` (`next.config.ts`) to `VERCEL_GIT_COMMIT_SHA` (12 znaków), od 2026-09-23 z prefiksem
-`VERCEL_ENV` (`prod-`/`prev-`/`deve-`) — to jest `VersionWatcher` (klient porównuje go z
-`/api/version` i przeładowuje się, gdy wykryje nowszy build). Skoro rdzeń ID nadal zależy 1:1 od
-hasha commita, kolizja wraca za każdym razem, gdy **ten sam commit + to samo środowisko** deployuje
-się dwa razy. Dwie znane przyczyny:
-1. Ręczny `vercel --prod` po tym samym pushu (patrz nagłówek wyżej) — oba deploye to środowisko
-   `production`, więc prefiks ich nie rozróżnia; nie odpalaj `vercel --prod` ręcznie.
-2. **(Naprawione 2026-09-23, było źródłem tego zgłoszenia)** ten sam commit trafiający na `dev` i
-   `main` przez fast-forward merge — Vercel deployuje push na `dev` jako `preview`, a na `main` jako
-   `production`; bez prefiksu środowiska te dwa deploye dzieliły identyczny `deploymentId` mimo
-   różnych środowisk. Prefiks `VERCEL_ENV` to rozróżnia — nie cofaj go z powrotem do gołego hasha.
 
 **Co robić:**
 - Normalny deploy na prod = zwykły `git push origin main`. Nic więcej nie trzeba odpalać.
-- Jeśli mimo braku zmian w kodzie trzeba wymusić nowy deploy ("redeploy tego samego commita"), nie
-  walcz z `vercel --prod --force` (to nie pomaga, bo kolizja jest po `deploymentId`, nie po cache) —
-  zrób pusty commit i wypchnij go: `git commit --allow-empty -m "..." && git push origin main`.
-  Nowy sha → nowy `deploymentId` → integracja GitHub sama zdeployuje.
-- `realtime-server/` na Fly.io to osobny mechanizm, bez tego problemu — `fly deploy` z
-  `realtime-server/` zawsze idzie bezpośrednio na `studyquest`, nie ma tam integracji git ani
-  kolizji ID. Fly **nie ma** dziś osobnego env preview/staging — jeden `fly.toml`, jedna appka.
+- Żeby wymusić redeploy tego samego commita: pusty commit, nie `vercel --prod --force`
+  (kolizja jest po `deploymentId`, nie po cache) — `git commit --allow-empty -m "..." && git push origin main`.
+- `realtime-server/` na Fly.io to osobny mechanizm bez tego problemu — `fly deploy` z
+  `realtime-server/` idzie bezpośrednio na `studyquest`. Fly nie ma dziś env preview/staging —
+  jeden `fly.toml`, jedna appka.
 
 ### Branch policy (od 2026-09-25): `main`, `dev`, i krótkotrwałe branche zadaniowe z Linear
-Domyślnie pracujemy na dwóch branchach — `main` (prod) i `dev` (preview, patrz sekcja Deploy
-wyżej). Dla pojedynczej, ręcznej zmiany nie twórz nowego brancha (`feature/...`, `fix/...` itd.) —
-commituj bezpośrednio na `dev` (albo na `main`, jeśli zmiana ma od razu iść na prod).
+Domyślnie pracujemy na dwóch branchach — `main` (prod) i `dev` (preview). Dla pojedynczej,
+ręcznej zmiany nie twórz nowego brancha (`feature/...`, `fix/...` itd.) — commituj bezpośrednio
+na `dev` (albo na `main`, jeśli zmiana ma od razu iść na prod).
 
-Wyjątek: przy automatycznym przetwarzaniu zadań z Linear (np. agent pracujący w pętli po backlogu)
-dopuszczalny jest krótkotrwały branch per zadanie, utworzony z `dev`, zmergowany z powrotem do
-`dev` zaraz po ukończeniu zadania i usunięty po mergu — nie zostaje jako trwały branch
-feature'owy, i nie trafia sam z siebie na `main`.
+Wyjątek: przy automatycznym przetwarzaniu zadań z Linear dopuszczalny jest krótkotrwały branch
+per zadanie, utworzony z `dev`, zmergowany z powrotem do `dev` zaraz po ukończeniu zadania i
+usunięty po mergu — nie zostaje jako trwały branch feature'owy, i nie trafia sam z siebie na `main`.
 
-Do tego są dwa skrypty w `scripts/` (`git-push-target.sh` to wspólna logika, `git-push-preview.sh`
-i `git-push-prod.sh` to cienkie wrappery), zarejestrowane jako aliasy gita w tym repo (`.git/config`,
-więc **nie jest to commitowane** — po świeżym `git clone` trzeba je zarejestrować ponownie, patrz
-komendy niżej):
-
+Do tego są aliasy gita (`.git/config`, **nie commitowane** — po świeżym `git clone` trzeba je
+zarejestrować ponownie):
 ```
 git config alias.push-preview '!bash "$(git rev-parse --show-toplevel)/scripts/git-push-preview.sh"'
 git config alias.push-prod '!bash "$(git rev-parse --show-toplevel)/scripts/git-push-prod.sh"'
 ```
-
 Użycie:
 ```
 git push-preview "commit message"   # commit + push na dev  → Vercel preview deploy
 git push-prod    "commit message"   # commit + push na main → Vercel production deploy
 ```
-
-Oba działają **niezależnie od tego, na którym z tych dwóch branchy aktualnie jesteś** — jeśli masz
-niezacommitowane zmiany na `main`, a wołasz `git push-preview`, skrypt sam je odłoży (`git stash`),
-przełączy na `dev`, przywróci zmiany, zcommituje i wypchnie, po czym wróci Cię z powrotem na `main`.
-Jeśli jesteś już na branchu docelowym, po prostu commituje + pushuje na miejscu. Jeśli nie masz
-żadnych niezacommitowanych zmian, oba komendy tylko przełączają/aktualizują/pushują dany branch.
-Wiadomość commita jest wymagana tylko wtedy, gdy jest faktycznie coś do zacommitowania.
+Oba działają niezależnie od tego, na którym z tych dwóch branchy aktualnie jesteś — jeśli masz
+niezacommitowane zmiany na innym branchu, skrypt sam je odłoży (`git stash`), przełączy,
+przywróci, zcommituje i wypchnie, po czym wróci Cię z powrotem. Wiadomość commita jest wymagana
+tylko wtedy, gdy jest faktycznie coś do zacommitowania.
 
 ## Instrukcje dla Asystenta AI przy generowaniu kodu w tym repo
 1. Nie zakładaj `/client` `/server` `/shared` ani Colyseus — to nie istnieje w tym repo.
