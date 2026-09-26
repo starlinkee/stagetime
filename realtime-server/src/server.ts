@@ -1423,6 +1423,12 @@ wss.on("connection", (ws, req) => {
       send(target.ws, { type: "voiceSignal", from: conn.id, data: msg.data });
       return;
     }
+    // Speaking indicator: immediate fan-out, same shape as `emote` above — not gated by
+    // isDead(conn), same "not an attack" reasoning as voiceSignal/the KeyZ handler itself.
+    if (msg.type === "voiceState") {
+      broadcastToRoom(conn.roomSlug, { type: "voiceState", id: conn.id, speaking: msg.speaking === true });
+      return;
+    }
   });
 
   ws.on("close", () => {

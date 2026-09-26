@@ -273,7 +273,16 @@ export type ClientMessage =
    * connection actually in this connection's own room right now (see the "voiceSignal" handler
    * in server.ts), same "same room only" reasoning as toggleLamp above.
    */
-  | { type: "voiceSignal"; to: string; data: unknown };
+  | { type: "voiceSignal"; to: string; data: unknown }
+  /**
+   * Proximity voice chat's speaking indicator: sent the instant Z is pressed/released (see the
+   * KeyZ handlers in RoomStage.tsx), not gated by isDead/isFrozen there either — same "not an
+   * attack" reasoning as the transmit toggle itself. Broadcast immediately to the room (like
+   * `emote` above), not folded into the periodic `state` message, so the ring around a speaker's
+   * nametag appears/disappears the moment Z is actually held/released, not up to BROADCAST_MS
+   * later.
+   */
+  | { type: "voiceState"; speaking: boolean };
 
 /**
  * One room-owned enemy (see ARENA_ROOM_SLUG/ENEMY_* in shared/constants.ts) — everyone in the
@@ -395,4 +404,8 @@ export type ServerMessage =
    * the sender's connection id (matches PlayerState.id) so the recipient's RTCPeerConnection-per-
    * peer map can route it. Sent only to the one addressed connection, never broadcast.
    */
-  | { type: "voiceSignal"; from: string; data: unknown };
+  | { type: "voiceSignal"; from: string; data: unknown }
+  /** Relayed straight through from the sender's own "voiceState" ClientMessage above — `id` is
+   * the speaking connection's id, matches PlayerState.id, same "me"/`msg.id` keying RoomStage.tsx
+   * already uses for `emote` above. */
+  | { type: "voiceState"; id: string; speaking: boolean };

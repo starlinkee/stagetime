@@ -838,7 +838,31 @@ function drawFireball(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: 
  * pokazujemy szary "Lv.0" zamiast prawdziwego LevelBadge (STU-21), żeby było widać, że jeszcze
  * nie zbiera się XP, zamiast po prostu nic nie pokazywać obok nicku.
  */
-function NameTag({ name, xp }: { name: string | null; xp?: number }) {
+/** Proximity voice chat's speaking indicator — a small pulsing mic glyph next to a nametag, shown
+ * for exactly as long as that connection actually has Z held (see the `speaking` state in
+ * RoomStage.tsx, driven by the local KeyZ handlers for "me" and the "voiceState" ServerMessage for
+ * everyone else). No text/emoji per the in-world-text convention — a plain SVG glyph instead. */
+function SpeakingIndicator() {
+  return (
+    <svg
+      aria-label="Speaking"
+      className="h-3 w-3 shrink-0 animate-pulse text-emerald-400"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+    >
+      <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        d="M6 11a6 6 0 0 0 12 0M12 19v2"
+      />
+    </svg>
+  );
+}
+
+function NameTag({ name, xp, speaking }: { name: string | null; xp?: number; speaking?: boolean }) {
   return (
     <span
       className="absolute bottom-full left-1/2 mb-0.5 flex max-w-56 -translate-x-1/2 items-center gap-1 whitespace-nowrap text-base font-medium leading-5 text-zinc-700 dark:text-zinc-200"
@@ -855,6 +879,7 @@ function NameTag({ name, xp }: { name: string | null; xp?: number }) {
         </span>
       )}
       <span className="truncate">{name?.trim() || NO_NAME}</span>
+      {speaking && <SpeakingIndicator />}
     </span>
   );
 }
@@ -1641,6 +1666,12 @@ export function RoomStage({
   // powód.
   const [emoteBubbles, setEmoteBubbles] = useState<Record<string, { emoji: string; id: string }>>({});
   const emoteBubbleTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  /** Proximity voice chat's own speaking indicator (see NameTag's `speaking` prop) — same "me" /
+   * `p.id` keying as emoteBubbles above, set directly from the KeyZ down/up handlers (for "me")
+   * and from the "voiceState" ServerMessage (for everyone else) in the network effect below. No
+   * timeout/prune needed: it's a plain on/off toggle mirroring whether Z is actually held, not a
+   * one-shot event like an emote bubble. */
+  const [speaking, setSpeaking] = useState<Record<string, boolean>>({});
   useEffect(() => {
     const timers = emoteBubbleTimers.current;
     return () => {
@@ -2044,6 +2075,20 @@ export function RoomStage({
         })
       : null;
     voiceChatRef.current = voiceChat;
+    // Drives both sides of the speaking indicator at once: the local VoiceChat mute/unmute, this
+    // client's own "me" entry in `speaking` (see NameTag's `speaking` prop), and the immediate
+    // "voiceState" broadcast everyone else's client turns back into their own copy of `speaking`.
+    let lastTransmitting = false;
+    const setTransmitting = (on: boolean) => {
+      if (!voiceChat || on === lastTransmitting) return;
+      lastTransmitting = on;
+      voiceChat.setTransmitting(on);
+      setSpeaking((s) => ({ ...s, me: on }));
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const state: ClientMessage = { type: "voiceState", speaking: on };
+        ws.send(JSON.stringify(state));
+      }
+    };
     let reconnectAttempts = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     // Ostatnia znana autorytatywna pozycja z serwera dla nas — NIE jest zerowana po jednym użyciu:
@@ -2158,6 +2203,13 @@ export function RoomStage({
         }
         if (msg.type === "voiceSignal") {
           voiceChat?.handleSignal(msg.from, msg.data);
+          return;
+        }
+        if (msg.type === "voiceState") {
+          // Someone else's own Z press/release — see the KeyZ handlers below for "me"'s own side
+          // of this, set directly there rather than waiting on this same message echoed back.
+          if (msg.id === netKey) return;
+          setSpeaking((s) => (s[msg.id] === msg.speaking ? s : { ...s, [msg.id]: msg.speaking }));
           return;
         }
         if (msg.type === "emote") {
@@ -3402,7 +3454,7 @@ export function RoomStage({
       // Proximity voice chat: push-to-talk, not gated by myDead/frozenByWork() — talking isn't
       // an attack, same reasoning as the KeyB skin-cycle key above.
       if (e.code === "KeyZ") {
-        if (!e.repeat) voiceChat?.setTransmitting(true);
+        if (!e.repeat) setTransmitting(true);
         return;
       }
       if (!ARROWS.has(e.key)) return;
@@ -3411,7 +3463,7 @@ export function RoomStage({
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === "KeyZ") {
-        voiceChat?.setTransmitting(false);
+        setTransmitting(false);
         return;
       }
       if (e.code === "ControlLeft" || e.code === "ControlRight") {
@@ -3462,7 +3514,7 @@ export function RoomStage({
     };
     const onBlur = () => {
       held.clear();
-      voiceChat?.setTransmitting(false);
+      setTransmitting(false);
       if (emoteWheelActive) {
         emoteWheelActive = false;
         wheelHeld.clear();
@@ -4378,7 +4430,7 @@ export function RoomStage({
                 {bubbles[k] && <ChatBubble key={bubbles[k].id} text={bubbles[k].text} />}
                 {emoteBubbles[k] && <EmoteBubble emoji={emoteBubbles[k].emoji} />}
                 {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
-                <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
+                <NameTag name={o.nick} xp={o.user ? o.xp : undefined} speaking={speaking[k]} />
                 <CharacterSprite
                   character={safeCharacter(o.character)}
                   color={o.color}
@@ -4469,7 +4521,7 @@ export function RoomStage({
           {bubbles.me && <ChatBubble key={bubbles.me.id} text={bubbles.me.text} />}
           {emoteBubbles.me && <EmoteBubble emoji={emoteBubbles.me.emoji} />}
           {rewards.me && <RewardPopup coins={rewards.me.coins} xp={rewards.me.xp} id={rewards.me.id} />}
-          <NameTag name={nick} xp={session ? profile.xp : undefined} />
+          <NameTag name={nick} xp={session ? profile.xp : undefined} speaking={speaking.me} />
           <CharacterSprite
             character={safeCharacter(character)}
             color={color}
