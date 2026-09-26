@@ -14,6 +14,7 @@ import {
 } from "@/lib/coins";
 import { EXIT_ZONE } from "@/lib/rooms";
 import { DEFAULT_COLOR, type CharacterSlug, useMyProfile } from "@/lib/useProfile";
+import { EQUIPMENT_ITEMS, type EquipSlot } from "@realtime-shared/constants";
 
 type CosmeticSlug = "flower" | "sparkles";
 const CHARACTER_ZONE_SLUG = "character-select";
@@ -64,7 +65,19 @@ const CHARACTER_ZONE: RoomZone = { slug: CHARACTER_ZONE_SLUG, name: "Change char
  * granted" guarantee as purchaseCosmetic. */
 const GUNMAN_ZONE_SLUG = "gunman";
 const GUNMAN_ZONE: RoomZone = { slug: GUNMAN_ZONE_SLUG, name: "Gunman", kind: "action", x: 996, y: 500, w: 220, h: 140 };
-const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, ...Object.values(COSMETIC_ITEMS).map((item) => item.zone), CHARACTER_ZONE, GUNMAN_ZONE];
+/** STU-77: the only place helm/armor/boots (see EQUIPMENT_ITEMS in
+ * realtime-server/shared/constants.ts) can be bought/equipped — the Tab inventory panel
+ * (RoomStage.tsx) only shows what's already equipped and lets you unequip, same "buy here, view
+ * there" split as the gunman above (ammo bought here, hotbar/hp shown elsewhere). */
+const GEAR_ZONE_SLUG = "gear-specialist";
+const GEAR_ZONE: RoomZone = { slug: GEAR_ZONE_SLUG, name: "Gear specialist", kind: "action", x: 180, y: 500, w: 220, h: 140 };
+const SHOP_ZONES: RoomZone[] = [
+  EXIT_ZONE,
+  ...Object.values(COSMETIC_ITEMS).map((item) => item.zone),
+  CHARACTER_ZONE,
+  GUNMAN_ZONE,
+  GEAR_ZONE,
+];
 
 /**
  * Pokój-sklep: wejście już wymaga konta (patrz RoomZone.requiresAuth w lobby i sprawdzenie w
@@ -75,7 +88,21 @@ const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, ...Object.values(COSMETIC_ITEMS).map(
  * nigdy nie zdejmuje coinów bez przyznania przedmiotu.
  */
 export function ShopRoom({ roomSlug }: { roomSlug: string }) {
-  const { ready, coins, cosmetic, character, shurikenAmmo, purchaseCosmetic, purchaseCharacter, purchaseShurikenAmmo } = useMyProfile();
+  const {
+    ready,
+    coins,
+    cosmetic,
+    character,
+    shurikenAmmo,
+    equippedHelm,
+    equippedArmor,
+    equippedBoots,
+    purchaseCosmetic,
+    purchaseCharacter,
+    purchaseShurikenAmmo,
+    purchaseEquipment,
+    unequipEquipment,
+  } = useMyProfile();
   const [activeItem, setActiveItem] = useState<CosmeticSlug | null>(null);
   const [confirmingRebuy, setConfirmingRebuy] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,6 +114,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   const [gunmanOpen, setGunmanOpen] = useState(false);
   const [gunmanBusy, setGunmanBusy] = useState(false);
   const [gunmanError, setGunmanError] = useState<string | null>(null);
+  const [gearOpen, setGearOpen] = useState(false);
+  const [gearBusy, setGearBusy] = useState(false);
+  const [gearError, setGearError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!toast) return;
@@ -106,6 +136,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     } else if (slug === GUNMAN_ZONE_SLUG) {
       setGunmanError(null);
       setGunmanOpen(true);
+    } else if (slug === GEAR_ZONE_SLUG) {
+      setGearError(null);
+      setGearOpen(true);
     }
   }, []);
 
@@ -127,6 +160,12 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     setGunmanOpen(false);
     setGunmanError(null);
   }, [gunmanBusy]);
+
+  const closeGear = useCallback(() => {
+    if (gearBusy) return;
+    setGearOpen(false);
+    setGearError(null);
+  }, [gearBusy]);
 
   const owned = activeItem !== null && cosmetic === activeItem;
 
@@ -181,6 +220,40 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     setToast(`+${SHURIKEN_AMMO_PACK} shurikens!`);
   }, [gunmanBusy, purchaseShurikenAmmo]);
 
+  const equippedBySlot: Record<EquipSlot, string | null> = { helm: equippedHelm, armor: equippedArmor, boots: equippedBoots };
+
+  const buyGear = useCallback(
+    async (slug: string, name: string) => {
+      if (gearBusy) return;
+      setGearBusy(true);
+      setGearError(null);
+      const result = await purchaseEquipment(slug);
+      setGearBusy(false);
+      if (!result.ok) {
+        setGearError(result.error);
+        return;
+      }
+      setToast(`${name} equipped!`);
+    },
+    [gearBusy, purchaseEquipment],
+  );
+
+  const unequipGear = useCallback(
+    async (slot: EquipSlot) => {
+      if (gearBusy) return;
+      setGearBusy(true);
+      setGearError(null);
+      const result = await unequipEquipment(slot);
+      setGearBusy(false);
+      if (!result.ok) {
+        setGearError(result.error);
+        return;
+      }
+      setToast("Unequipped.");
+    },
+    [gearBusy, unequipEquipment],
+  );
+
   const activeItemInfo = activeItem ? COSMETIC_ITEMS[activeItem] : null;
   const canAfford = activeItemInfo ? coins >= activeItemInfo.cost : false;
   const canAffordCharacter = coins >= CHARACTER_CHANGE_COST;
@@ -199,8 +272,8 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
       />
       <div className="flex w-full max-w-2xl flex-col items-center gap-2 text-center">
         <p className="text-sm text-zinc-500">
-          Hold E on a floor button to browse a cosmetic, the wardrobe to change your character, or the gunman
-          for shurikens.
+          Hold E on a floor button to browse a cosmetic, the wardrobe to change your character, the gunman
+          for shurikens, or the gear specialist for helm/armor/boots.
         </p>
         {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
       </div>
@@ -312,6 +385,81 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
                 className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {gunmanBusy ? "Processing…" : `Buy ${SHURIKEN_AMMO_PACK} shurikens`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {gearOpen && ready && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Gear specialist"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-zinc-100">Gear specialist</h2>
+              <span className="flex flex-col gap-1 text-right text-sm text-zinc-400">
+                Your balance
+                <span className={`text-lg font-semibold ${coins >= 0 ? "text-zinc-100" : "text-rose-400"}`}>{coins.toFixed(1)} coins</span>
+              </span>
+            </div>
+            <p className="mb-5 text-center text-sm text-zinc-400">
+              Helm, armor and boots — each grants a real combat bonus. Unequip anytime from Tab for free; re-equipping
+              costs coins again.
+            </p>
+            <div className="mb-5 flex flex-col gap-3">
+              {EQUIPMENT_ITEMS.map((item) => {
+                const equipped = equippedBySlot[item.slot] === item.slug;
+                const bonus = item.maxHpBonus
+                  ? `+${item.maxHpBonus} max HP`
+                  : item.damageReductionBonus
+                    ? `-${Math.round(item.damageReductionBonus * 100)}% damage taken`
+                    : `+${item.moveSpeedBonus} move speed`;
+                return (
+                  <div
+                    key={item.slug}
+                    className={`flex items-center justify-between rounded-xl border px-4 py-3 ${
+                      equipped ? "border-amber-500 bg-amber-500/10" : "border-zinc-700"
+                    }`}
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-zinc-100">{item.name}</p>
+                      <p className="text-xs text-emerald-400">{bonus}</p>
+                    </div>
+                    {equipped ? (
+                      <button
+                        type="button"
+                        onClick={() => void unequipGear(item.slot)}
+                        disabled={gearBusy}
+                        className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+                      >
+                        Unequip
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void buyGear(item.slug, item.name)}
+                        disabled={gearBusy || coins < item.cost}
+                        className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {item.cost} coins
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {gearError && <p className="mb-3 text-center text-sm text-rose-400">{gearError}</p>}
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={closeGear}
+                disabled={gearBusy}
+                className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+              >
+                Close
               </button>
             </div>
           </div>

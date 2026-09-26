@@ -745,29 +745,24 @@ function equipBonusLabel(item: (typeof EQUIPMENT_ITEMS)[number]): string {
 
 /**
  * STU-77: one equip slot in the inventory panel below — shows the equipped item (if any) and its
- * bonus, plus a Buy/Equip or Unequip button. `owned` is approximated as "currently equipped" (see
- * EQUIPMENT_ITEMS' doc comment in shared/constants.ts: buying an item equips it directly, there's
- * no separate "owned but not worn" state yet, same one-slot-per-category shape as `cosmetic`), so
- * re-equipping a different item you've bought before still re-charges its cost — same trade-off
- * the cosmetic shop already makes.
+ * bonus, plus an Unequip button. Buying/equipping only happens at the gear specialist in the Shop
+ * (see GEAR_ZONE in ShopRoom.tsx) — this panel is read-only for that, same "buy there, view here"
+ * split as the gunman's shuriken ammo (bought at the gunman, shown live in the hotbar).
  */
 function InventorySlot({
   label,
   equippedSlug,
   slot,
-  onBuy,
   onUnequip,
   busy,
 }: {
   label: string;
   equippedSlug: string | null;
   slot: EquipSlot;
-  onBuy: (slug: string) => void;
   onUnequip: () => void;
   busy: boolean;
 }) {
-  const items = EQUIPMENT_ITEMS.filter((i) => i.slot === slot);
-  const equipped = items.find((i) => i.slug === equippedSlug) ?? null;
+  const equipped = EQUIPMENT_ITEMS.find((i) => i.slot === slot && i.slug === equippedSlug) ?? null;
   return (
     <div className="rounded-lg bg-zinc-900 px-2.5 py-1.5">
       <div className="flex items-center justify-between">
@@ -775,12 +770,12 @@ function InventorySlot({
         {equipped ? (
           <span className="font-semibold text-zinc-200">{equipped.name}</span>
         ) : (
-          <span className="text-zinc-500">Empty</span>
+          <span className="text-zinc-500">Empty — buy from the gear specialist in the Shop</span>
         )}
       </div>
-      {equipped && <p className="text-[11px] text-emerald-400">{equipBonusLabel(equipped)}</p>}
-      <div className="mt-1 flex flex-wrap gap-1">
-        {equipped ? (
+      {equipped && (
+        <div className="mt-1 flex items-center justify-between">
+          <p className="text-[11px] text-emerald-400">{equipBonusLabel(equipped)}</p>
           <button
             type="button"
             disabled={busy}
@@ -789,21 +784,8 @@ function InventorySlot({
           >
             Unequip
           </button>
-        ) : null}
-        {items
-          .filter((i) => i.slug !== equippedSlug)
-          .map((i) => (
-            <button
-              key={i.slug}
-              type="button"
-              disabled={busy}
-              onClick={() => onBuy(i.slug)}
-              className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[11px] font-medium text-amber-300 hover:bg-amber-500/30 disabled:opacity-50"
-            >
-              {i.name} · {i.cost}🪙
-            </button>
-          ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -833,7 +815,6 @@ function CharacterInfoPanel({
   equippedArmor,
   equippedBoots,
   shurikenAmmo,
-  onBuyEquipment,
   onUnequipEquipment,
   equipBusy,
 }: {
@@ -854,7 +835,6 @@ function CharacterInfoPanel({
   equippedArmor: string | null;
   equippedBoots: string | null;
   shurikenAmmo: number;
-  onBuyEquipment: (slug: string) => void;
   onUnequipEquipment: (slot: EquipSlot) => void;
   equipBusy: boolean;
 }) {
@@ -887,7 +867,6 @@ function CharacterInfoPanel({
             label="Helm"
             slot="helm"
             equippedSlug={equippedHelm}
-            onBuy={onBuyEquipment}
             onUnequip={() => onUnequipEquipment("helm")}
             busy={equipBusy}
           />
@@ -895,7 +874,6 @@ function CharacterInfoPanel({
             label="Armor"
             slot="armor"
             equippedSlug={equippedArmor}
-            onBuy={onBuyEquipment}
             onUnequip={() => onUnequipEquipment("armor")}
             busy={equipBusy}
           />
@@ -903,7 +881,6 @@ function CharacterInfoPanel({
             label="Boots"
             slot="boots"
             equippedSlug={equippedBoots}
-            onBuy={onBuyEquipment}
             onUnequip={() => onUnequipEquipment("boots")}
             busy={equipBusy}
           />
@@ -3202,21 +3179,12 @@ export function RoomStage({
   // `statsOpen`. Osobny stan od `chatOpen`, bo Tab wewnątrz pola czatu ma inne znaczenie
   // (przełącza zakres "room"/"all", patrz onChatKeyDown) i tam panel nie powinien się otwierać.
   const [statsOpen, setStatsOpen] = useState(false);
-  // STU-77: disables the inventory panel's buy/unequip buttons while a purchase_equipment/
-  // unequip_equipment RPC is in flight, same "one at a time" guard ShopRoom uses for its own
-  // purchase button — prevents a double-click from firing two RPCs for the same slot.
+  // STU-77: disables the inventory panel's unequip button while an unequip_equipment RPC is in
+  // flight, same "one at a time" guard ShopRoom uses for its own purchase button — prevents a
+  // double-click from firing two RPCs for the same slot. Buying/equipping only happens at the gear
+  // specialist in the Shop (see GEAR_ZONE in ShopRoom.tsx) — this panel is unequip-only.
   const [equipBusy, setEquipBusy] = useState(false);
   const [equipError, setEquipError] = useState<string | null>(null);
-  const onBuyEquipment = useCallback(
-    async (slug: string) => {
-      setEquipBusy(true);
-      setEquipError(null);
-      const res = await profile.purchaseEquipment(slug);
-      if (!res.ok) setEquipError(res.error);
-      setEquipBusy(false);
-    },
-    [profile],
-  );
   const onUnequipEquipment = useCallback(
     async (slot: EquipSlot) => {
       setEquipBusy(true);
@@ -3698,7 +3666,6 @@ export function RoomStage({
               equippedArmor={profile.equippedArmor}
               equippedBoots={profile.equippedBoots}
               shurikenAmmo={profile.shurikenAmmo}
-              onBuyEquipment={onBuyEquipment}
               onUnequipEquipment={onUnequipEquipment}
               equipBusy={equipBusy}
             />
