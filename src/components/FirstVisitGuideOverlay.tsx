@@ -37,11 +37,11 @@ export function FirstVisitGuideOverlay() {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/90 p-6 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/40 p-6">
       <div
         role="alertdialog"
         aria-modal="true"
-        className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900 p-6 text-zinc-100 shadow-2xl"
+        className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900/85 p-6 text-zinc-100 shadow-2xl backdrop-blur-md"
       >
         <h2 className="mb-4 font-fredoka text-lg font-semibold">How to play</h2>
         <ul className="mb-6 list-disc space-y-2 pl-5 text-sm text-zinc-300">

@@ -3279,10 +3279,13 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking) · tap 1-6 to emote (works even during work) · tap B to cycle your ball skin";
+      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking) · tap 1-6 to emote (works even during work)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
+    // STU-41: ball skin cycling writes to profiles (saveBallSkin), a no-op for a signed-out
+    // visitor — only mention it once there's a session to actually save it to.
+    if (session) text += " · tap B to cycle your ball skin";
     if (session && profile.flashGrenades > 0) text += ` · tap G to throw a flash grenade (${profile.flashGrenades} left)`;
     setHowToPlay(text);
     return () => setHowToPlay(null);
