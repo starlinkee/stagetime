@@ -121,8 +121,6 @@ export default function Home() {
     </Suspense>
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center gap-2 p-8 pt-16 text-center">
       <div className="flex items-center justify-center gap-3">
-        {/* eslint-disable-next-line @next/next/no-img-element -- animated GIF, next/image would strip the animation on optimization */}
-        <img src="/branding/output-onlinegiftools.gif" alt="" width={96} height={96} className="h-24 w-24" />
         <h1 className="title-64 text-5xl sm:text-6xl">StudyQuest.Party</h1>
       </div>
     </main>
