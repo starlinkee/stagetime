@@ -199,7 +199,10 @@ function ProfileForm({
         </div>
       </div>
       <span className="text-xs text-zinc-600">5 minutes in a study room = 1 XP · 1 minute = 1 copper coin.</span>
-      <span className="mt-1 text-zinc-400">Stats</span>
+      <div className="mt-1 flex items-center justify-between">
+        <span className="text-zinc-400">Stats</span>
+        <span className="text-xs text-zinc-600">Press Tab for all stats</span>
+      </div>
       <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
         <span className="text-zinc-400">Balls</span>
         <span className="font-semibold text-zinc-200">{ballsShot}</span>
