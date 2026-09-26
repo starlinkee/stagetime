@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ADMIN_SETTINGS_SCHEMA,
   DEFAULT_ADMIN_SETTINGS,
@@ -12,6 +12,7 @@ import {
 import { useIsAdmin } from "@/lib/useIsAdmin";
 import { useHeaderPanel } from "@/lib/headerPanel";
 import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
+import { getSupabase } from "@/lib/supabase";
 
 /**
  * Przycisk w headerze + panel z ustawieniami admina. Widoczny lokalnie i na Vercel Preview dla
@@ -23,12 +24,32 @@ export function AdminPanel() {
   const [open, toggle] = useHeaderPanel("admin", containerRef);
   const settings = useAdminSettings();
   const isAdminAccount = useIsAdmin();
+  const [goldAmount, setGoldAmount] = useState(1000);
+  const [goldStatus, setGoldStatus] = useState<string | null>(null);
+  const [addingGold, setAddingGold] = useState(false);
 
   // Mirrors into adminSettings.ts's module-level flag so isAdminUiEnabled() also reads correctly
   // from plain (non-React) call sites, like RoomStage.tsx's per-tick input-sending code.
   useEffect(() => {
     setAdminAccountFlag(isAdminAccount);
   }, [isAdminAccount]);
+
+  // Self-service coin top-up, backed by admin_add_coins (supabase/migrations/0057_admin_add_coins.sql) —
+  // that RPC re-checks public.admins server-side and only ever credits the caller's own account,
+  // so this button existing client-side for a non-admin account is harmless (the call just fails).
+  async function addGold() {
+    const sb = getSupabase();
+    if (!sb || goldAmount <= 0) return;
+    setAddingGold(true);
+    setGoldStatus(null);
+    const { data, error } = await sb.rpc("admin_add_coins", { p_amount: goldAmount });
+    setAddingGold(false);
+    if (error) {
+      setGoldStatus(error.message === "not_admin" ? "Not an admin account." : `Failed: ${error.message}`);
+      return;
+    }
+    setGoldStatus(`Coins now: ${data}`);
+  }
 
   if (!isAdminUiEnabled() && !isAdminAccount) return null;
 
@@ -69,6 +90,33 @@ export function AdminPanel() {
               </label>
             ))}
           </div>
+          {isAdminAccount && (
+            <div className="mt-4 border-t border-zinc-700 pt-3">
+              <span className="text-xs text-zinc-400">Add gold to my account</span>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="number"
+                  value={goldAmount}
+                  min={1}
+                  step={1}
+                  onChange={(e) => {
+                    const v = e.target.valueAsNumber;
+                    if (Number.isFinite(v)) setGoldAmount(v);
+                  }}
+                  className="w-full rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-zinc-100"
+                />
+                <button
+                  type="button"
+                  onClick={addGold}
+                  disabled={addingGold || goldAmount <= 0}
+                  className="shrink-0 rounded bg-orange-600 px-2 py-1 text-xs font-semibold text-white hover:bg-orange-500 disabled:opacity-50"
+                >
+                  Add
+                </button>
+              </div>
+              {goldStatus && <span className="mt-1 block text-[11px] text-zinc-500">{goldStatus}</span>}
+            </div>
+          )}
         </div>
       )}
       <button
