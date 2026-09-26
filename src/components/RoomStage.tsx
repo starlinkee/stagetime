@@ -801,7 +801,12 @@ function EquipSlotBox({
   const equipped = EQUIPMENT_ITEMS.find((i) => i.slot === slot && i.slug === equippedSlug) ?? null;
   const canDrop = dragging?.kind === "bag" && EQUIPMENT_ITEMS.find((i) => i.slug === dragging.slug)?.slot === slot;
   return (
+    // Draggable/drop-target on the whole box, not just the item name — a small text label is a
+    // tiny, easy-to-miss drag handle; the full square is what a player actually aims a drag at.
     <div
+      draggable={!!equipped && !busy}
+      onDragStart={() => equipped && onDragStart({ kind: "equip", slot, slug: equipped.slug })}
+      onDragEnd={onDragEnd}
       onDragOver={(e) => {
         if (canDrop) e.preventDefault();
       }}
@@ -809,20 +814,15 @@ function EquipSlotBox({
         e.preventDefault();
         if (canDrop) onDrop();
       }}
-      className={`rounded-lg bg-zinc-900 px-2.5 py-1.5 ${canDrop ? "ring-2 ring-amber-400" : ""}`}
+      title={equipped ? "Drag to an empty backpack slot to unequip" : undefined}
+      className={`rounded-lg bg-zinc-900 px-2.5 py-1.5 ${equipped ? "cursor-grab active:cursor-grabbing" : ""} ${
+        canDrop ? "ring-2 ring-amber-400" : ""
+      }`}
     >
       <div className="flex items-center justify-between">
         <span className="text-zinc-400">{label}</span>
         {equipped ? (
-          <span
-            draggable={!busy}
-            onDragStart={() => onDragStart({ kind: "equip", slot, slug: equipped.slug })}
-            onDragEnd={onDragEnd}
-            title="Drag to an empty backpack slot to unequip"
-            className="cursor-grab font-semibold text-zinc-200 active:cursor-grabbing"
-          >
-            {equipped.name}
-          </span>
+          <span className="font-semibold text-zinc-200">{equipped.name}</span>
         ) : (
           <svg
             aria-label="Empty"
@@ -840,6 +840,75 @@ function EquipSlotBox({
         )}
       </div>
       {equipped && <p className="mt-1 text-[11px] text-emerald-400">{equipBonusLabel(equipped)}</p>}
+    </div>
+  );
+}
+
+/**
+ * STU-77/0050: the extraAttack equip slot — same drag-to-equip gesture as EquipSlotBox above, but
+ * holds the stackable "shuriken" bag item (with a quantity) instead of a gear slug from
+ * EQUIPMENT_ITEMS. Weapon slot 3 (see WEAPON_SLOTS above) only exists while this slot holds a
+ * shuriken stack — see supabase/migrations/0050_extra_attack_slot.sql.
+ */
+function ExtraAttackSlotBox({
+  equippedSlug,
+  qty,
+  busy,
+  dragging,
+  onDragStart,
+  onDragEnd,
+  onDrop,
+}: {
+  equippedSlug: string | null;
+  qty: number;
+  busy: boolean;
+  dragging: EquipDragPayload | null;
+  onDragStart: (payload: EquipDragPayload) => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
+}) {
+  const equipped = equippedSlug === SHURIKEN_ITEM_SLUG;
+  const canDrop = dragging?.kind === "bag" && dragging.slug === SHURIKEN_ITEM_SLUG;
+  return (
+    <div
+      draggable={equipped && !busy}
+      onDragStart={() => equipped && onDragStart({ kind: "equip", slot: "extraAttack", slug: SHURIKEN_ITEM_SLUG })}
+      onDragEnd={onDragEnd}
+      onDragOver={(e) => {
+        if (canDrop) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        if (canDrop) onDrop();
+      }}
+      title={equipped ? "Drag to an empty backpack slot to unequip" : undefined}
+      className={`rounded-lg bg-zinc-900 px-2.5 py-1.5 ${equipped ? "cursor-grab active:cursor-grabbing" : ""} ${
+        canDrop ? "ring-2 ring-amber-400" : ""
+      }`}
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-zinc-400">Extra attack</span>
+        {equipped ? (
+          <span className="font-semibold text-zinc-200">Shuriken</span>
+        ) : (
+          <svg
+            aria-label="Empty"
+            className="h-4 w-4 text-zinc-600"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <line x1="7" y1="7" x2="17" y2="17" />
+          </svg>
+        )}
+      </div>
+      <p className={`mt-1 text-[11px] ${equipped ? "text-emerald-400" : "text-zinc-500"}`}>
+        {equipped ? `x${qty} · press 3 to select` : "Drag shurikens here from the backpack to use weapon slot 3"}
+      </p>
     </div>
   );
 }
@@ -873,7 +942,12 @@ function BagSlotBox({
   const name = slug ? bagItemName(slug) : null;
   const canDrop = dragging !== null && (slug === null || dragging.kind === "bag");
   return (
+    // Draggable/drop-target on the whole square, not just the item name — see EquipSlotBox's
+    // matching comment above.
     <div
+      draggable={!!slug && !busy}
+      onDragStart={() => slug && onDragStart({ kind: "bag", index, slug })}
+      onDragEnd={onDragEnd}
       onDragOver={(e) => {
         if (canDrop) e.preventDefault();
       }}
@@ -883,19 +957,12 @@ function BagSlotBox({
       }}
       title={name ?? undefined}
       className={`relative flex aspect-square items-center justify-center rounded-lg border p-1 text-center ${
-        name ? "border-zinc-700 bg-zinc-900" : "border-dashed border-zinc-800 bg-zinc-950/40"
+        name ? "border-zinc-700 bg-zinc-900 cursor-grab active:cursor-grabbing" : "border-dashed border-zinc-800 bg-zinc-950/40"
       } ${canDrop ? "ring-2 ring-amber-400" : ""}`}
     >
-      {name && slug && (
+      {name && (
         <>
-          <span
-            draggable={!busy}
-            onDragStart={() => onDragStart({ kind: "bag", index, slug })}
-            onDragEnd={onDragEnd}
-            className="cursor-grab select-none text-[10px] font-medium leading-tight text-zinc-200 active:cursor-grabbing"
-          >
-            {name}
-          </span>
+          <span className="select-none text-[10px] font-medium leading-tight text-zinc-200">{name}</span>
           {qty > 1 && (
             <span className="absolute bottom-0.5 right-1 text-[9px] font-bold leading-none text-amber-300">x{qty}</span>
           )}
@@ -929,6 +996,8 @@ function CharacterInfoPanel({
   equippedHelm,
   equippedArmor,
   equippedBoots,
+  equippedExtraAttack,
+  equippedExtraAttackQty,
   equipmentBag,
   equipmentBagQty,
   onEquipFromBag,
@@ -952,6 +1021,8 @@ function CharacterInfoPanel({
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
+  equippedExtraAttack: string | null;
+  equippedExtraAttackQty: number;
   equipmentBag: (string | null)[];
   equipmentBagQty: number[];
   onEquipFromBag: (bagIndex: number) => void;
@@ -1027,15 +1098,15 @@ function CharacterInfoPanel({
             onDragEnd={() => setDragging(null)}
             onDrop={() => handleDrop({ kind: "equip", slot: "boots" })}
           />
-          <div className="rounded-lg bg-zinc-900 px-2.5 py-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-zinc-400">Extra attack</span>
-              <span className="font-semibold text-zinc-200">Shuriken</span>
-            </div>
-            <p className="text-[11px] text-zinc-500">
-              Press 3 to select · shurikens are kept in the backpack, buy more from the gunman in the Shop
-            </p>
-          </div>
+          <ExtraAttackSlotBox
+            equippedSlug={equippedExtraAttack}
+            qty={equippedExtraAttackQty}
+            busy={equipBusy}
+            dragging={dragging}
+            onDragStart={setDragging}
+            onDragEnd={() => setDragging(null)}
+            onDrop={() => handleDrop({ kind: "equip", slot: "extraAttack" })}
+          />
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -3018,6 +3089,9 @@ export function RoomStage({
       // frozenByWork(), same reasoning as KeyB's skin cycling below: selecting isn't an attack.
       if ((e.code === "Digit1" || e.code === "Digit2" || e.code === "Digit3") && !e.repeat) {
         const slot = WEAPON_SLOTS.find((w) => w.key === e.code.slice(5));
+        // 0050: slot 3 only selects if a shuriken is actually equipped into the extraAttack slot —
+        // otherwise it's the same as pressing a digit with no bound slot (no-op).
+        if (slot?.id === "shuriken" && profileRef.current.equippedExtraAttack !== SHURIKEN_ITEM_SLUG) return;
         if (slot?.id) setSelectedWeapon(slot.id);
         return;
       }
@@ -3743,33 +3817,42 @@ export function RoomStage({
       <div
         className="pointer-events-none fixed bottom-20 left-1/2 z-20 flex -translate-x-1/2 items-end justify-center gap-2 opacity-75"
       >
-        {WEAPON_SLOTS.map((slot, i) => (
-          <div
-            key={`${slot.key || "empty"}-${i}`}
-            className={`flex h-16 w-16 flex-col items-center justify-center gap-0.5 rounded-lg border shadow-lg ${
-              slot.id && slot.id === selectedWeapon
-                ? "border-amber-400 bg-amber-500/25 text-amber-200"
-                : slot.id
-                  ? "border-zinc-700 bg-zinc-900/80 text-zinc-200"
-                  : "border-zinc-800/60 bg-zinc-900/40 text-zinc-600"
-            }`}
-          >
-            <span className="text-2xl leading-none">{slot.icon || "—"}</span>
-            {slot.cost != null && (
-              <span className="text-[10px] font-bold leading-none text-amber-300">{slot.cost}</span>
-            )}
-            {/* Ammo-gated, not stamina-gated (see WEAPON_SLOTS' doc comment) — shows the live
-                Postgres-backed count instead of a fixed per-shot cost. */}
-            {slot.id === "shuriken" && (
-              <span className={`text-[10px] font-bold leading-none ${profile.shurikenAmmo > 0 ? "text-amber-300" : "text-rose-400"}`}>
-                {profile.shurikenAmmo}
-              </span>
-            )}
-            {slot.key && (
-              <span className="text-[9px] font-semibold leading-none text-zinc-400">{slot.key}</span>
-            )}
-          </div>
-        ))}
+        {WEAPON_SLOTS.map((slot, i) => {
+          // 0050: weapon slot 3 only exists once a "shuriken" stack is dragged onto the
+          // extraAttack equip slot (see the inventory panel below) — otherwise it renders and
+          // behaves exactly like the 4..10 placeholders (empty, no key, not selectable), not the
+          // always-on ammo-badge slot it used to be.
+          const shurikenEquipped = profile.equippedExtraAttack === SHURIKEN_ITEM_SLUG;
+          const emptyShurikenSlot = slot.id === "shuriken" && !shurikenEquipped;
+          const effectiveId = emptyShurikenSlot ? null : slot.id;
+          return (
+            <div
+              key={`${slot.key || "empty"}-${i}`}
+              className={`flex h-16 w-16 flex-col items-center justify-center gap-0.5 rounded-lg border shadow-lg ${
+                effectiveId && effectiveId === selectedWeapon
+                  ? "border-amber-400 bg-amber-500/25 text-amber-200"
+                  : effectiveId
+                    ? "border-zinc-700 bg-zinc-900/80 text-zinc-200"
+                    : "border-zinc-800/60 bg-zinc-900/40 text-zinc-600"
+              }`}
+            >
+              <span className="text-2xl leading-none">{emptyShurikenSlot ? "—" : slot.icon || "—"}</span>
+              {slot.cost != null && (
+                <span className="text-[10px] font-bold leading-none text-amber-300">{slot.cost}</span>
+              )}
+              {/* Ammo-gated, not stamina-gated (see WEAPON_SLOTS' doc comment) — shows the live
+                  Postgres-backed count instead of a fixed per-shot cost. Only once equipped. */}
+              {shurikenEquipped && (
+                <span className={`text-[10px] font-bold leading-none ${profile.shurikenAmmo > 0 ? "text-amber-300" : "text-rose-400"}`}>
+                  {profile.shurikenAmmo}
+                </span>
+              )}
+              {!emptyShurikenSlot && slot.key && (
+                <span className="text-[9px] font-semibold leading-none text-zinc-400">{slot.key}</span>
+              )}
+            </div>
+          );
+        })}
       </div>
     )}
     {emoteWheelOpen && (
@@ -3903,6 +3986,8 @@ export function RoomStage({
               equippedHelm={profile.equippedHelm}
               equippedArmor={profile.equippedArmor}
               equippedBoots={profile.equippedBoots}
+              equippedExtraAttack={profile.equippedExtraAttack}
+              equippedExtraAttackQty={profile.equippedExtraAttackQty}
               equipmentBag={profile.equipmentBag}
               equipmentBagQty={profile.equipmentBagQty}
               onEquipFromBag={onEquipFromBag}

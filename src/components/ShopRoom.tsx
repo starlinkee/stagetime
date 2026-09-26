@@ -224,7 +224,14 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     setToast(`+${SHURIKEN_AMMO_PACK} shurikens!`);
   }, [gunmanBusy, purchaseShurikenAmmo]);
 
-  const equippedBySlot: Record<EquipSlot, string | null> = { helm: equippedHelm, armor: equippedArmor, boots: equippedBoots };
+  // Only gear slots (EQUIPMENT_ITEMS never uses "extraAttack" — see its doc comment in
+  // realtime-server/shared/constants.ts), so this deliberately excludes it rather than widening to
+  // the full EquipSlot union.
+  const equippedBySlot: Record<Exclude<EquipSlot, "extraAttack">, string | null> = {
+    helm: equippedHelm,
+    armor: equippedArmor,
+    boots: equippedBoots,
+  };
   const ownedSlugs = new Set([equippedHelm, equippedArmor, equippedBoots, ...equipmentBag].filter((s): s is string => s !== null));
 
   const buyGear = useCallback(
@@ -456,7 +463,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
             </p>
             <div className="mb-5 flex flex-col gap-3">
               {EQUIPMENT_ITEMS.map((item) => {
-                const equipped = equippedBySlot[item.slot] === item.slug;
+                // item.slot is always "helm" | "armor" | "boots" here (EQUIPMENT_ITEMS never uses
+                // "extraAttack") even though its declared type is the full EquipSlot union.
+                const equipped = equippedBySlot[item.slot as Exclude<EquipSlot, "extraAttack">] === item.slug;
                 const owned = ownedSlugs.has(item.slug);
                 const bonus = item.maxHpBonus
                   ? `+${item.maxHpBonus} max HP`

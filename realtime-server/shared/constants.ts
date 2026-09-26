@@ -347,8 +347,14 @@ export const DUMMY_GOLD_REWARD = 500;
  * the entry token (see mintEntryToken in entryToken.ts), and server.ts applies those numbers to
  * `Conn.stats` at join — realtime-server never looks up a slug against this table itself, so this
  * file changing shape doesn't require a server.ts change beyond the join-time lookup.
+ *
+ * "extraAttack" (added alongside the shuriken-as-equip-slot change, see
+ * supabase/migrations/0048_extra_attack_slot.sql) is not in EQUIPMENT_ITEMS below — it never holds
+ * a gear slug with a CharacterStats bonus, only the stackable "shuriken" bag item (see
+ * SHURIKEN_ITEM_SLUG in useProfile.ts), so it carries no entry-token bonus and realtime-server
+ * doesn't need to know about it at all.
  */
-export type EquipSlot = "helm" | "armor" | "boots";
+export type EquipSlot = "helm" | "armor" | "boots" | "extraAttack";
 export interface EquipmentItem {
   slug: string;
   slot: EquipSlot;

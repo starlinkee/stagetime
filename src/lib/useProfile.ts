@@ -78,10 +78,11 @@ type CharacterFields = { character: string | null };
 type FlashGrenadeFields = { flashGrenades: number };
 /** STU-41: raw ball-skin column as stored. */
 type BallSkinFields = { ballSkin: string | null };
-/** Third weapon (shuriken, weapon slot 3) ammo stock — derived, not stored directly. Shurikens are
- * a stackable "shuriken" slug living in `equipmentBag` (see EquipmentFields below and
- * supabase/migrations/0045_shuriken_bag_item.sql), so `shurikenAmmo` is just the sum of
- * `equipmentBagQty` wherever `equipmentBag` holds that slug — see `shurikenCountFromBag`. */
+/** Third weapon (shuriken, weapon slot 3) ammo stock — derived, not stored directly. Since
+ * supabase/migrations/0050_extra_attack_slot.sql, `shurikenAmmo` only counts the stack sitting in
+ * the `equippedExtraAttack` slot (see EquipmentFields below) — owning "shuriken" stock elsewhere in
+ * `equipmentBag` no longer counts until it's dragged onto that slot — see
+ * `shurikenAmmoFromEquip`. */
 type ShurikenAmmoFields = { shurikenAmmo: number };
 /** STU-77: equipped gear slugs (see EQUIPMENT_ITEMS in realtime-server/shared/constants.ts and
  * supabase/migrations/0043_equipment.sql) — null means that slot is empty. Unlike cosmetic these
@@ -90,6 +91,14 @@ type ShurikenAmmoFields = { shurikenAmmo: number };
  * realtime-server trusts (see mintEntryToken in realtime-server/shared/entryToken.ts) — the client
  * never tells realtime-server its own stats directly.
  *
+ * `equippedExtraAttack`/`equippedExtraAttackQty` (supabase/migrations/0050_extra_attack_slot.sql):
+ * a fourth equip slot, alongside helm/armor/boots, but unlike those it never holds a gear slug
+ * from EQUIPMENT_ITEMS — it only ever holds the stackable "shuriken" bag item (see
+ * SHURIKEN_ITEM_SLUG below), with its own quantity since a shuriken stack depletes on use while
+ * gear never does. A null slug means the slot is empty and weapon slot 3 (see WEAPON_SLOTS in
+ * RoomStage.tsx) is unavailable, regardless of any "shuriken" stack still unequipped in the bag —
+ * it has to be dragged onto this slot first, same drag-to-equip gesture as the gear slots.
+ *
  * `equipmentBag` (supabase/migrations/0044_equipment_bag.sql, size reduced to 8 in
  * supabase/migrations/0049_bag_size_8.sql): 8 fixed slots (the 4x2 grid in the Tab inventory
  * panel, RoomStage.tsx) holding owned-but-not-equipped gear, `null` for an empty slot —
@@ -97,11 +106,13 @@ type ShurikenAmmoFields = { shurikenAmmo: number };
  *
  * `equipmentBagQty` (supabase/migrations/0045_shuriken_bag_item.sql): one quantity per bag slot,
  * meaningless (always 1) for a unique gear slug like iron_helm — the only slug that ever stacks
- * past 1 is "shuriken" (see SHURIKEN_ITEM_SLUG/shurikenCountFromBag below). */
+ * past 1 is "shuriken" (see SHURIKEN_ITEM_SLUG below). */
 type EquipmentFields = {
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
+  equippedExtraAttack: string | null;
+  equippedExtraAttackQty: number;
   equipmentBag: (string | null)[];
   equipmentBagQty: number[];
 };
@@ -111,7 +122,8 @@ type EquipmentFields = {
 export const EQUIPMENT_BAG_SIZE = 8;
 
 /** Bag slug for the stackable shuriken item (see supabase/migrations/0045_shuriken_bag_item.sql) —
- * the only bag item whose `equipmentBagQty` entry can be greater than 1. */
+ * the only bag item whose `equipmentBagQty` entry can be greater than 1, and (since 0050) the only
+ * slug the `extraAttack` equip slot ever holds. */
 export const SHURIKEN_ITEM_SLUG = "shuriken";
 
 /** Pads/truncates a raw `equipment_bag` value to the fixed EQUIPMENT_BAG_SIZE — defensive against
@@ -131,14 +143,11 @@ function normalizeQty(raw: (number | null)[] | null | undefined): number[] {
   return out;
 }
 
-/** Total shuriken count across the bag — normally a single stack, but summed defensively in case
- * more than one slot ever ends up holding the slug. */
-function shurikenCountFromBag(bag: (string | null)[], qty: number[]): number {
-  let total = 0;
-  for (let i = 0; i < bag.length; i++) {
-    if (bag[i] === SHURIKEN_ITEM_SLUG) total += qty[i] ?? 0;
-  }
-  return total;
+/** Usable shuriken ammo (weapon slot 3) — only the stack sitting in the `extraAttack` equip slot
+ * counts (see supabase/migrations/0050_extra_attack_slot.sql), not any additional "shuriken" stack
+ * still unequipped in the bag. */
+function shurikenAmmoFromEquip(equippedExtraAttack: string | null, equippedExtraAttackQty: number): number {
+  return equippedExtraAttack === SHURIKEN_ITEM_SLUG ? Math.max(0, equippedExtraAttackQty) : 0;
 }
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
@@ -187,10 +196,10 @@ export type MyProfile = {
   /** STU-41: equipped ball skin (see supabase/migrations/0038_ball_skin.sql) — same Presence-only,
    * no-gameplay-effect path as cosmetic/character. */
   ballSkin: BallSkin;
-  /** Shuriken ammo (weapon slot 3, see WEAPON_SLOTS in RoomStage.tsx) — derived total of the
-   * "shuriken" stack(s) in equipmentBag (see supabase/migrations/0045_shuriken_bag_item.sql). Same
-   * "ownership/quantity is Postgres, *use* is realtime-server" split as flashGrenades above.
-   * Private, like coins/flashGrenades. */
+  /** Shuriken ammo (weapon slot 3, see WEAPON_SLOTS in RoomStage.tsx) — only counts the stack
+   * equipped into the `extraAttack` slot (see supabase/migrations/0050_extra_attack_slot.sql), not
+   * any unequipped "shuriken" stack still sitting in the bag. Same "ownership/quantity is
+   * Postgres, *use* is realtime-server" split as flashGrenades above. Private, like coins/flashGrenades. */
   shurikenAmmo: number;
   /** STU-77: equipped helm/armor/boots slugs, or null for an empty slot — see EquipmentFields'
    * doc comment above. Private, like coins/flashGrenades: only this player's own client needs to
@@ -198,6 +207,10 @@ export type MyProfile = {
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
+  /** 0050: the extraAttack equip slot's slug (always "shuriken" or null) and stack size — see
+   * EquipmentFields' doc comment above. Private, same as the other equipped_* fields. */
+  equippedExtraAttack: string | null;
+  equippedExtraAttackQty: number;
   /** STU-77/0044: 8-slot bag (0049) of owned-but-unequipped gear (plus the stackable "shuriken"
    * item, see 0045), `null` for an empty slot — see EquipmentFields' doc comment above. Private,
    * same as coins/flashGrenades. */
@@ -239,17 +252,20 @@ export type MyProfile = {
    * supabase/migrations/0038_ball_skin.sql), same shape as `save` (color) above, not an RPC. */
   saveBallSkin: (skin: BallSkin) => Promise<boolean>;
   /**
-   * Consumes one shuriken (atomic check-and-decrement RPC against the bag's "shuriken" stack, see
-   * supabase/migrations/0045_shuriken_bag_item.sql — same shape as useFlashGrenade). Only
+   * Consumes one shuriken (atomic check-and-decrement RPC against the equipped extraAttack stack,
+   * see supabase/migrations/0050_extra_attack_slot.sql — same shape as useFlashGrenade, and fails
+   * with `no_shuriken_ammo` when nothing is equipped there, not just when the stack is at 0). Only
    * decrements the Postgres stock; the caller still has to tell realtime-server to actually
    * spawn/fly the projectile (see the "shuriken" ClientMessage in RoomStage.tsx) — this function
    * alone has no visible effect.
    */
   useShuriken: () => Promise<{ ok: true; remaining: number } | { ok: false; error: string }>;
   /**
-   * Buys a pack of 10 shurikens for 10 copper coins from the gunman, added to the bag's "shuriken"
-   * stack (see supabase/migrations/0045_shuriken_bag_item.sql) — same atomic-RPC pattern as
-   * purchaseCosmetic: balance check, coin deduction and the ammo grant happen in one transaction.
+   * Buys a pack of 10 shurikens for 10 copper coins from the gunman — tops up the equipped
+   * extraAttack stack directly if one is already equipped, otherwise adds to (or starts) a
+   * "shuriken" stack in the bag (see supabase/migrations/0050_extra_attack_slot.sql), same
+   * atomic-RPC pattern as purchaseCosmetic: balance check, coin deduction and the ammo grant
+   * happen in one transaction.
    */
   purchaseShurikenAmmo: () => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
@@ -262,14 +278,20 @@ export type MyProfile = {
   /**
    * STU-77/0044: equips the item sitting at `equipmentBag[bagIndex]` into its slot, swapping
    * whatever was equipped there (if anything) back into that bag slot — the "drag a bag item onto
-   * a gear slot" gesture in RoomStage.tsx's inventory panel. Free.
+   * a gear slot" gesture in RoomStage.tsx's inventory panel. Free. Since 0050, a "shuriken" bag
+   * slug goes into the extraAttack slot (whole stack, not reset to qty 1 like a gear swap) instead
+   * of raising `unknown_item`.
    */
   equipFromBag: (bagIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
    * STU-77/0044: clears one equipment slot and drops the item into a specific empty bag slot — the
    * "drag an equipped item back into the bag" gesture. Free. Fails if that bag slot isn't empty.
+   * Since 0050, also accepts "extraAttack", moving the whole shuriken stack (not just qty 1) back.
    */
-  unequipToBag: (slot: "helm" | "armor" | "boots", bagIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  unequipToBag: (
+    slot: "helm" | "armor" | "boots" | "extraAttack",
+    bagIndex: number,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** STU-77/0044: swaps two bag slots — the "drag within the bag" reorder gesture. Free. */
   moveBagItem: (fromIndex: number, toIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
 };
@@ -309,7 +331,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, equipped_helm, equipped_armor, equipped_boots, equipment_bag, equipment_bag_qty",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, equipped_helm, equipped_armor, equipped_boots, equipped_extra_attack, equipped_extra_attack_qty, equipment_bag, equipment_bag_qty",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -333,10 +355,12 @@ export function useMyProfile(): MyProfile {
           character: data?.character_slug ?? null,
           flashGrenades: data?.flash_grenades ?? 0,
           ballSkin: data?.ball_skin ?? null,
-          shurikenAmmo: shurikenCountFromBag(normalizeBag(data?.equipment_bag), normalizeQty(data?.equipment_bag_qty)),
+          shurikenAmmo: shurikenAmmoFromEquip(data?.equipped_extra_attack ?? null, Number(data?.equipped_extra_attack_qty ?? 0)),
           equippedHelm: data?.equipped_helm ?? null,
           equippedArmor: data?.equipped_armor ?? null,
           equippedBoots: data?.equipped_boots ?? null,
+          equippedExtraAttack: data?.equipped_extra_attack ?? null,
+          equippedExtraAttackQty: Number(data?.equipped_extra_attack_qty ?? 0),
           equipmentBag: normalizeBag(data?.equipment_bag),
           equipmentBagQty: normalizeQty(data?.equipment_bag_qty),
         });
@@ -392,12 +416,16 @@ export function useMyProfile(): MyProfile {
             equipped_helm?: string | null;
             equipped_armor?: string | null;
             equipped_boots?: string | null;
+            equipped_extra_attack?: string | null;
+            equipped_extra_attack_qty?: number | string;
             equipment_bag?: (string | null)[] | null;
             equipment_bag_qty?: (number | null)[] | null;
           };
           if (!p.nickname) return;
           const bag = normalizeBag(p.equipment_bag);
           const bagQty = normalizeQty(p.equipment_bag_qty);
+          const equippedExtraAttack = p.equipped_extra_attack ?? null;
+          const equippedExtraAttackQty = Number(p.equipped_extra_attack_qty ?? 0);
           setLoaded({
             userId,
             nickname: p.nickname,
@@ -414,10 +442,12 @@ export function useMyProfile(): MyProfile {
             character: p.character_slug ?? null,
             flashGrenades: p.flash_grenades ?? 0,
             ballSkin: p.ball_skin ?? null,
-            shurikenAmmo: shurikenCountFromBag(bag, bagQty),
+            shurikenAmmo: shurikenAmmoFromEquip(equippedExtraAttack, equippedExtraAttackQty),
             equippedHelm: p.equipped_helm ?? null,
             equippedArmor: p.equipped_armor ?? null,
             equippedBoots: p.equipped_boots ?? null,
+            equippedExtraAttack,
+            equippedExtraAttackQty,
             equipmentBag: bag,
             equipmentBagQty: bagQty,
           });
@@ -447,6 +477,8 @@ export function useMyProfile(): MyProfile {
   const currentEquippedHelm = loaded?.userId === userId ? loaded.equippedHelm : null;
   const currentEquippedArmor = loaded?.userId === userId ? loaded.equippedArmor : null;
   const currentEquippedBoots = loaded?.userId === userId ? loaded.equippedBoots : null;
+  const currentEquippedExtraAttack = loaded?.userId === userId ? loaded.equippedExtraAttack : null;
+  const currentEquippedExtraAttackQty = loaded?.userId === userId ? loaded.equippedExtraAttackQty : 0;
   const currentEquipmentBag = loaded?.userId === userId ? loaded.equipmentBag : normalizeBag(null);
   const currentEquipmentBagQty = loaded?.userId === userId ? loaded.equipmentBagQty : normalizeQty(null);
 
@@ -501,6 +533,8 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -528,6 +562,8 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -575,6 +611,8 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -602,6 +640,8 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -652,6 +692,8 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -678,6 +720,8 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -728,6 +772,8 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -755,6 +801,8 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -795,6 +843,8 @@ export function useMyProfile(): MyProfile {
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
+          equippedExtraAttack: currentEquippedExtraAttack,
+          equippedExtraAttackQty: currentEquippedExtraAttackQty,
           equipmentBag: currentEquipmentBag,
           equipmentBagQty: currentEquipmentBagQty,
         },
@@ -822,6 +872,8 @@ export function useMyProfile(): MyProfile {
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
+    currentEquippedExtraAttack,
+    currentEquippedExtraAttackQty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -859,6 +911,8 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -886,6 +940,8 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -895,9 +951,8 @@ export function useMyProfile(): MyProfile {
     if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
     if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
     // Same atomic check-and-decrement pattern as useFlashGrenade above, see
-    // supabase/migrations/0045_shuriken_bag_item.sql — no coins involved, just stock. Unlike
-    // useFlashGrenade, the stock lives in the bag (a "shuriken" stack), not a dedicated column, so
-    // this reads back the whole bag rather than a single number.
+    // supabase/migrations/0050_extra_attack_slot.sql — no coins involved, just stock, and now
+    // decrements the equipped extraAttack stack directly instead of scanning the bag.
     const { data, error } = await sb.rpc("consume_shuriken_ammo");
     if (error) {
       console.error("consume_shuriken_ammo", error);
@@ -905,11 +960,11 @@ export function useMyProfile(): MyProfile {
       return { ok: false as const, error: message };
     }
     const row = (Array.isArray(data) ? data[0] : data) as
-      | { equipment_bag?: (string | null)[] | null; equipment_bag_qty?: (number | null)[] | null }
+      | { equipped_extra_attack?: string | null; equipped_extra_attack_qty?: number | string }
       | null;
-    const newBag = normalizeBag(row?.equipment_bag ?? currentEquipmentBag);
-    const newBagQty = normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty);
-    const remaining = shurikenCountFromBag(newBag, newBagQty);
+    const newEquippedExtraAttack = row?.equipped_extra_attack ?? currentEquippedExtraAttack;
+    const newEquippedExtraAttackQty = Number(row?.equipped_extra_attack_qty ?? currentEquippedExtraAttackQty);
+    const remaining = shurikenAmmoFromEquip(newEquippedExtraAttack, newEquippedExtraAttackQty);
     saved.dispatchEvent(
       new CustomEvent("saved", {
         detail: {
@@ -932,8 +987,10 @@ export function useMyProfile(): MyProfile {
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
-          equipmentBag: newBag,
-          equipmentBagQty: newBagQty,
+          equippedExtraAttack: newEquippedExtraAttack,
+          equippedExtraAttackQty: newEquippedExtraAttackQty,
+          equipmentBag: currentEquipmentBag,
+          equipmentBagQty: currentEquipmentBagQty,
         },
       }),
     );
@@ -958,6 +1015,8 @@ export function useMyProfile(): MyProfile {
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
+    currentEquippedExtraAttack,
+    currentEquippedExtraAttackQty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -965,9 +1024,9 @@ export function useMyProfile(): MyProfile {
   const purchaseShurikenAmmo = useCallback(async () => {
     if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
     if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
-    // One RPC: balance check, coin deduction and the ammo grant into the bag's "shuriken" stack in
-    // one transaction (see supabase/migrations/0045_shuriken_bag_item.sql), same atomic pattern as
-    // purchaseCosmetic.
+    // One RPC: balance check, coin deduction and the ammo grant (equipped stack if equipped,
+    // otherwise the bag's "shuriken" stack) in one transaction (see
+    // supabase/migrations/0050_extra_attack_slot.sql), same atomic pattern as purchaseCosmetic.
     const { data, error } = await sb.rpc("buy_shuriken_ammo");
     if (error) {
       console.error("buy_shuriken_ammo", error);
@@ -980,8 +1039,16 @@ export function useMyProfile(): MyProfile {
       return { ok: false as const, error: message };
     }
     const row = (Array.isArray(data) ? data[0] : data) as
-      | { equipment_bag?: (string | null)[] | null; equipment_bag_qty?: (number | null)[] | null; coins?: number | string }
+      | {
+          equipped_extra_attack?: string | null;
+          equipped_extra_attack_qty?: number | string;
+          equipment_bag?: (string | null)[] | null;
+          equipment_bag_qty?: (number | null)[] | null;
+          coins?: number | string;
+        }
       | null;
+    const newEquippedExtraAttack = row?.equipped_extra_attack ?? currentEquippedExtraAttack;
+    const newEquippedExtraAttackQty = Number(row?.equipped_extra_attack_qty ?? currentEquippedExtraAttackQty);
     const newBag = normalizeBag(row?.equipment_bag ?? currentEquipmentBag);
     const newBagQty = normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty);
     const newCoins = Number(row?.coins ?? currentCoins);
@@ -1003,10 +1070,12 @@ export function useMyProfile(): MyProfile {
           character: currentCharacter,
           flashGrenades: currentFlashGrenades,
           ballSkin: currentBallSkin,
-          shurikenAmmo: shurikenCountFromBag(newBag, newBagQty),
+          shurikenAmmo: shurikenAmmoFromEquip(newEquippedExtraAttack, newEquippedExtraAttackQty),
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
+          equippedExtraAttack: newEquippedExtraAttack,
+          equippedExtraAttackQty: newEquippedExtraAttackQty,
           equipmentBag: newBag,
           equipmentBagQty: newBagQty,
         },
@@ -1033,6 +1102,8 @@ export function useMyProfile(): MyProfile {
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
+    currentEquippedExtraAttack,
+    currentEquippedExtraAttackQty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -1043,7 +1114,8 @@ export function useMyProfile(): MyProfile {
       if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
       // Jedno RPC: sprawdza saldo, odejmuje coiny i wkłada przedmiot do pierwszego wolnego slota
       // bagażu w jednej transakcji po stronie bazy (patrz supabase/migrations/0044_equipment_bag.sql)
-      // — darmowe, gdy to już przedmiot posiadany (wyekwipowany albo już w bagażu).
+      // — darmowe, gdy to już przedmiot posiadany (wyekwipowany albo już w bagażu). Never touches
+      // the extraAttack slot (gear only), so those two fields just pass through unchanged.
       const { data, error } = await sb.rpc("purchase_equipment", { p_slug: slug });
       if (error) {
         console.error("purchase_equipment", error);
@@ -1088,10 +1160,12 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
-            shurikenAmmo: shurikenCountFromBag(newBag, newBagQty),
+            shurikenAmmo: currentShurikenAmmo,
             equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
             equippedArmor: row?.equipped_armor ?? currentEquippedArmor,
             equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
             equipmentBag: newBag,
             equipmentBagQty: newBagQty,
           },
@@ -1116,9 +1190,12 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
+      currentShurikenAmmo,
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -1138,10 +1215,14 @@ export function useMyProfile(): MyProfile {
             equipped_helm?: string | null;
             equipped_armor?: string | null;
             equipped_boots?: string | null;
+            equipped_extra_attack?: string | null;
+            equipped_extra_attack_qty?: number | string;
             equipment_bag?: (string | null)[] | null;
             equipment_bag_qty?: (number | null)[] | null;
           }
         | null;
+      const newEquippedExtraAttack = row?.equipped_extra_attack ?? currentEquippedExtraAttack;
+      const newEquippedExtraAttackQty = Number(row?.equipped_extra_attack_qty ?? currentEquippedExtraAttackQty);
       saved.dispatchEvent(
         new CustomEvent("saved", {
           detail: {
@@ -1160,10 +1241,12 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
-            shurikenAmmo: currentShurikenAmmo,
+            shurikenAmmo: shurikenAmmoFromEquip(newEquippedExtraAttack, newEquippedExtraAttackQty),
             equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
             equippedArmor: row?.equipped_armor ?? currentEquippedArmor,
             equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
+            equippedExtraAttack: newEquippedExtraAttack,
+            equippedExtraAttackQty: newEquippedExtraAttackQty,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
             equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
@@ -1188,17 +1271,18 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
-      currentShurikenAmmo,
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
   );
 
   const unequipToBag = useCallback(
-    async (slot: "helm" | "armor" | "boots", bagIndex: number) => {
+    async (slot: "helm" | "armor" | "boots" | "extraAttack", bagIndex: number) => {
       if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
       if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
       const { data, error } = await sb.rpc("unequip_to_bag", { p_slot: slot, p_bag_index: bagIndex + 1 });
@@ -1212,10 +1296,16 @@ export function useMyProfile(): MyProfile {
             equipped_helm?: string | null;
             equipped_armor?: string | null;
             equipped_boots?: string | null;
+            equipped_extra_attack?: string | null;
+            equipped_extra_attack_qty?: number | string;
             equipment_bag?: (string | null)[] | null;
             equipment_bag_qty?: (number | null)[] | null;
           }
         | null;
+      const newEquippedExtraAttack = row?.equipped_extra_attack ?? (slot === "extraAttack" ? null : currentEquippedExtraAttack);
+      const newEquippedExtraAttackQty = Number(
+        row?.equipped_extra_attack_qty ?? (slot === "extraAttack" ? 0 : currentEquippedExtraAttackQty),
+      );
       saved.dispatchEvent(
         new CustomEvent("saved", {
           detail: {
@@ -1234,10 +1324,12 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
-            shurikenAmmo: currentShurikenAmmo,
+            shurikenAmmo: shurikenAmmoFromEquip(newEquippedExtraAttack, newEquippedExtraAttackQty),
             equippedHelm: row?.equipped_helm ?? (slot === "helm" ? null : currentEquippedHelm),
             equippedArmor: row?.equipped_armor ?? (slot === "armor" ? null : currentEquippedArmor),
             equippedBoots: row?.equipped_boots ?? (slot === "boots" ? null : currentEquippedBoots),
+            equippedExtraAttack: newEquippedExtraAttack,
+            equippedExtraAttackQty: newEquippedExtraAttackQty,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
             equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
@@ -1262,10 +1354,11 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
-      currentShurikenAmmo,
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -1305,6 +1398,8 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
             equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
@@ -1333,6 +1428,8 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -1365,6 +1462,8 @@ export function useMyProfile(): MyProfile {
     equippedHelm: mine?.equippedHelm ?? null,
     equippedArmor: mine?.equippedArmor ?? null,
     equippedBoots: mine?.equippedBoots ?? null,
+    equippedExtraAttack: mine?.equippedExtraAttack ?? null,
+    equippedExtraAttackQty: mine?.equippedExtraAttackQty ?? 0,
     equipmentBag: mine?.equipmentBag ?? normalizeBag(null),
     equipmentBagQty: mine?.equipmentBagQty ?? normalizeQty(null),
     error,
