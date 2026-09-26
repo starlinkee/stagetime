@@ -189,6 +189,14 @@ export const STAMINA_REGEN_PER_SEC = STAMINA_MAX / 1.8;
 /** Roll (dash) stamina cost — drawn from the same pool as `fire`, refused outright (not queued)
  * when the pool can't cover it, same gate shape as STAMINA_COST_PER_SHOT above. */
 export const ROLL_STAMINA_COST = 40;
+/**
+ * STU-66: stamina holds flat (no regen) for this long after a `fire`/`slash` spend, before
+ * resuming the continuous regen described above — makes firing a whole salvo back-to-back
+ * (which was already free, since each shot only checked stamina *at that instant*) slightly more
+ * rewarding than trickling shots out one at a time, without changing STAMINA_MAX/regen rate. Not
+ * applied to `roll` — this is a fire-rate tweak for attacks, not dashing.
+ */
+export const STAMINA_REGEN_DELAY_MS = 100;
 
 /**
  * HP/damage/respawn — combat only deals damage outside the lobby (a decision made when this was

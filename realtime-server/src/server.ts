@@ -64,6 +64,7 @@ import {
   SLASH_R,
   SLASH_REACH,
   SLASH_STAMINA_COST,
+  STAMINA_REGEN_DELAY_MS,
   TICK_MS,
   worldH,
   worldW,
@@ -205,6 +206,9 @@ type Conn = {
   // event instead of a regen loop over every connection every tick.
   staminaAt: number;
   staminaUpdatedAt: number;
+  // STU-66: regen is held flat until this timestamp after a fire/slash spend — see
+  // STAMINA_REGEN_DELAY_MS's doc comment in shared/constants.ts and currentStamina() below.
+  staminaRegenDelayUntil: number;
   // Normally always stats.moveSpeed — only ever different when DEV_OVERRIDES_ENABLED and the
   // client sent an `input.speedOverride` (admin panel), see the "input" handler below.
   speed: number;
@@ -368,7 +372,11 @@ function playerStateEqual(a: PlayerState, b: PlayerState | undefined): boolean {
 }
 
 function currentStamina(conn: Conn, now: number): number {
-  const elapsedSec = Math.max(0, now - conn.staminaUpdatedAt) / 1000;
+  // STU-66: regen only starts counting from staminaRegenDelayUntil, not staminaUpdatedAt, so the
+  // post-attack flat window holds even though staminaAt/staminaUpdatedAt were already written at
+  // spend time (see STAMINA_REGEN_DELAY_MS's doc comment in shared/constants.ts).
+  const regenFrom = Math.max(conn.staminaUpdatedAt, conn.staminaRegenDelayUntil);
+  const elapsedSec = Math.max(0, now - regenFrom) / 1000;
   return Math.min(conn.stats.staminaMax, conn.staminaAt + elapsedSec * conn.stats.staminaRegenPerSec);
 }
 
@@ -899,6 +907,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
         gd: Dir;
         staminaAt: number;
         staminaUpdatedAt: number;
+        staminaRegenDelayUntil: number;
       }
     | null = null;
   const targetSet = rooms.get(roomSlug);
@@ -923,6 +932,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
           gd: other.gd,
           staminaAt: other.staminaAt,
           staminaUpdatedAt: other.staminaUpdatedAt,
+          staminaRegenDelayUntil: other.staminaRegenDelayUntil,
         };
         targetSet.delete(other);
         break;
@@ -996,6 +1006,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   // just starts full, same as a brand-new connection.
   conn.staminaAt = resumeFrom?.staminaAt ?? conn.stats.staminaMax;
   conn.staminaUpdatedAt = resumeFrom?.staminaUpdatedAt ?? Date.now();
+  conn.staminaRegenDelayUntil = resumeFrom?.staminaRegenDelayUntil ?? 0;
   const resolved = resumeFrom ?? loaded;
   // Same "only a reconnect-ghost resume carries this forward" rule as hp/respawnAt/immuneUntil
   // above — the fallback (conn.x/y/d) is filled in by the branch below, run right after.
@@ -1088,6 +1099,7 @@ wss.on("connection", (ws, req) => {
     flashGrenadeCooldownUntil: 0,
     staminaAt: stats.staminaMax,
     staminaUpdatedAt: Date.now(),
+    staminaRegenDelayUntil: 0,
     speed: stats.moveSpeed,
     stats,
     hp: stats.maxHp,
@@ -1203,6 +1215,7 @@ wss.on("connection", (ws, req) => {
       if (!desperate) {
         conn.staminaAt = stamina - conn.stats.staminaCostPerShot;
         conn.staminaUpdatedAt = now;
+        conn.staminaRegenDelayUntil = now + STAMINA_REGEN_DELAY_MS;
       }
       return;
     }
@@ -1215,6 +1228,7 @@ wss.on("connection", (ws, req) => {
       conn.slashCooldownUntil = now + conn.weapons.slashCooldownMs;
       conn.staminaAt = stamina - SLASH_STAMINA_COST;
       conn.staminaUpdatedAt = now;
+      conn.staminaRegenDelayUntil = now + STAMINA_REGEN_DELAY_MS;
       spawnSlash(conn);
       return;
     }
