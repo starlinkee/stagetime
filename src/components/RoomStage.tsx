@@ -2158,19 +2158,22 @@ export function RoomStage({
               dmgTextRef.current.push({ x: h.x, y: h.y, text: `-${h.dmg}`, color: "#ef4444", born: t });
             } else if (h.ownerId === (keyRef.current || "me")) {
               dmgTextRef.current.push({ x: h.x, y: h.y, text: `${h.dmg}`, color: "#ffffff", born: t });
-              // The killing blow: big "KILL" callout plus the reward that just landed (see
-              // KILL_XP_REWARD/KILL_GOLD_REWARD's doc comment) — shown only here, on the killer's
-              // own screen, stacked under the regular "N" damage number above. STU-65: the lobby
-              // dummy's `dummy:`-prefixed targetId pays out DUMMY_XP_REWARD/DUMMY_GOLD_REWARD
-              // instead, matching what /api/internal/combat actually credits for that kill.
-              if (h.killed) {
-                const isDummyKill = h.targetId.startsWith("dummy:");
-                killTextRef.current.push(
-                  { x: h.x, y: h.y, text: "KILL", color: "#ef4444", born: t, big: true, offset: 0 },
-                  { x: h.x, y: h.y, text: `+${isDummyKill ? DUMMY_XP_REWARD : KILL_XP_REWARD} xp`, color: "#facc15", born: t, offset: 24 },
-                  { x: h.x, y: h.y, text: `+${isDummyKill ? DUMMY_GOLD_REWARD : KILL_GOLD_REWARD} gold`, color: "#facc15", born: t, offset: 46 },
-                );
-              }
+            }
+            // STU-81: the killing blow's "KILL" callout + reward (see KILL_XP_REWARD/
+            // KILL_GOLD_REWARD's doc comment) is pushed on every client, not just the killer's —
+            // `hits` is already the same array broadcast to the whole room (see the "state"
+            // handler this loop lives in), so everyone gets to see who just got paid, matching
+            // the same "visible to all" treatment `triggerReward`'s Broadcast already gives the
+            // pomodoro/heartbeat reward popup. STU-65: the lobby dummy's `dummy:`-prefixed
+            // targetId pays out DUMMY_XP_REWARD/DUMMY_GOLD_REWARD instead, matching what
+            // /api/internal/combat actually credits for that kill.
+            if (h.killed) {
+              const isDummyKill = h.targetId.startsWith("dummy:");
+              killTextRef.current.push(
+                { x: h.x, y: h.y, text: "KILL", color: "#ef4444", born: t, big: true, offset: 0 },
+                { x: h.x, y: h.y, text: `+${isDummyKill ? DUMMY_XP_REWARD : KILL_XP_REWARD} xp`, color: "#facc15", born: t, offset: 24 },
+                { x: h.x, y: h.y, text: `+${isDummyKill ? DUMMY_GOLD_REWARD : KILL_GOLD_REWARD} gold`, color: "#facc15", born: t, offset: 46 },
+              );
             }
           }
         }
