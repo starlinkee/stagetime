@@ -1,10 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useHeaderPanel } from "@/lib/headerPanel";
 import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 
 /** Header button next to "How to play": short description of the game plus public stats. */
 export function AboutGameButton() {
-  const [open, setOpen] = useState(false);
+  const [open, toggle, close] = useHeaderPanel("aboutGame");
   const [accounts, setAccounts] = useState<number | null>(null);
 
   useEffect(() => {
@@ -29,7 +30,7 @@ export function AboutGameButton() {
         <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
           <div className="mb-2 flex items-center justify-between">
             <span className="font-semibold">About the game</span>
-            <button type="button" onClick={() => setOpen(false)} className="text-xs text-zinc-400 hover:text-zinc-200">
+            <button type="button" onClick={close} className="text-xs text-zinc-400 hover:text-zinc-200">
               Close
             </button>
           </div>
@@ -49,7 +50,7 @@ export function AboutGameButton() {
           </div>
         </div>
       )}
-      <button type="button" onClick={() => setOpen((o) => !o)} className={HEADER_BUTTON_CLASS}>
+      <button type="button" onClick={toggle} className={HEADER_BUTTON_CLASS}>
         About
       </button>
     </div>

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { MAX_IDEA_AUTHOR, MAX_IDEA_BODY, useIdeas } from "@/lib/useIdeas";
 import { useMyProfile } from "@/lib/useProfile";
 import { useSession } from "@/lib/useSession";
+import { useHeaderPanel } from "@/lib/headerPanel";
 import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 
 /** Only this account sees the link to the ideas list (see supabase/migrations/0008). */
@@ -34,7 +35,7 @@ export function IdeaBox() {
   const profile = useMyProfile();
   const nick = session ? profile.nickname : null;
 
-  const [open, setOpen] = useState(false);
+  const [open, toggle, closePanel] = useHeaderPanel("idea");
   const [body, setBody] = useState("");
   const [author, setAuthor] = useState("");
   const [sending, setSending] = useState(false);
@@ -45,7 +46,7 @@ export function IdeaBox() {
   const signature = nick ?? author;
 
   const close = () => {
-    setOpen(false);
+    closePanel();
     setSent(false);
     setError(null);
   };
@@ -130,7 +131,7 @@ export function IdeaBox() {
             )}
           </div>
         )}
-        <button type="button" onClick={() => setOpen((o) => !o)} className={HEADER_BUTTON_CLASS}>
+        <button type="button" onClick={toggle} className={HEADER_BUTTON_CLASS}>
           Idea
         </button>
     </div>

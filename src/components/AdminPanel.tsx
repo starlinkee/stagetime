@@ -1,5 +1,4 @@
 "use client";
-import { useState } from "react";
 import {
   ADMIN_SETTINGS_SCHEMA,
   DEFAULT_ADMIN_SETTINGS,
@@ -8,6 +7,7 @@ import {
   setAdminSetting,
   useAdminSettings,
 } from "@/lib/adminSettings";
+import { useHeaderPanel } from "@/lib/headerPanel";
 import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 
 /**
@@ -16,7 +16,7 @@ import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
  * od razu w całej apce na tej wersji, trzymane w localStorage.
  */
 export function AdminPanel() {
-  const [open, setOpen] = useState(false);
+  const [open, toggle] = useHeaderPanel("admin");
   const settings = useAdminSettings();
 
   if (!isAdminUiEnabled()) return null;
@@ -62,7 +62,7 @@ export function AdminPanel() {
       )}
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className={HEADER_BUTTON_CLASS}
       >
         Admin
