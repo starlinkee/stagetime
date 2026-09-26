@@ -22,7 +22,12 @@ create policy "room_fund_donors_select_own" on public.room_fund_donors
 -- Same signature as 0053's donate_to_fountain plus a third return column (my_total): the RPC now
 -- also upserts the donor's own running total in the same transaction as the coin deduction and the
 -- room_funds credit, so "coins gone but donor total not credited" can't happen either.
-create or replace function public.donate_to_fountain(p_amount numeric, p_room text default 'fountain-of-wealth')
+-- `returns table (...)` defines the row type via OUT parameters, and Postgres refuses to change
+-- that with a plain `create or replace` (42P13) — the signature (args) is unchanged from 0053, only
+-- the OUT columns grew, so the function must be dropped first.
+drop function if exists public.donate_to_fountain(numeric, text);
+
+create function public.donate_to_fountain(p_amount numeric, p_room text default 'fountain-of-wealth')
 returns table (coins double precision, fund_total double precision, my_total double precision)
 language plpgsql
 security definer
