@@ -338,6 +338,10 @@ export type RoomZone = {
   requiresAuth?: boolean;
   /** Pokój nie daje XP ani coinów za obecność (np. Shop) — pod numerem nie pokazujemy nagrody. */
   noReward?: boolean;
+  /** Wolny tekst pod nazwą, zawsze widoczny niezależnie od `kind`/nagrody (np. Fountain of
+   * Wealth: aktualna suma funduszu tego pokoju) — inny mechanizm niż `phase`-driven reward text
+   * powyżej, który liczy się tylko dla "nav". */
+  caption?: string;
 };
 /** Ile ms trzeba przytrzymać E stojąc w kwadracie, żeby go użyć — patrz roomEnterSec w src/lib/adminSettings.ts. */
 const roomEnterMs = () => getAdminSettings().roomEnterSec * 1000;
@@ -2410,6 +2414,11 @@ export function RoomStage({
             z.x + z.w / 2,
             z.y + z.h / 2 + 30,
           );
+        }
+        if (z.caption) {
+          ctx.fillStyle = "#fbbf24";
+          ctx.font = "700 14px sans-serif";
+          ctx.fillText(z.caption, z.x + z.w / 2, z.y + z.h / 2 + 14);
         }
         if (inZone(x, y, z) && (z.kind ?? "nav") === "nav" && (isExitHere || !doorClosed)) {
           if (isExitHere) {

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState, Suspense } from "react";
+import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
 import { ROOMS } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
@@ -164,10 +164,10 @@ export default function Home() {
     return () => clearTimeout(id);
   }, [toast]);
 
-  // Fund total is public (see room_funds' select policy) — fetched fresh each time the dialog
-  // opens so it stays accurate even after other players donate.
+  // Fund total is public (see room_funds' select policy) — fetched once on mount so the "already
+  // donated" caption under the zone (see fountainZoneWithCaption below) shows without opening the
+  // dialog, and refetched whenever the dialog opens so it stays accurate if others donated meanwhile.
   useEffect(() => {
-    if (!fountainOpen) return;
     const sb = getSupabase();
     if (!sb) return;
     let cancelled = false;
@@ -183,6 +183,16 @@ export default function Home() {
       cancelled = true;
     };
   }, [fountainOpen]);
+
+  const zones = useMemo(
+    () =>
+      LOBBY_ZONES.map((z) =>
+        z.slug === FOUNTAIN_ZONE_SLUG && fundTotal !== null
+          ? { ...z, caption: `Donated: ${fundTotal.toFixed(1)} coins` }
+          : z,
+      ),
+    [fundTotal],
+  );
 
   const onZoneAction = useCallback((slug: string) => {
     if (slug === FOUNTAIN_ZONE_SLUG) {
@@ -219,7 +229,7 @@ export default function Home() {
   return (
     <>
     <Suspense fallback={null}>
-      <RoomStage roomSlug="lobby" zones={LOBBY_ZONES} occupancy={occupancy} onZoneAction={onZoneAction} />
+      <RoomStage roomSlug="lobby" zones={zones} occupancy={occupancy} onZoneAction={onZoneAction} />
     </Suspense>
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center gap-2 p-8 pt-16 text-center">
       <div className="flex items-center justify-center gap-3">
