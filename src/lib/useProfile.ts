@@ -78,7 +78,10 @@ type CharacterFields = { character: string | null };
 type FlashGrenadeFields = { flashGrenades: number };
 /** STU-41: raw ball-skin column as stored. */
 type BallSkinFields = { ballSkin: string | null };
-/** Third weapon (shuriken, weapon slot 3) ammo stock — see supabase/migrations/0040_shuriken_ammo.sql. */
+/** Third weapon (shuriken, weapon slot 3) ammo stock — derived, not stored directly. Shurikens are
+ * a stackable "shuriken" slug living in `equipmentBag` (see EquipmentFields below and
+ * supabase/migrations/0045_shuriken_bag_item.sql), so `shurikenAmmo` is just the sum of
+ * `equipmentBagQty` wherever `equipmentBag` holds that slug — see `shurikenCountFromBag`. */
 type ShurikenAmmoFields = { shurikenAmmo: number };
 /** STU-77: equipped gear slugs (see EQUIPMENT_ITEMS in realtime-server/shared/constants.ts and
  * supabase/migrations/0043_equipment.sql) — null means that slot is empty. Unlike cosmetic these
@@ -89,17 +92,26 @@ type ShurikenAmmoFields = { shurikenAmmo: number };
  *
  * `equipmentBag` (supabase/migrations/0044_equipment_bag.sql): 20 fixed slots (the 4x5 grid in the
  * Tab inventory panel, RoomStage.tsx) holding owned-but-not-equipped gear, `null` for an empty
- * slot — realtime-server never reads this, only the equipped_* columns carry a stat bonus. */
+ * slot — realtime-server never reads this, only the equipped_* columns carry a stat bonus.
+ *
+ * `equipmentBagQty` (supabase/migrations/0045_shuriken_bag_item.sql): one quantity per bag slot,
+ * meaningless (always 1) for a unique gear slug like iron_helm — the only slug that ever stacks
+ * past 1 is "shuriken" (see SHURIKEN_ITEM_SLUG/shurikenCountFromBag below). */
 type EquipmentFields = {
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
   equipmentBag: (string | null)[];
+  equipmentBagQty: number[];
 };
 
 /** Fixed bag size — matches the `text[20]` default in 0044_equipment_bag.sql and the 4x5 grid in
  * RoomStage.tsx's inventory panel. */
 export const EQUIPMENT_BAG_SIZE = 20;
+
+/** Bag slug for the stackable shuriken item (see supabase/migrations/0045_shuriken_bag_item.sql) —
+ * the only bag item whose `equipmentBagQty` entry can be greater than 1. */
+export const SHURIKEN_ITEM_SLUG = "shuriken";
 
 /** Pads/truncates a raw `equipment_bag` value to the fixed EQUIPMENT_BAG_SIZE — defensive against
  * a missing column (pre-migration) or a row whose array length drifted. */
@@ -107,6 +119,25 @@ function normalizeBag(raw: (string | null)[] | null | undefined): (string | null
   const bag = raw ? raw.slice(0, EQUIPMENT_BAG_SIZE) : [];
   while (bag.length < EQUIPMENT_BAG_SIZE) bag.push(null);
   return bag;
+}
+
+/** Same padding/truncation as normalizeBag, for the parallel quantity array — missing/short
+ * entries default to 1 (the non-stacking case), not 0, so a gear slug never reads as "qty 0". */
+function normalizeQty(raw: (number | null)[] | null | undefined): number[] {
+  const qty = raw ? raw.slice(0, EQUIPMENT_BAG_SIZE) : [];
+  const out = qty.map((q) => Number(q ?? 1));
+  while (out.length < EQUIPMENT_BAG_SIZE) out.push(1);
+  return out;
+}
+
+/** Total shuriken count across the bag — normally a single stack, but summed defensively in case
+ * more than one slot ever ends up holding the slug. */
+function shurikenCountFromBag(bag: (string | null)[], qty: number[]): number {
+  let total = 0;
+  for (let i = 0; i < bag.length; i++) {
+    if (bag[i] === SHURIKEN_ITEM_SLUG) total += qty[i] ?? 0;
+  }
+  return total;
 }
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
@@ -155,9 +186,10 @@ export type MyProfile = {
   /** STU-41: equipped ball skin (see supabase/migrations/0038_ball_skin.sql) — same Presence-only,
    * no-gameplay-effect path as cosmetic/character. */
   ballSkin: BallSkin;
-  /** Shuriken ammo (weapon slot 3, see WEAPON_SLOTS in RoomStage.tsx) — see
-   * supabase/migrations/0040_shuriken_ammo.sql. Same "ownership/quantity is Postgres, *use* is
-   * realtime-server" split as flashGrenades above. Private, like coins/flashGrenades. */
+  /** Shuriken ammo (weapon slot 3, see WEAPON_SLOTS in RoomStage.tsx) — derived total of the
+   * "shuriken" stack(s) in equipmentBag (see supabase/migrations/0045_shuriken_bag_item.sql). Same
+   * "ownership/quantity is Postgres, *use* is realtime-server" split as flashGrenades above.
+   * Private, like coins/flashGrenades. */
   shurikenAmmo: number;
   /** STU-77: equipped helm/armor/boots slugs, or null for an empty slot — see EquipmentFields'
    * doc comment above. Private, like coins/flashGrenades: only this player's own client needs to
@@ -165,9 +197,12 @@ export type MyProfile = {
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
-  /** STU-77/0044: 20-slot bag of owned-but-unequipped gear, `null` for an empty slot — see
-   * EquipmentFields' doc comment above. Private, same as coins/flashGrenades. */
+  /** STU-77/0044: 20-slot bag of owned-but-unequipped gear (plus the stackable "shuriken" item,
+   * see 0045), `null` for an empty slot — see EquipmentFields' doc comment above. Private, same as
+   * coins/flashGrenades. */
   equipmentBag: (string | null)[];
+  /** Quantity per equipmentBag slot — see EquipmentFields' doc comment above. */
+  equipmentBagQty: number[];
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -203,17 +238,17 @@ export type MyProfile = {
    * supabase/migrations/0038_ball_skin.sql), same shape as `save` (color) above, not an RPC. */
   saveBallSkin: (skin: BallSkin) => Promise<boolean>;
   /**
-   * Consumes one shuriken (atomic check-and-decrement RPC, see
-   * supabase/migrations/0040_shuriken_ammo.sql — same shape as useFlashGrenade). Only decrements
-   * the Postgres stock; the caller still has to tell realtime-server to actually spawn/fly the
-   * projectile (see the "shuriken" ClientMessage in RoomStage.tsx) — this function alone has no
-   * visible effect.
+   * Consumes one shuriken (atomic check-and-decrement RPC against the bag's "shuriken" stack, see
+   * supabase/migrations/0045_shuriken_bag_item.sql — same shape as useFlashGrenade). Only
+   * decrements the Postgres stock; the caller still has to tell realtime-server to actually
+   * spawn/fly the projectile (see the "shuriken" ClientMessage in RoomStage.tsx) — this function
+   * alone has no visible effect.
    */
   useShuriken: () => Promise<{ ok: true; remaining: number } | { ok: false; error: string }>;
   /**
-   * Buys a pack of 10 shurikens for 10 copper coins from the gunman (see
-   * supabase/migrations/0040_shuriken_ammo.sql) — same atomic-RPC pattern as purchaseCosmetic:
-   * balance check, coin deduction and the ammo grant happen in one transaction.
+   * Buys a pack of 10 shurikens for 10 copper coins from the gunman, added to the bag's "shuriken"
+   * stack (see supabase/migrations/0045_shuriken_bag_item.sql) — same atomic-RPC pattern as
+   * purchaseCosmetic: balance check, coin deduction and the ammo grant happen in one transaction.
    */
   purchaseShurikenAmmo: () => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
@@ -273,7 +308,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, shuriken_ammo, equipped_helm, equipped_armor, equipped_boots, equipment_bag",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, equipped_helm, equipped_armor, equipped_boots, equipment_bag, equipment_bag_qty",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -297,11 +332,12 @@ export function useMyProfile(): MyProfile {
           character: data?.character_slug ?? null,
           flashGrenades: data?.flash_grenades ?? 0,
           ballSkin: data?.ball_skin ?? null,
-          shurikenAmmo: data?.shuriken_ammo ?? 0,
+          shurikenAmmo: shurikenCountFromBag(normalizeBag(data?.equipment_bag), normalizeQty(data?.equipment_bag_qty)),
           equippedHelm: data?.equipped_helm ?? null,
           equippedArmor: data?.equipped_armor ?? null,
           equippedBoots: data?.equipped_boots ?? null,
           equipmentBag: normalizeBag(data?.equipment_bag),
+          equipmentBagQty: normalizeQty(data?.equipment_bag_qty),
         });
       });
     return () => {
@@ -352,13 +388,15 @@ export function useMyProfile(): MyProfile {
             character_slug?: string | null;
             flash_grenades?: number;
             ball_skin?: string | null;
-            shuriken_ammo?: number;
             equipped_helm?: string | null;
             equipped_armor?: string | null;
             equipped_boots?: string | null;
             equipment_bag?: (string | null)[] | null;
+            equipment_bag_qty?: (number | null)[] | null;
           };
           if (!p.nickname) return;
+          const bag = normalizeBag(p.equipment_bag);
+          const bagQty = normalizeQty(p.equipment_bag_qty);
           setLoaded({
             userId,
             nickname: p.nickname,
@@ -375,11 +413,12 @@ export function useMyProfile(): MyProfile {
             character: p.character_slug ?? null,
             flashGrenades: p.flash_grenades ?? 0,
             ballSkin: p.ball_skin ?? null,
-            shurikenAmmo: p.shuriken_ammo ?? 0,
+            shurikenAmmo: shurikenCountFromBag(bag, bagQty),
             equippedHelm: p.equipped_helm ?? null,
             equippedArmor: p.equipped_armor ?? null,
             equippedBoots: p.equipped_boots ?? null,
-            equipmentBag: normalizeBag(p.equipment_bag),
+            equipmentBag: bag,
+            equipmentBagQty: bagQty,
           });
         },
       )
@@ -408,6 +447,7 @@ export function useMyProfile(): MyProfile {
   const currentEquippedArmor = loaded?.userId === userId ? loaded.equippedArmor : null;
   const currentEquippedBoots = loaded?.userId === userId ? loaded.equippedBoots : null;
   const currentEquipmentBag = loaded?.userId === userId ? loaded.equipmentBag : normalizeBag(null);
+  const currentEquipmentBagQty = loaded?.userId === userId ? loaded.equipmentBagQty : normalizeQty(null);
 
   const save = useCallback(
     async (color: string) => {
@@ -461,6 +501,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
             equipmentBag: currentEquipmentBag,
+            equipmentBagQty: currentEquipmentBagQty,
           },
         }),
       );
@@ -487,6 +528,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -533,6 +575,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
             equipmentBag: currentEquipmentBag,
+            equipmentBagQty: currentEquipmentBagQty,
           },
         }),
       );
@@ -559,6 +602,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -608,6 +652,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
             equipmentBag: currentEquipmentBag,
+            equipmentBagQty: currentEquipmentBagQty,
           },
         }),
       );
@@ -633,6 +678,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -682,6 +728,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
             equipmentBag: currentEquipmentBag,
+            equipmentBagQty: currentEquipmentBagQty,
           },
         }),
       );
@@ -708,6 +755,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -747,6 +795,7 @@ export function useMyProfile(): MyProfile {
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
           equipmentBag: currentEquipmentBag,
+          equipmentBagQty: currentEquipmentBagQty,
         },
       }),
     );
@@ -773,6 +822,7 @@ export function useMyProfile(): MyProfile {
     currentEquippedArmor,
     currentEquippedBoots,
     currentEquipmentBag,
+    currentEquipmentBagQty,
   ]);
 
   const saveBallSkin = useCallback(
@@ -809,6 +859,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
             equipmentBag: currentEquipmentBag,
+            equipmentBagQty: currentEquipmentBagQty,
           },
         }),
       );
@@ -835,6 +886,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -842,15 +894,21 @@ export function useMyProfile(): MyProfile {
     if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
     if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
     // Same atomic check-and-decrement pattern as useFlashGrenade above, see
-    // supabase/migrations/0040_shuriken_ammo.sql — no coins involved, just stock.
+    // supabase/migrations/0045_shuriken_bag_item.sql — no coins involved, just stock. Unlike
+    // useFlashGrenade, the stock lives in the bag (a "shuriken" stack), not a dedicated column, so
+    // this reads back the whole bag rather than a single number.
     const { data, error } = await sb.rpc("consume_shuriken_ammo");
     if (error) {
       console.error("consume_shuriken_ammo", error);
       const message = error.message === "no_shuriken_ammo" ? "No shurikens left." : `Failed: ${saveHint(error)}`;
       return { ok: false as const, error: message };
     }
-    const row = (Array.isArray(data) ? data[0] : data) as { shuriken_ammo?: number } | null;
-    const remaining = Number(row?.shuriken_ammo ?? Math.max(0, currentShurikenAmmo - 1));
+    const row = (Array.isArray(data) ? data[0] : data) as
+      | { equipment_bag?: (string | null)[] | null; equipment_bag_qty?: (number | null)[] | null }
+      | null;
+    const newBag = normalizeBag(row?.equipment_bag ?? currentEquipmentBag);
+    const newBagQty = normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty);
+    const remaining = shurikenCountFromBag(newBag, newBagQty);
     saved.dispatchEvent(
       new CustomEvent("saved", {
         detail: {
@@ -873,7 +931,8 @@ export function useMyProfile(): MyProfile {
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
-          equipmentBag: currentEquipmentBag,
+          equipmentBag: newBag,
+          equipmentBagQty: newBagQty,
         },
       }),
     );
@@ -895,26 +954,35 @@ export function useMyProfile(): MyProfile {
     currentCharacter,
     currentFlashGrenades,
     currentBallSkin,
-    currentShurikenAmmo,
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
     currentEquipmentBag,
+    currentEquipmentBagQty,
   ]);
 
   const purchaseShurikenAmmo = useCallback(async () => {
     if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
     if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
-    // One RPC: balance check, coin deduction and the ammo grant in one transaction (see
-    // supabase/migrations/0040_shuriken_ammo.sql), same atomic pattern as purchaseCosmetic.
+    // One RPC: balance check, coin deduction and the ammo grant into the bag's "shuriken" stack in
+    // one transaction (see supabase/migrations/0045_shuriken_bag_item.sql), same atomic pattern as
+    // purchaseCosmetic.
     const { data, error } = await sb.rpc("buy_shuriken_ammo");
     if (error) {
       console.error("buy_shuriken_ammo", error);
-      const message = error.message === "insufficient_coins" ? "Not enough copper coins." : `Purchase failed: ${saveHint(error)}`;
+      const message =
+        error.message === "insufficient_coins"
+          ? "Not enough copper coins."
+          : error.message === "bag_full"
+            ? "Backpack is full."
+            : `Purchase failed: ${saveHint(error)}`;
       return { ok: false as const, error: message };
     }
-    const row = (Array.isArray(data) ? data[0] : data) as { shuriken_ammo?: number; coins?: number | string } | null;
-    const newAmmo = Number(row?.shuriken_ammo ?? currentShurikenAmmo + 10);
+    const row = (Array.isArray(data) ? data[0] : data) as
+      | { equipment_bag?: (string | null)[] | null; equipment_bag_qty?: (number | null)[] | null; coins?: number | string }
+      | null;
+    const newBag = normalizeBag(row?.equipment_bag ?? currentEquipmentBag);
+    const newBagQty = normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty);
     const newCoins = Number(row?.coins ?? currentCoins);
     saved.dispatchEvent(
       new CustomEvent("saved", {
@@ -934,11 +1002,12 @@ export function useMyProfile(): MyProfile {
           character: currentCharacter,
           flashGrenades: currentFlashGrenades,
           ballSkin: currentBallSkin,
-          shurikenAmmo: newAmmo,
+          shurikenAmmo: shurikenCountFromBag(newBag, newBagQty),
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
-          equipmentBag: currentEquipmentBag,
+          equipmentBag: newBag,
+          equipmentBagQty: newBagQty,
         },
       }),
     );
@@ -960,11 +1029,11 @@ export function useMyProfile(): MyProfile {
     currentCharacter,
     currentFlashGrenades,
     currentBallSkin,
-    currentShurikenAmmo,
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
     currentEquipmentBag,
+    currentEquipmentBagQty,
   ]);
 
   const purchaseEquipment = useCallback(
@@ -993,10 +1062,13 @@ export function useMyProfile(): MyProfile {
             equipped_armor?: string | null;
             equipped_boots?: string | null;
             equipment_bag?: (string | null)[] | null;
+            equipment_bag_qty?: (number | null)[] | null;
             coins?: number | string;
           }
         | null;
       const newCoins = Number(row?.coins ?? currentCoins);
+      const newBag = normalizeBag(row?.equipment_bag ?? currentEquipmentBag);
+      const newBagQty = normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty);
       saved.dispatchEvent(
         new CustomEvent("saved", {
           detail: {
@@ -1015,11 +1087,12 @@ export function useMyProfile(): MyProfile {
             character: currentCharacter,
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
-            shurikenAmmo: currentShurikenAmmo,
+            shurikenAmmo: shurikenCountFromBag(newBag, newBagQty),
             equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
             equippedArmor: row?.equipped_armor ?? currentEquippedArmor,
             equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
-            equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
+            equipmentBag: newBag,
+            equipmentBagQty: newBagQty,
           },
         }),
       );
@@ -1042,11 +1115,11 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
-      currentShurikenAmmo,
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -1065,6 +1138,7 @@ export function useMyProfile(): MyProfile {
             equipped_armor?: string | null;
             equipped_boots?: string | null;
             equipment_bag?: (string | null)[] | null;
+            equipment_bag_qty?: (number | null)[] | null;
           }
         | null;
       saved.dispatchEvent(
@@ -1090,6 +1164,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: row?.equipped_armor ?? currentEquippedArmor,
             equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
+            equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
         }),
       );
@@ -1117,6 +1192,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -1136,6 +1212,7 @@ export function useMyProfile(): MyProfile {
             equipped_armor?: string | null;
             equipped_boots?: string | null;
             equipment_bag?: (string | null)[] | null;
+            equipment_bag_qty?: (number | null)[] | null;
           }
         | null;
       saved.dispatchEvent(
@@ -1161,6 +1238,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: row?.equipped_armor ?? (slot === "armor" ? null : currentEquippedArmor),
             equippedBoots: row?.equipped_boots ?? (slot === "boots" ? null : currentEquippedBoots),
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
+            equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
         }),
       );
@@ -1188,6 +1266,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -1200,7 +1279,9 @@ export function useMyProfile(): MyProfile {
         console.error("move_bag_item", error);
         return { ok: false as const, error: `Failed: ${saveHint(error)}` };
       }
-      const row = (Array.isArray(data) ? data[0] : data) as { equipment_bag?: (string | null)[] | null } | null;
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | { equipment_bag?: (string | null)[] | null; equipment_bag_qty?: (number | null)[] | null }
+        | null;
       saved.dispatchEvent(
         new CustomEvent("saved", {
           detail: {
@@ -1224,6 +1305,7 @@ export function useMyProfile(): MyProfile {
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
+            equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
         }),
       );
@@ -1251,6 +1333,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedArmor,
       currentEquippedBoots,
       currentEquipmentBag,
+      currentEquipmentBagQty,
     ],
   );
 
@@ -1282,6 +1365,7 @@ export function useMyProfile(): MyProfile {
     equippedArmor: mine?.equippedArmor ?? null,
     equippedBoots: mine?.equippedBoots ?? null,
     equipmentBag: mine?.equipmentBag ?? normalizeBag(null),
+    equipmentBagQty: mine?.equipmentBagQty ?? normalizeQty(null),
     error,
     save,
     purchaseColor,

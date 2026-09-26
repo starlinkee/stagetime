@@ -18,7 +18,16 @@ import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
 import { MAX_DM_BODY, useConversations, useThread } from "@/lib/useDirectMessages";
 import { useFriends } from "@/lib/useFriends";
-import { BALL_SKINS, safeBallSkin, safeCharacter, safeColor, searchProfilesByNickname, useMyProfile, useProfiles } from "@/lib/useProfile";
+import {
+  BALL_SKINS,
+  SHURIKEN_ITEM_SLUG,
+  safeBallSkin,
+  safeCharacter,
+  safeColor,
+  searchProfilesByNickname,
+  useMyProfile,
+  useProfiles,
+} from "@/lib/useProfile";
 import type { BallSkin } from "@/lib/useProfile";
 import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
@@ -750,6 +759,14 @@ function equipBonusLabel(item: (typeof EQUIPMENT_ITEMS)[number]): string {
   return "";
 }
 
+/** Display name for a backpack slot's slug — EQUIPMENT_ITEMS covers gear, plus the one stackable
+ * non-gear item (shurikens, see SHURIKEN_ITEM_SLUG in useProfile.ts and
+ * supabase/migrations/0045_shuriken_bag_item.sql). */
+function bagItemName(slug: string): string {
+  if (slug === SHURIKEN_ITEM_SLUG) return "Shurikens";
+  return EQUIPMENT_ITEMS.find((i) => i.slug === slug)?.name ?? slug;
+}
+
 /** Drag payload while moving a gear item between the equip slots and the backpack grid — dragged
  * either out of a backpack slot (`kind: "bag"`) or off an equip slot (`kind: "equip"`), see the
  * inventory panel's drop handlers below. */
@@ -835,6 +852,7 @@ function EquipSlotBox({
 function BagSlotBox({
   index,
   slug,
+  qty,
   busy,
   dragging,
   onDragStart,
@@ -843,13 +861,16 @@ function BagSlotBox({
 }: {
   index: number;
   slug: string | null;
+  /** Stack size — always 1 for gear, can be >1 for the stackable "shuriken" slug (see
+   * SHURIKEN_ITEM_SLUG in useProfile.ts). */
+  qty: number;
   busy: boolean;
   dragging: EquipDragPayload | null;
   onDragStart: (payload: EquipDragPayload) => void;
   onDragEnd: () => void;
   onDrop: () => void;
 }) {
-  const item = slug ? EQUIPMENT_ITEMS.find((i) => i.slug === slug) ?? null : null;
+  const name = slug ? bagItemName(slug) : null;
   const canDrop = dragging !== null && (slug === null || dragging.kind === "bag");
   return (
     <div
@@ -860,20 +881,25 @@ function BagSlotBox({
         e.preventDefault();
         if (canDrop) onDrop();
       }}
-      title={item?.name}
-      className={`flex aspect-square items-center justify-center rounded-lg border p-1 text-center ${
-        item ? "border-zinc-700 bg-zinc-900" : "border-dashed border-zinc-800 bg-zinc-950/40"
+      title={name ?? undefined}
+      className={`relative flex aspect-square items-center justify-center rounded-lg border p-1 text-center ${
+        name ? "border-zinc-700 bg-zinc-900" : "border-dashed border-zinc-800 bg-zinc-950/40"
       } ${canDrop ? "ring-2 ring-amber-400" : ""}`}
     >
-      {item && (
-        <span
-          draggable={!busy}
-          onDragStart={() => onDragStart({ kind: "bag", index, slug: item.slug })}
-          onDragEnd={onDragEnd}
-          className="cursor-grab select-none text-[10px] font-medium leading-tight text-zinc-200 active:cursor-grabbing"
-        >
-          {item.name}
-        </span>
+      {name && slug && (
+        <>
+          <span
+            draggable={!busy}
+            onDragStart={() => onDragStart({ kind: "bag", index, slug })}
+            onDragEnd={onDragEnd}
+            className="cursor-grab select-none text-[10px] font-medium leading-tight text-zinc-200 active:cursor-grabbing"
+          >
+            {name}
+          </span>
+          {qty > 1 && (
+            <span className="absolute bottom-0.5 right-1 text-[9px] font-bold leading-none text-amber-300">x{qty}</span>
+          )}
+        </>
       )}
     </div>
   );
@@ -904,7 +930,7 @@ function CharacterInfoPanel({
   equippedArmor,
   equippedBoots,
   equipmentBag,
-  shurikenAmmo,
+  equipmentBagQty,
   onEquipFromBag,
   onUnequipToBag,
   onMoveBagItem,
@@ -927,7 +953,7 @@ function CharacterInfoPanel({
   equippedArmor: string | null;
   equippedBoots: string | null;
   equipmentBag: (string | null)[];
-  shurikenAmmo: number;
+  equipmentBagQty: number[];
   onEquipFromBag: (bagIndex: number) => void;
   onUnequipToBag: (slot: EquipSlot, bagIndex: number) => void;
   onMoveBagItem: (fromIndex: number, toIndex: number) => void;
@@ -1007,7 +1033,7 @@ function CharacterInfoPanel({
               <span className="font-semibold text-zinc-200">Shuriken</span>
             </div>
             <p className="text-[11px] text-zinc-500">
-              {shurikenAmmo} ammo left · press 3 to select, buy more from the gunman in the Shop
+              Press 3 to select · shurikens are kept in the backpack, buy more from the gunman in the Shop
             </p>
           </div>
         </div>
@@ -1020,6 +1046,7 @@ function CharacterInfoPanel({
                 key={i}
                 index={i}
                 slug={slug}
+                qty={equipmentBagQty[i] ?? 1}
                 busy={equipBusy}
                 dragging={dragging}
                 onDragStart={setDragging}
@@ -3877,7 +3904,7 @@ export function RoomStage({
               equippedArmor={profile.equippedArmor}
               equippedBoots={profile.equippedBoots}
               equipmentBag={profile.equipmentBag}
-              shurikenAmmo={profile.shurikenAmmo}
+              equipmentBagQty={profile.equipmentBagQty}
               onEquipFromBag={onEquipFromBag}
               onUnequipToBag={onUnequipToBag}
               onMoveBagItem={onMoveBagItem}

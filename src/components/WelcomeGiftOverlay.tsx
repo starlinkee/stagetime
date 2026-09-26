@@ -18,8 +18,9 @@ function hasSeenWelcomeGift(userId: string) {
  * One-time "welcome" overlay shown right after a brand-new account's very first sign-in. Auth is
  * OAuth-only (see signInWith in useSession.ts) — there's no dedicated signUp() call to hook into —
  * so a fresh account is detected by auth.users.created_at and last_sign_in_at landing within a
- * few seconds of each other. shuriken_ammo already defaults to 10 for every new profiles row (see
- * supabase/migrations/0040_shuriken_ammo.sql), so this overlay is purely informational.
+ * few seconds of each other. equipment_bag/equipment_bag_qty already default to a starting
+ * "shuriken" stack of 10 for every new profiles row (see
+ * supabase/migrations/0045_shuriken_bag_item.sql), so this overlay is purely informational.
  */
 export function WelcomeGiftOverlay() {
   const { ready, session, available } = useSession();

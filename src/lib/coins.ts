@@ -44,7 +44,7 @@ export const CHARACTER_CHANGE_COST = 10;
  * Gunman shop NPC (src/components/ShopRoom.tsx): shurikens, weapon slot 3's ammo (see
  * WEAPON_SLOTS in src/components/RoomStage.tsx). Starts at SHURIKEN_AMMO_START, buyable in packs
  * of SHURIKEN_AMMO_PACK for SHURIKEN_AMMO_COST coins. Display-only copies; buy_shuriken_ammo in
- * supabase/migrations/0040_shuriken_ammo.sql is what actually charges the player.
+ * supabase/migrations/0045_shuriken_bag_item.sql is what actually charges the player.
  */
 export const SHURIKEN_AMMO_START = 10;
 export const SHURIKEN_AMMO_PACK = 10;
