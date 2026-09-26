@@ -250,9 +250,6 @@ export const IMMUNE_OPACITY = 0.4;
 /** Client-side rendering hint: sprite opacity for a ghost (dead player, controllable for
  * RESPAWN_MS — see PlayerState.gx/gy/gd's doc comment in shared/types.ts). */
 export const GHOST_OPACITY = 0.35;
-/** Same as GHOST_OPACITY, but for the "classic" character look specifically — its art reads as
- * too faint at GHOST_OPACITY, so it gets a higher floor while other looks keep GHOST_OPACITY. */
-export const GHOST_OPACITY_CLASSIC = 0.45;
 
 /**
  * Kill reward shown to the killer only (as "+N xp"/"+N gold" text next to the big "KILL" callout,
@@ -312,17 +309,26 @@ export const ENEMY_RESPAWN_MS = 8000;
  * STU-40: a stationary, non-attacking training target — same "small per-room state in the existing
  * tick loop" pattern as the arena enemy above, not a new subsystem. Unlike the enemy, its HP is
  * broadcast as a plain number every tick (see DummyState in shared/types.ts) so players can watch
- * it drain in real time, instead of only an HP-bar fraction. Lives only in ARENA_ROOM_SLUG, one per
- * room, spawned at full HP the moment the room stops being empty (see ensureArenaDummy in
- * server.ts) — same lifecycle as the enemy. While it has HP left, nothing ever restores it except a
- * hit — there is no timer that heals or resets it while it's still alive; only an actual kill (hp
- * reaches 0) respawns it, after DUMMY_RESPAWN_MS, same "brief death, then back to full" shape as
- * the enemy's own respawn.
+ * it drain in real time, instead of only an HP-bar fraction. STU-65: moved out of the arena into
+ * the main lobby (see MAIN_LOBBY_SLUG in shared/rooms.ts) so anyone hanging out there can take a
+ * swing at it — one per room, spawned at full HP the moment the room stops being empty (see
+ * ensureLobbyDummy in server.ts) — same lifecycle as the enemy. While it has HP left, nothing ever
+ * restores it except a hit — there is no timer that heals or resets it while it's still alive; only
+ * an actual kill (hp reaches 0) respawns it, after DUMMY_RESPAWN_MS, same "brief death, then back
+ * to full" shape as the enemy's own respawn.
  */
 export const DUMMY_MAX_HP = 10_000;
 export const DUMMY_W = 96;
 export const DUMMY_H = 96;
 export const DUMMY_RESPAWN_MS = 3000;
+
+/**
+ * STU-65: the killing blow on the lobby dummy pays out far more than a regular
+ * KILL_XP_REWARD/KILL_GOLD_REWARD kill — landing it takes chipping through DUMMY_MAX_HP (10,000)
+ * as a group, so the reward is scaled to match instead of paying arena-enemy money for it.
+ */
+export const DUMMY_XP_REWARD = 50;
+export const DUMMY_GOLD_REWARD = 500;
 
 /**
  * STU-77: equipment slots shown in the Tab inventory panel (RoomStage.tsx). Each slot holds at

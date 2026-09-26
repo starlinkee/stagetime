@@ -308,7 +308,7 @@ export type ServerMessage =
       enemies: EnemyState[];
       at: number;
       /** Only set for a connection currently inside a room that has a training dummy (see
-       * ARENA_ROOM_SLUG/DUMMY_MAX_HP in shared/constants.ts). */
+       * MAIN_LOBBY_SLUG in shared/rooms.ts and DUMMY_MAX_HP in shared/constants.ts). */
       dummy?: DummyState;
       /** Only set for a connection currently inside a pomodoro room instance. */
       pomodoro?: PomodoroSessionState;

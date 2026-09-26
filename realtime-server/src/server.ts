@@ -4,7 +4,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { verifyEntryToken } from "../shared/entryToken";
 import { circleIntersectsObstacles, obstaclesFor, resolveObstacleMoveHitbox } from "../shared/obstacles";
 import { clampPos } from "../shared/physics";
-import { isArenaSlug, isLobbySlug, LOBBY_ZONE_RECTS, POMODORO_TYPES } from "../shared/rooms";
+import { isArenaSlug, isLobbySlug, LOBBY_ZONE_RECTS, MAIN_LOBBY_SLUG, POMODORO_TYPES } from "../shared/rooms";
 import {
   BALL_SPEED,
   BROADCAST_MS,
@@ -455,14 +455,18 @@ type Dummy = {
 };
 const roomDummies = new Map<string, Dummy>();
 
+/** STU-65: the lobby is a 2x-world room (worldW/H(true)), unlike the arena's spawnEnemy above —
+ * center of that bigger world, clear of the room-grid ring (see LOBBY_ZONE_RECTS in shared/rooms.ts,
+ * whose rects sit further out than the world center). */
 function spawnDummy(): Dummy {
-  const spawn = clampPos(worldW(false) / 2 - DUMMY_W / 2, worldH(false) / 2 - DUMMY_H / 2, false);
+  const spawn = clampPos(worldW(true) / 2 - DUMMY_W / 2, worldH(true) / 2 - DUMMY_H / 2, true);
   return { id: `dummy:${randomUUID()}`, x: spawn.x, y: spawn.y, hp: DUMMY_MAX_HP, deadUntil: 0 };
 }
 
-/** Same "always full HP the moment the room stops being empty" lifecycle as ensureArenaEnemy. */
-function ensureArenaDummy(roomSlug: string) {
-  if (!isArenaSlug(roomSlug)) return;
+/** Same "always full HP the moment the room stops being empty" lifecycle as ensureArenaEnemy, but
+ * for MAIN_LOBBY_SLUG only (see its own doc comment in shared/rooms.ts for why not lobby2 too). */
+function ensureLobbyDummy(roomSlug: string) {
+  if (roomSlug !== MAIN_LOBBY_SLUG) return;
   if (roomDummies.has(roomSlug)) return;
   roomDummies.set(roomSlug, spawnDummy());
 }
@@ -530,7 +534,7 @@ function leaveRoom(conn: Conn) {
     // arena drops it outright rather than waiting out ENEMY_RESPAWN_MS, so the next person in
     // always meets it at full HP, per AGENTS.md's request.
     roomEnemies.delete(conn.roomSlug);
-    // Same reasoning again for the training dummy (see ensureArenaDummy) — nobody's there to see
+    // Same reasoning again for the training dummy (see ensureLobbyDummy) — nobody's there to see
     // it, so it's dropped outright rather than sitting mid-fight for whoever wanders in next.
     roomDummies.delete(conn.roomSlug);
   }
@@ -803,15 +807,19 @@ function persistPosition(conn: Conn) {
  * `enemyKill` (see supabase/migrations/0030_mob_kills.sql): the room's own enemy died instead of a
  * player — same xp/gold reward, but counted as `mob_kills` instead of `kills`, and never paired
  * with a `victimUserId` (the enemy isn't a player with deaths to persist).
+ *
+ * `dummyKill` (STU-65): the lobby's training dummy died instead — also counted as `mob_kills`, but
+ * paid out at DUMMY_XP_REWARD/DUMMY_GOLD_REWARD instead of the regular KILL_XP_REWARD/
+ * KILL_GOLD_REWARD (see route.ts, which picks the payout based on this flag).
  */
-async function reportCombatEvent(killerUserId: string | null, victimUserId: string | null, enemyKill = false) {
+async function reportCombatEvent(killerUserId: string | null, victimUserId: string | null, enemyKill = false, dummyKill = false) {
   if (!PERSISTENCE_ENABLED || (!killerUserId && !victimUserId)) return;
   try {
     const url = new URL("/api/internal/combat", PERSISTENCE_API_URL!);
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` },
-      body: JSON.stringify({ killerUserId, victimUserId, enemyKill }),
+      body: JSON.stringify({ killerUserId, victimUserId, enemyKill, dummyKill }),
     });
     if (!res.ok) console.error(`reportCombatEvent: ${res.status} ${res.statusText} from ${url}`);
   } catch (err) {
@@ -1014,7 +1022,7 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.gd = resumeFrom?.gd ?? conn.d;
   joinRoom(conn);
   ensureArenaEnemy(conn.roomSlug);
-  ensureArenaDummy(conn.roomSlug);
+  ensureLobbyDummy(conn.roomSlug);
 }
 
 const wss = new WebSocketServer({ server: httpServer });
@@ -1433,10 +1441,10 @@ setInterval(() => {
   // chases this tick's positions, before the ball-physics pass below so a swing thrown just now
   // resolves in the same tick, exactly like a player's own slash would.
   for (const [slug, set] of rooms) {
-    if (isArenaSlug(slug)) {
-      tickEnemy(slug, set, now, dt);
-      tickDummy(slug, now);
-    }
+    if (isArenaSlug(slug)) tickEnemy(slug, set, now, dt);
+    // STU-65: the dummy lives in the main lobby now, not the arena — its own respawn tick runs
+    // independently of the arena enemy's.
+    if (slug === MAIN_LOBBY_SLUG) tickDummy(slug, now);
   }
   // Faza F3: ball/melee-hitbox physics and the single, authoritative "who got hit" decision —
   // same collision geometry as `hits()` in RoomStage.tsx, just decided once here instead of once
@@ -1567,9 +1575,10 @@ setInterval(() => {
               break;
             }
           }
-          // Same mob-kill reward path as the arena enemy's own kill above — the "loot" this issue
-          // asked for.
-          void reportCombatEvent(owner?.userId ?? null, null, true);
+          // Same mob-kill counter as the arena enemy's own kill above, but its own bigger
+          // DUMMY_XP_REWARD/DUMMY_GOLD_REWARD payout (see that constant's doc comment) — the
+          // "loot" STU-65 asked for, scaled to how tanky the dummy actually is.
+          void reportCombatEvent(owner?.userId ?? null, null, false, true);
         }
         continue; // one hit ends the ball/hitbox, same as hitting a player
       }

@@ -40,6 +40,13 @@ export function isLobbySlug(slug: string): boolean {
 }
 
 /**
+ * STU-65: the training dummy (see DUMMY_MAX_HP in constants.ts) moved out of the arena into the
+ * main lobby specifically — deliberately just `"lobby"`, not every entry in LOBBY_SLUGS, since
+ * unlike ARENA_SLUGS this isn't meant to be mirrored onto lobby2 too.
+ */
+export const MAIN_LOBBY_SLUG = "lobby";
+
+/**
  * STU-56: every room with a room-owned enemy+dummy (see ARENA_ROOM_SLUG's doc comment in
  * constants.ts) — generalized the same way as LOBBY_SLUGS above so arena-2 gets the same
  * enemy/dummy/obstacle treatment as arena without a second hardcoded compare.

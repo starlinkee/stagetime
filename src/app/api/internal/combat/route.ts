@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { KILL_GOLD_REWARD, KILL_XP_REWARD } from "@realtime-shared/constants";
+import { DUMMY_GOLD_REWARD, DUMMY_XP_REWARD, KILL_GOLD_REWARD, KILL_XP_REWARD } from "@realtime-shared/constants";
 
 /**
  * Internal bridge realtime-server uses to persist kill/death counters after it resolves a PvP hit
- * that kills someone, or the Arena's own enemy dying (damage only happens outside the lobby — see
- * AGENTS.md). Both are decided authoritatively by realtime-server, which has no per-user Supabase
- * session to rely on RLS with — mirrors /api/internal/positions: service-role writes gated on a
- * static bearer secret that only Next.js and realtime-server know, never reachable from a browser.
+ * that kills someone, the Arena's own enemy dying, or the lobby's training dummy dying (STU-65;
+ * damage only happens outside the lobby otherwise — see AGENTS.md). Both are decided
+ * authoritatively by realtime-server, which has no per-user Supabase session to rely on RLS with —
+ * mirrors /api/internal/positions: service-role writes gated on a static bearer secret that only
+ * Next.js and realtime-server know, never reachable from a browser.
  */
 function authorized(request: Request): boolean {
   const secret = process.env.REALTIME_INTERNAL_SECRET;
@@ -26,6 +27,11 @@ export async function POST(request: Request) {
   // reward as a PvP kill, but counted separately (mob_kills, 0030) rather than bumping the PvP
   // `kills` stat — it never has a victimUserId (the enemy isn't a player).
   const enemyKill = record.enemyKill === true;
+  // STU-65: the lobby's training dummy died — also a mob_kills, not a PvP `kills`, but its own
+  // much bigger DUMMY_XP_REWARD/DUMMY_GOLD_REWARD payout instead of the regular one below (see
+  // that constant's doc comment for why: chipping through DUMMY_MAX_HP takes a lot more than one
+  // regular kill).
+  const dummyKill = record.dummyKill === true;
   if (!killerUserId && !victimUserId) return NextResponse.json({ error: "bad request" }, { status: 400 });
 
   const sb = getSupabaseAdmin();
@@ -33,8 +39,14 @@ export async function POST(request: Request) {
 
   const calls: PromiseLike<{ error: { message: string } | null }>[] = [];
   if (killerUserId) {
-    calls.push(sb.rpc(enemyKill ? "increment_mob_kills" : "increment_kills", { p_user_id: killerUserId }));
-    calls.push(sb.rpc("award_kill_reward", { p_user_id: killerUserId, p_xp: KILL_XP_REWARD, p_coins: KILL_GOLD_REWARD }));
+    calls.push(sb.rpc(enemyKill || dummyKill ? "increment_mob_kills" : "increment_kills", { p_user_id: killerUserId }));
+    calls.push(
+      sb.rpc("award_kill_reward", {
+        p_user_id: killerUserId,
+        p_xp: dummyKill ? DUMMY_XP_REWARD : KILL_XP_REWARD,
+        p_coins: dummyKill ? DUMMY_GOLD_REWARD : KILL_GOLD_REWARD,
+      }),
+    );
   }
   if (victimUserId) calls.push(sb.rpc("increment_deaths", { p_user_id: victimUserId }));
 

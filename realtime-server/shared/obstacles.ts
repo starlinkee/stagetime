@@ -146,8 +146,9 @@ export const LOBBY_OBSTACLES: ReadonlyArray<Rect> = buildLobbyObstacles();
  * commissioning new art. `x`/`y` are native pixels relative to the arena world's own top-left
  * corner (no quadrant split like the lobby — the arena is one plain SCREEN_W x SCREEN_H room, see
  * worldW/worldH(false) in constants.ts), scaled by DECOR_SCALE the same way QUADRANT_ITEMS is.
- * Kept clear of the world's center — that's where the arena's enemy/dummy spawn (ensureArenaEnemy/
- * ensureArenaDummy in server.ts) and where a fresh connection first appears.
+ * Kept clear of the world's center — that's where the arena's enemy spawns (ensureArenaEnemy in
+ * server.ts) and where a fresh connection first appears. (The training dummy moved out to the main
+ * lobby's own world center in STU-65 — see ensureLobbyDummy in server.ts.)
  */
 export const ARENA_OBSTACLE_ITEMS: DecorItem[] = [
   { file: "bookshelf", w: 46, h: 47, x: 30, y: 20, solid: true },
