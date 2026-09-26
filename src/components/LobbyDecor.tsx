@@ -18,6 +18,14 @@ const DECOR_DIR = "/map/props/decor";
  * nearby furniture. */
 const LAMP_GLOW_SIZE = 160;
 
+/** CSS px square for the left-edge house backdrop — 2.5x its original 180px (45 native px *
+ * DECOR_SCALE) placement, per request (started at 5x, then halved). */
+const HOUSE_SIZE = 450;
+
+/** CSS px square for the Fountain of Wealth's sprite — close to filling its 140px-tall zone box
+ * (see fountainZone in src/app/page.tsx) without touching the box's edges. */
+const FOUNTAIN_SIZE = 130;
+
 export function LobbyDecor({
   width,
   height,
@@ -89,20 +97,44 @@ export function LobbyDecor({
         />
       ))}
       {/* One-off decorative sprite, not part of the QUADRANT_ITEMS/obstacles system above (it's
-          not under DECOR_DIR and it's purely visual — no solid box needed). Tucked into the
-          bottom-right quadrant's open corner, away from its plants. Source PNG has a real alpha
-          channel (re-exported from the original house.jfif, whose "transparent" background was
-          actually a baked-in gray checkerboard — see archive/public/map/buildings/house.jfif). */}
+          not under DECOR_DIR and it's purely visual — no solid box needed). Big background
+          building along the world's left edge, vertically centered across the top-left/bottom-left
+          quadrants. Source PNG has a real alpha channel (re-exported from the original house.jfif,
+          whose "transparent" background was actually a baked-in gray checkerboard — see
+          archive/public/map/buildings/house.jfif). */}
       <img
         src="/map/buildings/house.png"
         alt=""
         draggable={false}
         style={{
           position: "absolute",
-          left: origin["bottom-right"].x + 15 * DECOR_SCALE,
-          top: origin["bottom-right"].y + 5 * DECOR_SCALE,
-          width: 45 * DECOR_SCALE,
-          height: 45 * DECOR_SCALE,
+          left: 0,
+          top: height / 2 - HOUSE_SIZE / 2,
+          width: HOUSE_SIZE,
+          height: HOUSE_SIZE,
+          maxWidth: "none",
+          imageRendering: "pixelated",
+          opacity: 0.7,
+        }}
+      />
+      {/* Fountain of Wealth's floor button (see FOUNTAIN_ZONE_SLUG in src/app/page.tsx) is drawn
+          as a plain rounded-rect + label by RoomStage's canvas, on top of this component — this
+          just gives that zone an actual fountain to stand behind the label. Position mirrors
+          fountainZone there: content-square-relative x/y (573, 20) of a 220x140 box, kept square
+          and centered in it since the source art is square. Source PNG has a real alpha channel
+          (re-exported from the original basic-fountain.png, whose "transparent" background was
+          actually a baked-in gray checkerboard floor — see
+          archive/public/map/structures/fountains/basic-fountain.png). */}
+      <img
+        src="/map/structures/fountains/basic-fountain.png"
+        alt=""
+        draggable={false}
+        style={{
+          position: "absolute",
+          left: centerOrigin.x + 573 + (220 - FOUNTAIN_SIZE) / 2,
+          top: centerOrigin.y + 20 + (140 - FOUNTAIN_SIZE) / 2,
+          width: FOUNTAIN_SIZE,
+          height: FOUNTAIN_SIZE,
           maxWidth: "none",
           imageRendering: "pixelated",
         }}
