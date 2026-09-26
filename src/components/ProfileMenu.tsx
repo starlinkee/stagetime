@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { CoinBadge, CoinIcon } from "@/components/CoinBadge";
 import { LevelBadge } from "@/components/LevelBadge";
+import { SettingsOverlay } from "@/components/SettingsOverlay";
 import { useMyProfile } from "@/lib/useProfile";
 import { displayName, signOut } from "@/lib/useSession";
 import { levelFromXp, xpLevelTableText } from "@/lib/xp";
@@ -47,6 +48,7 @@ function DeltaPop({ pop, decimals, className = "" }: { pop: { delta: number; id:
 export function ProfileMenu({ session }: { session: Session }) {
   const { ready, nickname, xp, ballsShot, fistSwings, kills, deaths, mobKills, coins, error } = useMyProfile();
   const [open, setOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const shown = nickname ?? displayName(session);
   const { intoLevel, forNextLevel } = levelFromXp(xp);
@@ -127,13 +129,23 @@ export function ProfileMenu({ session }: { session: Session }) {
             <p className="text-zinc-500">Loading…</p>
           )}
           <button
-            onClick={signOut}
+            onClick={() => {
+              setOpen(false);
+              setSettingsOpen(true);
+            }}
             className="mt-4 w-full border-t border-zinc-800 pt-3 text-left text-zinc-500 hover:text-zinc-300"
+          >
+            Settings
+          </button>
+          <button
+            onClick={signOut}
+            className="w-full pt-2 text-left text-zinc-500 hover:text-zinc-300"
           >
             Sign out
           </button>
         </div>
       )}
+      <SettingsOverlay open={settingsOpen} close={() => setSettingsOpen(false)} />
     </div>
   );
 }

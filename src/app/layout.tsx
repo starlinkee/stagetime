@@ -7,7 +7,6 @@ import { HowToPlayButton } from "@/components/HowToPlayButton";
 import { FirstVisitGuideOverlay } from "@/components/FirstVisitGuideOverlay";
 import { AllIdeasLink, IdeaBox } from "@/components/IdeaBox";
 import { PresenceBar } from "@/components/PresenceBar";
-import { SoundToggleButton } from "@/components/SoundToggleButton";
 import { VersionWatcher } from "@/components/VersionWatcher";
 import { WelcomeGiftOverlay } from "@/components/WelcomeGiftOverlay";
 import "./globals.css";
@@ -49,7 +48,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <PresenceBar />
           </div>
           <div className="flex flex-1 items-center justify-end gap-1 sm:gap-2">
-            <SoundToggleButton />
             <AboutGameButton />
             <HowToPlayButton />
             <IdeaBox />
