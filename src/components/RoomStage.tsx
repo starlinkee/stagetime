@@ -3532,10 +3532,9 @@ export function RoomStage({
     {REALTIME_SERVER_URL && (
       // STU-23: weapon hotbar — WEAPON_SLOTS[0]/[1]/[2] pick what Space fires (see onKeyDown),
       // slots 4..10 are deliberate placeholders for future real weapons, shown disabled rather
-      // than hidden. Spans from the left screen edge to where the HP/stamina bars start on the
-      // right (those are w-72 anchored at right-4, hence the right-[20rem] here).
+      // than hidden. Centered on the screen rather than anchored to the HP/stamina bars.
       <div
-        className="pointer-events-none fixed bottom-20 left-4 right-[20rem] z-20 flex items-end justify-start gap-2 opacity-75"
+        className="pointer-events-none fixed bottom-20 left-1/2 z-20 flex -translate-x-1/2 items-end justify-center gap-2 opacity-75"
       >
         {WEAPON_SLOTS.map((slot, i) => (
           <div
