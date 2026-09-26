@@ -565,10 +565,6 @@ const WEAPON_SLOTS: readonly { key: string; id: WeaponId | null; icon: string; l
   { key: "", id: null, icon: "", label: "Empty", cost: null },
 ] as const;
 
-/** STU-23: freed Digit1..Digit3 for weapon slots above, so STU-45's emote hotkeys move to the
- * remaining digits, starting at 0 as requested — same EMOJI_EMOTES[0..5] mapping, new keys. */
-const EMOTE_KEY_CODES = ["Digit0", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8"];
-
 function drawOrb(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, glow: number, skin?: string) {
   ctx.save();
   ctx.shadowColor = color;
@@ -1373,6 +1369,10 @@ export function RoomStage({
   const [myDir, setMyDir] = useState<Dir>(DIR_DOWN);
   const [myWalking, setMyWalking] = useState(false);
   const [myRolling, setMyRolling] = useState(false);
+  // Emote wheel: open while Control is held (see onKeyDown/onKeyUp below), null direction means
+  // no arrow has been pressed yet — closing without a direction sends nothing.
+  const [emoteWheelOpen, setEmoteWheelOpen] = useState(false);
+  const [emoteWheelDir, setEmoteWheelDir] = useState<number | null>(null);
   // STU-23: which WEAPON_SLOTS.id Space currently triggers — state for the hotbar below, ref so
   // the keydown handler (outside React) reads the latest value without depending on the effect.
   const [selectedWeapon, setSelectedWeapon] = useState<WeaponId>("ball");
@@ -1531,6 +1531,17 @@ export function RoomStage({
     if (!stage || !world || !person || !canvas || !ctx) return;
 
     const held = new Set<string>();
+    // Emote wheel (see onKeyDown/onKeyUp below): emoteWheelActive freezes movement (canAct)
+    // while Control is held; wheelHeld tracks arrows independently of `held` so movement doesn't
+    // resume the instant an arrow is pressed for wheel selection.
+    let emoteWheelActive = false;
+    const wheelHeld = new Set<string>();
+    const wheelDirFromHeld = () => {
+      const dx = (wheelHeld.has("ArrowRight") ? 1 : 0) - (wheelHeld.has("ArrowLeft") ? 1 : 0);
+      const dy = (wheelHeld.has("ArrowDown") ? 1 : 0) - (wheelHeld.has("ArrowUp") ? 1 : 0);
+      if (dx === 0 && dy === 0) return null;
+      return DIR_OF[dy + 1][dx + 1];
+    };
     const spawnZone = effectiveSpawnZoneSlug ? zonesRef.current.find((z) => z.slug === effectiveSpawnZoneSlug) : undefined;
     let x: number;
     let y: number;
@@ -2406,7 +2417,7 @@ export function RoomStage({
       // Zablokowane przez fazę "work" tego pokoju — patrz frozenByWork. Osobne od `on`: strefa
       // wejścia/wyjścia (E) niżej nadal używa samego `on`, bo wyjście podczas pracy ma zostać
       // możliwe (z ostrzeżeniem o utracie XP), tylko ruch/przewrót/unik mają zamarznąć.
-      const canAct = on && !frozenByWork();
+      const canAct = on && !frozenByWork() && !emoteWheelActive;
       const rolling = canAct && t < rollUntil;
       if (rolling !== rollingNow) {
         rollingNow = rolling;
@@ -2784,8 +2795,31 @@ export function RoomStage({
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!activeRef.current || document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.ctrlKey || e.metaKey)
+      if (!activeRef.current || document.documentElement.dataset.stale || isTypingTarget(e.target) || e.altKey || e.metaKey)
         return;
+      // Emote wheel: holding Control freezes the character (see canAct above) and opens the
+      // wheel; arrow keys pick one of 8 directions while it's open, releasing Control fires
+      // whichever direction was last selected (see onKeyUp below). Not gated by frozenByWork —
+      // same reasoning as the emote send below: emotes stay available during the work phase (and
+      // therefore during breaks too, since that phase is never frozen in the first place).
+      if (e.code === "ControlLeft" || e.code === "ControlRight") {
+        if (!e.repeat && !myDead) {
+          emoteWheelActive = true;
+          wheelHeld.clear();
+          setEmoteWheelDir(null);
+          setEmoteWheelOpen(true);
+        }
+        return;
+      }
+      if (emoteWheelActive) {
+        if (ARROWS.has(e.key)) {
+          e.preventDefault();
+          wheelHeld.add(e.key);
+          setEmoteWheelDir(wheelDirFromHeld());
+        }
+        return; // swallow every other key (incl. e.ctrlKey-tagged ones) while the wheel is open
+      }
+      if (e.ctrlKey) return; // ignore other Ctrl chords now that Control-alone is handled above
       // A ghost can move but not attack (roll/charge/fire) — see myDead's doc comment above.
       // Same for a room currently in its "work" phase (see frozenByWork): nobody rolls/
       // fires while frozen, the server would reject it anyway (isFrozen in server.ts).
@@ -2823,20 +2857,8 @@ export function RoomStage({
         if (slot?.id) setSelectedWeapon(slot.id);
         return;
       }
-      // STU-45: EMOTE_KEY_CODES send EMOJI_EMOTES[0..5] — deliberately not gated by
-      // frozenByWork() like Space/KeyC above, since emotes must keep working during the work
-      // phase (see the "emote" handler's doc comment in realtime-server/src/server.ts). Only
-      // dead players are blocked, same as the server's own isDead(conn) check.
-      if (!e.repeat && EMOTE_KEY_CODES.includes(e.code)) {
-        const emoji = EMOJI_EMOTES[EMOTE_KEY_CODES.indexOf(e.code)];
-        if (emoji && !myDead && REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
-          const emote: ClientMessage = { type: "emote", emoji };
-          ws.send(JSON.stringify(emote));
-        }
-        return;
-      }
       // STU-35: flash grenade, gated like Space/KeyC above (myDead || frozenByWork()) since this
-      // is an attack item, unlike emote (EMOTE_KEY_CODES) which deliberately isn't. Ownership is
+      // is an attack item, unlike the emote wheel above which deliberately isn't. Ownership is
       // checked client-side first (profileRef.current.flashGrenades, an optimistic read that can
       // be briefly stale — harmless, see useFlashGrenade's doc comment) via the atomic Postgres
       // RPC in supabase/migrations/0037_flash_grenade_item.sql; only on that RPC's success do we
@@ -2899,6 +2921,28 @@ export function RoomStage({
       held.add(e.key);
     };
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "ControlLeft" || e.code === "ControlRight") {
+        if (emoteWheelActive) {
+          emoteWheelActive = false;
+          const dir = wheelDirFromHeld();
+          wheelHeld.clear();
+          setEmoteWheelOpen(false);
+          setEmoteWheelDir(null);
+          const emoji = dir !== null ? EMOJI_EMOTES[dir] : undefined;
+          if (emoji && !myDead && REALTIME_SERVER_URL && ws && ws.readyState === WebSocket.OPEN) {
+            const emote: ClientMessage = { type: "emote", emoji };
+            ws.send(JSON.stringify(emote));
+          }
+        }
+        return;
+      }
+      if (emoteWheelActive) {
+        if (ARROWS.has(e.key)) {
+          wheelHeld.delete(e.key);
+          setEmoteWheelDir(wheelDirFromHeld());
+        }
+        return;
+      }
       if (e.code === "Space") {
         if (chargeStart !== null) e.preventDefault();
         release();
@@ -2919,6 +2963,12 @@ export function RoomStage({
     };
     const onBlur = () => {
       held.clear();
+      if (emoteWheelActive) {
+        emoteWheelActive = false;
+        wheelHeld.clear();
+        setEmoteWheelOpen(false);
+        setEmoteWheelDir(null);
+      }
       cancelCharge();
       rollUntil = 0;
       eDown = false;
@@ -3284,7 +3334,7 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · tap 1-3 to pick a weapon (throw, slash, shuriken) · hold Space to charge and release for throw, tap Space to fire slash/shuriken · tap C to roll in the direction you're facing (faster than walking) · tap 0, 4-8 to emote (works even during work)";
+      "Use the arrow keys ← ↑ ↓ → to move around · tap 1-3 to pick a weapon (throw, slash, shuriken) · hold Space to charge and release for throw, tap Space to fire slash/shuriken · tap C to roll in the direction you're facing (faster than walking) · hold Ctrl to open the emote wheel, pick a direction with the arrow keys and release Ctrl to send it (works even during work)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
@@ -3534,6 +3584,37 @@ export function RoomStage({
             )}
           </div>
         ))}
+      </div>
+    )}
+    {emoteWheelOpen && (
+      // Positioned around the character in screen space (centered on the canvas, roughly where
+      // the player sprite sits) rather than a corner overlay — this is a targeting-style picker,
+      // not a persistent hotbar, so it should read as radiating from the character being frozen.
+      <div className="pointer-events-none fixed inset-0 z-30 flex items-center justify-center">
+        <div className="relative h-56 w-56">
+          <div className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/70 shadow" />
+          {EMOJI_EMOTES.map((emoji, i) => {
+            const [ux, uy] = DIRS[i];
+            const n = Math.hypot(ux, uy) || 1;
+            const r = 96;
+            const left = 50 + (ux / n) * (r / 56) * 50;
+            const top = 50 + (uy / n) * (r / 56) * 50;
+            const active = emoteWheelDir === i;
+            return (
+              <div
+                key={emoji + i}
+                className={`absolute flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-xl shadow-lg transition-transform ${
+                  active
+                    ? "scale-125 border-amber-400 bg-amber-500/30"
+                    : "border-zinc-600 bg-zinc-900/80"
+                }`}
+                style={{ left: `${left}%`, top: `${top}%` }}
+              >
+                {emoji}
+              </div>
+            );
+          })}
+        </div>
       </div>
     )}
     {REALTIME_SERVER_URL && (

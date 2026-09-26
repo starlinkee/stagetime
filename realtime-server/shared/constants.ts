@@ -134,8 +134,10 @@ export const SHURIKEN_COOLDOWN_MS = 120;
  * server.ts, so this cooldown is emote's only anti-spam guard). */
 export const EMOTE_COOLDOWN_MS = 1_500;
 /** STU-45: the only emojis the server accepts in an `emote` message — anything else is dropped
- * silently (server, not client, is the source of truth here, same as every other input). */
-export const EMOJI_EMOTES = ["👍", "😂", "❤️", "😮", "😢", "🔥"] as const;
+ * silently (server, not client, is the source of truth here, same as every other input). Order
+ * matches DIRS/DIR_OF above (E, SE, S, SW, W, NW, N, NE): RoomStage.tsx's emote wheel picks
+ * EMOJI_EMOTES[dir] from the arrow-key direction held when Control is released. */
+export const EMOJI_EMOTES = ["👍", "😂", "❤️", "😮", "😢", "🔥", "👋", "😴"] as const;
 
 /** STU-35: cooldown between flash-grenade uses — this is defense-in-depth against a compromised
  * client resending `useItem` faster than the Postgres round-trip (see consume_flash_grenade in
