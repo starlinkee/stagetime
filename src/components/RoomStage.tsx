@@ -202,6 +202,12 @@ const CONGRATS_MS = 10_000;
 
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
 
+/** One 45deg emote-wheel wedge, apex at center pointing East, spanning ±22.5deg out to the
+ * container's edge — rotated by i*45deg per direction (see the emoteWheelOpen render below) so
+ * all 8 share an edge with no gap, forming a full circle of touching triangles/cones. Points are
+ * (50 + 50*cos(22.5deg))% / (50 ± 50*sin(22.5deg))%. */
+const WEDGE_CLIP = "polygon(50% 50%, 96.194% 30.866%, 96.194% 69.134%)";
+
 // DIRS/DIR_OF (direction vectors, movement → facing) plus all combat tuning (CHARGE_MS, ROLL_*,
 // ORB_R_*, BALL_SPEED, SLASH_*, HIT_PAD) live in realtime-server/shared/constants.ts (see
 // docs/combat_sync_plan.md, Faza F1) — imported above, not redefined here, so this client and the
@@ -3558,24 +3564,44 @@ export function RoomStage({
       // Positioned around the character in screen space (centered on the canvas, roughly where
       // the player sprite sits) rather than a corner overlay — this is a targeting-style picker,
       // not a persistent hotbar, so it should read as radiating from the character being frozen.
+      // Each direction is a full 45deg wedge (not a floating icon) so all 8 meet edge-to-edge at
+      // the center, like a pie chart / compass rose — WEDGE_CLIP is one wedge pointing East
+      // (spanning ±22.5deg), reused for every direction by rotating the whole div by i*45deg;
+      // rotating the shape itself (rather than computing 8 separate polygons) is what guarantees
+      // adjacent wedges share an edge with no gap.
       <div className="pointer-events-none fixed inset-0 z-30 flex items-center justify-center">
-        <div className="relative h-56 w-56">
-          <div className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/70 shadow" />
+        <div className="relative h-80 w-80">
           {EMOJI_EMOTES.map((emoji, i) => {
-            const [ux, uy] = DIRS[i];
-            const n = Math.hypot(ux, uy) || 1;
-            const r = 96;
-            const left = 50 + (ux / n) * (r / 56) * 50;
-            const top = 50 + (uy / n) * (r / 56) * 50;
             const active = emoteWheelDir === i;
             return (
               <div
-                key={emoji + i}
-                className={`absolute flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-xl shadow-lg transition-transform ${
-                  active
-                    ? "scale-125 border-amber-400 bg-amber-500/30"
-                    : "border-zinc-600 bg-zinc-900/80"
+                key={`wedge-${i}`}
+                className={`absolute inset-0 transition-colors ${
+                  active ? "bg-amber-500/50" : "bg-zinc-900/70"
                 }`}
+                style={{ transform: `rotate(${i * 45}deg)`, clipPath: WEDGE_CLIP }}
+              />
+            );
+          })}
+          {EMOJI_EMOTES.map((_, i) => (
+            // Boundary between wedge i and i+1, at the midpoint angle between their two centers —
+            // a plain radial line since the wedges themselves have no visible edge (clip-path
+            // alone gives no border), without it 8 same-colored triangles would read as one blob.
+            <div
+              key={`divider-${i}`}
+              className="absolute left-1/2 top-1/2 h-px w-1/2 origin-left bg-zinc-950/50"
+              style={{ transform: `rotate(${i * 45 + 22.5}deg)` }}
+            />
+          ))}
+          {EMOJI_EMOTES.map((emoji, i) => {
+            const [ux, uy] = DIRS[i];
+            const n = Math.hypot(ux, uy) || 1;
+            const left = 50 + (ux / n) * 32;
+            const top = 50 + (uy / n) * 32;
+            return (
+              <div
+                key={`emoji-${i}`}
+                className="absolute -translate-x-1/2 -translate-y-1/2 text-3xl leading-none drop-shadow"
                 style={{ left: `${left}%`, top: `${top}%` }}
               >
                 {emoji}
