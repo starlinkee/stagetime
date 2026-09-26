@@ -88,6 +88,24 @@ export function LobbyDecor({
           }}
         />
       ))}
+      {/* One-off decorative photo, not part of the QUADRANT_ITEMS/obstacles system above (it's a
+          real photo, not a pixel-art sprite under DECOR_DIR, and it's purely visual — no solid
+          box needed). Tucked into the bottom-right quadrant's open corner, away from its plants. */}
+      <img
+        src="/map/buildings/house.jfif"
+        alt=""
+        draggable={false}
+        style={{
+          position: "absolute",
+          left: origin["bottom-right"].x + 15 * DECOR_SCALE,
+          top: origin["bottom-right"].y + 5 * DECOR_SCALE,
+          width: 45 * DECOR_SCALE,
+          height: 45 * DECOR_SCALE,
+          maxWidth: "none",
+          borderRadius: 6,
+          opacity: 0.9,
+        }}
+      />
       {LOBBY_LAMPS.filter((lamp) => lampsOn?.[lamp.id]).map((lamp) => (
         <div
           key={`lamp-glow-${lamp.id}`}
