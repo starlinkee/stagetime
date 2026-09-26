@@ -2567,7 +2567,11 @@ export function RoomStage({
         // widoczny, żeby wzrok od razu szedł na jedyny otwarty (aktualnie dostępny) pokój — patrz
         // reset globalAlpha po pętli.
         const closed = (authLocked || doorClosed) && !active;
-        ctx.globalAlpha = closed ? 0.18 : 0.85;
+        // Hidden nav zones (the 3 pomodoro doors, see hidden's doc comment above) draw their box's
+        // text at full opacity instead of the usual 0.85 — there's no colored box behind it here to
+        // give it contrast, just the library backdrop sprite (LobbyDecor.tsx), so it needs to be as
+        // legible as possible once it appears (on entering the zone, see below).
+        ctx.globalAlpha = closed ? 0.18 : z.hidden ? 1 : 0.85;
         if (!z.hidden) {
           ctx.lineWidth = active ? 3 : 1.5;
           ctx.strokeStyle = active ? "#ffffff" : (z.color ?? "rgba(255,255,255,0.4)");
@@ -2580,23 +2584,30 @@ export function RoomStage({
         ctx.fillStyle = "rgba(255,255,255,0.85)";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        if (!z.hidden) {
+        // Hidden nav zones (the 3 pomodoro doors) draw their text noticeably bigger than a normal
+        // zone box's — there's no box to anchor/frame it, and it only ever appears once the player
+        // is already standing right on it, so it can afford to be much larger without crowding a
+        // whole ring of doors the way it would if always on.
+        const textScale = z.hidden ? 1.5 : 1;
+        // Hidden nav zones still show their name, just only once the player is standing on them
+        // (same "invisible until entered" behavior as the box above) instead of never.
+        if (!z.hidden || ((z.kind ?? "nav") === "nav" && inZone(x, y, z))) {
           if (authLocked || doorClosed) {
             // Zablokowane (drzwi właśnie się zamknęły albo trzeba się zalogować) — kłódka zamiast numeru pokoju.
-            ctx.font = "28px sans-serif";
+            ctx.font = `${28 * textScale}px sans-serif`;
             ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
           } else {
             // Nazwy pokoi pomodoro są teraz pełnymi etykietami ("Hour Block 50+10", nie samo
             // "50+10") — mogą nie zmieścić się w wąskim (180px) kwadracie przy stałych 24px, więc
             // zamiast przycinać tekst, zmniejszamy font aż się zmieści.
             const maxNameW = z.w - 16;
-            let nameFontPx = 24;
+            let nameFontPx = 24 * textScale;
             ctx.font = `600 ${nameFontPx}px sans-serif`;
-            while (nameFontPx > 13 && ctx.measureText(z.name).width > maxNameW) {
+            while (nameFontPx > 13 * textScale && ctx.measureText(z.name).width > maxNameW) {
               nameFontPx -= 1;
               ctx.font = `600 ${nameFontPx}px sans-serif`;
             }
-            ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2 - 6);
+            ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2 - 6 * textScale);
           }
         }
         // Pod numerem/kłódką: stojąc na wyjściu (kwadrat "lobby" na scenie samego pokoju) — zielony
@@ -2612,22 +2623,22 @@ export function RoomStage({
         // — dla pomodoro nagroda za całą sesję pracy (długość faz już widać w nazwie pokoju,
         // patrz wyżej), dla stopwatch/timer stała stawka za ciągłą obecność (patrz
         // STUDY_SECONDS_PER_XP w src/lib/xp.ts).
-        if ((z.kind ?? "nav") === "nav" && !isExitHere && !z.noReward && !doorClosed) {
+        if ((z.kind ?? "nav") === "nav" && !isExitHere && !z.noReward && !doorClosed && (!z.hidden || inZone(x, y, z))) {
           // Nazwa pokoju już mówi "25+5" itd. (patrz wyżej), więc tu tylko nagroda — jedna
           // wartość na linię (XP osobno od coinów), zamiast jednego zbitego napisu "+X XP ·
           // +Y coins/session", żeby obie liczby dało się przeczytać na pierwszy rzut oka.
-          ctx.font = "700 14px sans-serif";
+          ctx.font = `700 ${14 * textScale}px sans-serif`;
           ctx.fillStyle = "#7dd3fc";
           ctx.fillText(
             z.phase ? `+${xpForMinutes(z.phase.workMin)} XP` : "+0.1 XP / 5 min",
             z.x + z.w / 2,
-            z.y + z.h / 2 + 14,
+            z.y + z.h / 2 + 14 * textScale,
           );
           ctx.fillStyle = "#fbbf24";
           ctx.fillText(
             z.phase ? `+${coinsForMinutes(z.phase.workMin)} coins` : "+0.1 coins / min",
             z.x + z.w / 2,
-            z.y + z.h / 2 + 30,
+            z.y + z.h / 2 + 30 * textScale,
           );
         }
         if (z.caption && !z.hidden) {
@@ -2646,10 +2657,10 @@ export function RoomStage({
             ctx.fillText("Sign in required", z.x + z.w / 2, z.y + z.h / 2 + 42);
           } else {
             ctx.fillStyle = "#22c55e";
-            ctx.font = "700 16px sans-serif";
-            ctx.fillText("E to enter room", z.x + z.w / 2, z.y + z.h / 2 + 42);
+            ctx.font = `700 ${16 * textScale}px sans-serif`;
+            ctx.fillText("E to enter room", z.x + z.w / 2, z.y + z.h / 2 + 42 * textScale);
           }
-        } else if (occupants) {
+        } else if (occupants && (!z.hidden || inZone(x, y, z))) {
           ctx.fillStyle = "rgba(255,255,255,0.75)";
           ctx.font = "500 16px sans-serif";
           ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 42);
