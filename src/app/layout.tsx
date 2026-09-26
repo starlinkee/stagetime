@@ -9,6 +9,7 @@ import { AllIdeasLink, IdeaBox } from "@/components/IdeaBox";
 import { PresenceBar } from "@/components/PresenceBar";
 import { SoundToggleButton } from "@/components/SoundToggleButton";
 import { VersionWatcher } from "@/components/VersionWatcher";
+import { WelcomeGiftOverlay } from "@/components/WelcomeGiftOverlay";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -57,6 +58,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         </header>
         {children}
         <FirstVisitGuideOverlay />
+        <WelcomeGiftOverlay />
         <VersionWatcher />
       </body>
     </html>
