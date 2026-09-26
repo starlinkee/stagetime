@@ -17,7 +17,7 @@ export function SoundToggleButton() {
       title={enabled ? "Mute sound" : "Unmute sound"}
       className={HEADER_BUTTON_CLASS}
     >
-      {enabled ? "Sound" : "Muted"}
+      {enabled ? "Sounds ON" : "Sounds OFF"}
     </button>
   );
 }

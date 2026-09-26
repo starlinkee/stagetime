@@ -35,8 +35,9 @@ export function AboutGameButton() {
             </button>
           </div>
           <p className="text-zinc-300">
-            StudyQuest.Party is a shared coworking space with a Pomodoro timer — sit in a room,
-            focus alongside other players in real time, and take breaks together.
+            We&apos;re here to study... mostly. StudyQuest.Party is a shared coworking space with
+            a Pomodoro timer — sit in a room, focus alongside other players in real time, and
+            take breaks together.
           </p>
           <div className="mt-3 border-t border-zinc-700 pt-2 text-zinc-400">
             {accounts === null ? (
