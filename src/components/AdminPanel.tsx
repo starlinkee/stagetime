@@ -56,8 +56,8 @@ export function AdminPanel() {
   return (
     <div className="relative" ref={containerRef}>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
-          <div className="mb-3 flex items-center justify-between">
+        <div className="absolute left-0 top-full z-50 mt-2 flex max-h-[80vh] w-[95vw] max-w-6xl flex-col rounded-lg border border-zinc-700 bg-zinc-900/80 text-sm text-zinc-100 shadow-xl backdrop-blur">
+          <div className="flex shrink-0 items-center justify-between border-b border-zinc-700 px-4 py-3">
             <span className="font-semibold">Admin</span>
             <button
               type="button"
@@ -67,56 +67,58 @@ export function AdminPanel() {
               Reset
             </button>
           </div>
-          <div className="flex flex-col gap-3">
-            {ADMIN_SETTINGS_SCHEMA.map((def) => (
-              <label key={def.key} className="flex flex-col gap-1">
-                <span className="text-xs text-zinc-400">{def.label}</span>
-                <div className="flex items-center gap-2">
+          <div className="overflow-y-auto p-4">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3">
+              {ADMIN_SETTINGS_SCHEMA.map((def) => (
+                <label key={def.key} className="flex flex-col gap-1">
+                  <span className="text-xs text-zinc-400">{def.label}</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={settings[def.key]}
+                      min={def.min}
+                      max={def.max}
+                      step={def.step ?? 1}
+                      onChange={(e) => {
+                        const v = e.target.valueAsNumber;
+                        if (Number.isFinite(v)) setAdminSetting(def.key, v);
+                      }}
+                      className="w-full rounded border border-zinc-600 bg-zinc-800/80 px-2 py-1 text-zinc-100"
+                    />
+                    {def.suffix && <span className="text-xs text-zinc-400">{def.suffix}</span>}
+                  </div>
+                  <span className="text-[11px] text-zinc-500">domyślnie: {DEFAULT_ADMIN_SETTINGS[def.key]}{def.suffix}</span>
+                </label>
+              ))}
+            </div>
+            {isAdminAccount && (
+              <div className="mt-4 border-t border-zinc-700 pt-3">
+                <span className="text-xs text-zinc-400">Add gold to my account</span>
+                <div className="mt-1 flex max-w-xs items-center gap-2">
                   <input
                     type="number"
-                    value={settings[def.key]}
-                    min={def.min}
-                    max={def.max}
-                    step={def.step ?? 1}
+                    value={goldAmount}
+                    min={1}
+                    step={1}
                     onChange={(e) => {
                       const v = e.target.valueAsNumber;
-                      if (Number.isFinite(v)) setAdminSetting(def.key, v);
+                      if (Number.isFinite(v)) setGoldAmount(v);
                     }}
-                    className="w-full rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-zinc-100"
+                    className="w-full rounded border border-zinc-600 bg-zinc-800/80 px-2 py-1 text-zinc-100"
                   />
-                  {def.suffix && <span className="text-xs text-zinc-400">{def.suffix}</span>}
+                  <button
+                    type="button"
+                    onClick={addGold}
+                    disabled={addingGold || goldAmount <= 0}
+                    className="shrink-0 rounded bg-orange-600 px-2 py-1 text-xs font-semibold text-white hover:bg-orange-500 disabled:opacity-50"
+                  >
+                    Add
+                  </button>
                 </div>
-                <span className="text-[11px] text-zinc-500">domyślnie: {DEFAULT_ADMIN_SETTINGS[def.key]}{def.suffix}</span>
-              </label>
-            ))}
-          </div>
-          {isAdminAccount && (
-            <div className="mt-4 border-t border-zinc-700 pt-3">
-              <span className="text-xs text-zinc-400">Add gold to my account</span>
-              <div className="mt-1 flex items-center gap-2">
-                <input
-                  type="number"
-                  value={goldAmount}
-                  min={1}
-                  step={1}
-                  onChange={(e) => {
-                    const v = e.target.valueAsNumber;
-                    if (Number.isFinite(v)) setGoldAmount(v);
-                  }}
-                  className="w-full rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-zinc-100"
-                />
-                <button
-                  type="button"
-                  onClick={addGold}
-                  disabled={addingGold || goldAmount <= 0}
-                  className="shrink-0 rounded bg-orange-600 px-2 py-1 text-xs font-semibold text-white hover:bg-orange-500 disabled:opacity-50"
-                >
-                  Add
-                </button>
+                {goldStatus && <span className="mt-1 block text-[11px] text-zinc-500">{goldStatus}</span>}
               </div>
-              {goldStatus && <span className="mt-1 block text-[11px] text-zinc-500">{goldStatus}</span>}
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
       <button
