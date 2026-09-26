@@ -282,8 +282,9 @@ export default function Home() {
             )}
           </div>
           <p className="mb-3 text-center text-sm text-zinc-400">
-            Donate coins into this room&apos;s fund. Coins donated here are gone from your balance for
-            good — there&apos;s no way to withdraw them.
+            Toss your coins into the fountain and make a wish. Who knows what it&apos;s good for —
+            but every coin that goes in stays in for good, growing the shared fund for whatever
+            comes next.
           </p>
           {fundTotal !== null && (
             <p className="mb-1 text-center text-sm text-amber-400">

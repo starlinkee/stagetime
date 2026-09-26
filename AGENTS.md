@@ -180,4 +180,12 @@ Wiadomość commita jest wymagana tylko wtedy, gdy jest faktycznie coś do zacom
 7. Nie używaj emoji/ikonek Unicode w tekstach generowanych dla użytkownika (napisy w UI, treść
    wiadomości czatu, komunikaty systemowe itp.) — czysty tekst, bez ozdobników w stylu 💰/✅/🎉.
 
+8. Teksty widoczne w grze dla gracza (opisy stref/obiektów typu Fountain of Wealth, komunikaty
+   toastów, treści dialogów in-world) pisz w klimacie roleplay, nie technicznym opisem
+   mechaniki. Np. zamiast tłumaczyć wprost, że coś zapisuje wartość do bazy danych/funduszu, opisz
+   to jako coś, co dzieje się w świecie gry (rzucasz monetę do fontanny, kto wie do czego to
+   doprowadzi) — utrzymuj tę konwencję dla wszelkich przyszłych podobnych napisów. Nie dotyczy to
+   UI poza światem gry (ustawienia, formularze kont, komunikaty błędów systemowych) — tam nadal
+   pisz wprost.
+
    Po każdym rozwiązaniu commituj lub merguj od razu zmiany do dev
