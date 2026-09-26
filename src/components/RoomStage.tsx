@@ -2922,6 +2922,12 @@ export function RoomStage({
       if (emoteWheelActive) {
         if (ARROWS.has(e.key)) {
           wheelHeld.delete(e.key);
+          // Also clear the movement set: an arrow released while the wheel is open must not stay
+          // "held" for movement once the wheel closes — otherwise walking right into the wheel,
+          // then releasing the arrow to make a wheel selection, left `held` stuck with
+          // ArrowRight forever (canAct being false while the wheel is open masked it until
+          // close), and the character walked off on its own with nothing pressed.
+          held.delete(e.key);
           setEmoteWheelDir(wheelDirFromHeld());
         }
         return;
