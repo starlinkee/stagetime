@@ -749,48 +749,130 @@ function equipBonusLabel(item: (typeof EQUIPMENT_ITEMS)[number]): string {
   return "";
 }
 
+/** Drag payload while moving a gear item between the equip slots and the backpack grid — dragged
+ * either out of a backpack slot (`kind: "bag"`) or off an equip slot (`kind: "equip"`), see the
+ * inventory panel's drop handlers below. */
+type EquipDragPayload = { kind: "bag"; index: number; slug: string } | { kind: "equip"; slot: EquipSlot; slug: string };
+
 /**
- * STU-77: one equip slot in the inventory panel below — shows the equipped item (if any) and its
- * bonus, plus an Unequip button. Buying/equipping only happens at the gear specialist in the Shop
- * (see GEAR_ZONE in ShopRoom.tsx) — this panel is read-only for that, same "buy there, view here"
- * split as the gunman's shuriken ammo (bought at the gunman, shown live in the hotbar).
+ * STU-77: one equip slot (helm/armor/boots), top-left of the inventory panel — a drop target for a
+ * backpack item of the matching slot (drag it here to wear it), and itself draggable back onto an
+ * empty backpack slot to take it off. Buying only happens at the gear specialist in the Shop (see
+ * GEAR_ZONE in ShopRoom.tsx), which drops purchases into the backpack rather than equipping them
+ * directly — actually equipping/unequipping happens here, by dragging.
  */
-function InventorySlot({
+function EquipSlotBox({
   label,
-  equippedSlug,
   slot,
-  onUnequip,
+  equippedSlug,
   busy,
+  dragging,
+  onDragStart,
+  onDragEnd,
+  onDrop,
 }: {
   label: string;
-  equippedSlug: string | null;
   slot: EquipSlot;
-  onUnequip: () => void;
+  equippedSlug: string | null;
   busy: boolean;
+  dragging: EquipDragPayload | null;
+  onDragStart: (payload: EquipDragPayload) => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
 }) {
   const equipped = EQUIPMENT_ITEMS.find((i) => i.slot === slot && i.slug === equippedSlug) ?? null;
+  const canDrop = dragging?.kind === "bag" && EQUIPMENT_ITEMS.find((i) => i.slug === dragging.slug)?.slot === slot;
   return (
-    <div className="rounded-lg bg-zinc-900 px-2.5 py-1.5">
+    <div
+      onDragOver={(e) => {
+        if (canDrop) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        if (canDrop) onDrop();
+      }}
+      className={`rounded-lg bg-zinc-900 px-2.5 py-1.5 ${canDrop ? "ring-2 ring-amber-400" : ""}`}
+    >
       <div className="flex items-center justify-between">
         <span className="text-zinc-400">{label}</span>
         {equipped ? (
-          <span className="font-semibold text-zinc-200">{equipped.name}</span>
+          <span
+            draggable={!busy}
+            onDragStart={() => onDragStart({ kind: "equip", slot, slug: equipped.slug })}
+            onDragEnd={onDragEnd}
+            title="Drag to an empty backpack slot to unequip"
+            className="cursor-grab font-semibold text-zinc-200 active:cursor-grabbing"
+          >
+            {equipped.name}
+          </span>
         ) : (
-          <span className="text-zinc-500">Empty — buy from the gear specialist in the Shop</span>
+          <svg
+            aria-label="Empty"
+            className="h-4 w-4 text-zinc-600"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <line x1="7" y1="7" x2="17" y2="17" />
+          </svg>
         )}
       </div>
-      {equipped && (
-        <div className="mt-1 flex items-center justify-between">
-          <p className="text-[11px] text-emerald-400">{equipBonusLabel(equipped)}</p>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onUnequip}
-            className="rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] font-medium text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
-          >
-            Unequip
-          </button>
-        </div>
+      {equipped && <p className="mt-1 text-[11px] text-emerald-400">{equipBonusLabel(equipped)}</p>}
+    </div>
+  );
+}
+
+/**
+ * One of the 20 backpack slots (4x5 grid) — an owned-but-unequipped item, draggable onto a
+ * matching equip slot to wear it or onto another backpack slot to reorder. Also a drop target for
+ * an equip slot being dragged off (unequip), as long as it's empty.
+ */
+function BagSlotBox({
+  index,
+  slug,
+  busy,
+  dragging,
+  onDragStart,
+  onDragEnd,
+  onDrop,
+}: {
+  index: number;
+  slug: string | null;
+  busy: boolean;
+  dragging: EquipDragPayload | null;
+  onDragStart: (payload: EquipDragPayload) => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
+}) {
+  const item = slug ? EQUIPMENT_ITEMS.find((i) => i.slug === slug) ?? null : null;
+  const canDrop = dragging !== null && (slug === null || dragging.kind === "bag");
+  return (
+    <div
+      onDragOver={(e) => {
+        if (canDrop) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        if (canDrop) onDrop();
+      }}
+      title={item?.name}
+      className={`flex aspect-square items-center justify-center rounded-lg border p-1 text-center ${
+        item ? "border-zinc-700 bg-zinc-900" : "border-dashed border-zinc-800 bg-zinc-950/40"
+      } ${canDrop ? "ring-2 ring-amber-400" : ""}`}
+    >
+      {item && (
+        <span
+          draggable={!busy}
+          onDragStart={() => onDragStart({ kind: "bag", index, slug: item.slug })}
+          onDragEnd={onDragEnd}
+          className="cursor-grab select-none text-[10px] font-medium leading-tight text-zinc-200 active:cursor-grabbing"
+        >
+          {item.name}
+        </span>
       )}
     </div>
   );
@@ -820,8 +902,11 @@ function CharacterInfoPanel({
   equippedHelm,
   equippedArmor,
   equippedBoots,
+  equipmentBag,
   shurikenAmmo,
-  onUnequipEquipment,
+  onEquipFromBag,
+  onUnequipToBag,
+  onMoveBagItem,
   equipBusy,
 }: {
   nick: string | null;
@@ -840,11 +925,27 @@ function CharacterInfoPanel({
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
+  equipmentBag: (string | null)[];
   shurikenAmmo: number;
-  onUnequipEquipment: (slot: EquipSlot) => void;
+  onEquipFromBag: (bagIndex: number) => void;
+  onUnequipToBag: (slot: EquipSlot, bagIndex: number) => void;
+  onMoveBagItem: (fromIndex: number, toIndex: number) => void;
   equipBusy: boolean;
 }) {
   const { level, intoLevel, forNextLevel } = levelFromXp(xp);
+  const [dragging, setDragging] = useState<EquipDragPayload | null>(null);
+  const handleDrop = (target: { kind: "equip"; slot: EquipSlot } | { kind: "bag"; index: number }) => {
+    if (!dragging) return;
+    const payload = dragging;
+    setDragging(null);
+    if (target.kind === "equip") {
+      if (payload.kind === "bag") onEquipFromBag(payload.index);
+    } else if (payload.kind === "bag") {
+      if (payload.index !== target.index) onMoveBagItem(payload.index, target.index);
+    } else {
+      onUnequipToBag(payload.slot, target.index);
+    }
+  };
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -866,29 +967,38 @@ function CharacterInfoPanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,11rem)_1fr]">
         <div className="flex flex-col gap-1.5">
           <span className="text-zinc-400">Equipment</span>
-          <InventorySlot
+          <EquipSlotBox
             label="Helm"
             slot="helm"
             equippedSlug={equippedHelm}
-            onUnequip={() => onUnequipEquipment("helm")}
             busy={equipBusy}
+            dragging={dragging}
+            onDragStart={setDragging}
+            onDragEnd={() => setDragging(null)}
+            onDrop={() => handleDrop({ kind: "equip", slot: "helm" })}
           />
-          <InventorySlot
+          <EquipSlotBox
             label="Armor"
             slot="armor"
             equippedSlug={equippedArmor}
-            onUnequip={() => onUnequipEquipment("armor")}
             busy={equipBusy}
+            dragging={dragging}
+            onDragStart={setDragging}
+            onDragEnd={() => setDragging(null)}
+            onDrop={() => handleDrop({ kind: "equip", slot: "armor" })}
           />
-          <InventorySlot
+          <EquipSlotBox
             label="Boots"
             slot="boots"
             equippedSlug={equippedBoots}
-            onUnequip={() => onUnequipEquipment("boots")}
             busy={equipBusy}
+            dragging={dragging}
+            onDragStart={setDragging}
+            onDragEnd={() => setDragging(null)}
+            onDrop={() => handleDrop({ kind: "equip", slot: "boots" })}
           />
           <div className="rounded-lg bg-zinc-900 px-2.5 py-1.5">
             <div className="flex items-center justify-between">
@@ -901,6 +1011,26 @@ function CharacterInfoPanel({
           </div>
         </div>
 
+        <div className="flex flex-col gap-1.5">
+          <span className="text-zinc-400">Backpack</span>
+          <div className="grid grid-cols-4 gap-1.5">
+            {equipmentBag.map((slug, i) => (
+              <BagSlotBox
+                key={i}
+                index={i}
+                slug={slug}
+                busy={equipBusy}
+                dragging={dragging}
+                onDragStart={setDragging}
+                onDragEnd={() => setDragging(null)}
+                onDrop={() => handleDrop({ kind: "bag", index: i })}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="flex flex-col gap-1.5">
           <span className="text-zinc-400">Combat</span>
           <div className="flex items-center justify-between rounded-lg bg-zinc-900 px-2.5 py-1.5">
@@ -3191,17 +3321,38 @@ export function RoomStage({
   // `statsOpen`. Osobny stan od `chatOpen`, bo Tab wewnątrz pola czatu ma inne znaczenie
   // (przełącza zakres "room"/"all", patrz onChatKeyDown) i tam panel nie powinien się otwierać.
   const [statsOpen, setStatsOpen] = useState(false);
-  // STU-77: disables the inventory panel's unequip button while an unequip_equipment RPC is in
-  // flight, same "one at a time" guard ShopRoom uses for its own purchase button — prevents a
-  // double-click from firing two RPCs for the same slot. Buying/equipping only happens at the gear
-  // specialist in the Shop (see GEAR_ZONE in ShopRoom.tsx) — this panel is unequip-only.
+  // STU-77/0044: disables drag-and-drop in the inventory panel while an equip/unequip/reorder RPC
+  // is in flight, same "one at a time" guard ShopRoom uses for its own purchase button — prevents
+  // overlapping drags from firing two RPCs against the same bag slot. Buying only happens at the
+  // gear specialist in the Shop (see GEAR_ZONE in ShopRoom.tsx); equipping/unequipping/reordering
+  // happens here, by dragging between the equip slots and the backpack grid.
   const [equipBusy, setEquipBusy] = useState(false);
   const [equipError, setEquipError] = useState<string | null>(null);
-  const onUnequipEquipment = useCallback(
-    async (slot: EquipSlot) => {
+  const onEquipFromBag = useCallback(
+    async (bagIndex: number) => {
       setEquipBusy(true);
       setEquipError(null);
-      const res = await profile.unequipEquipment(slot);
+      const res = await profile.equipFromBag(bagIndex);
+      if (!res.ok) setEquipError(res.error);
+      setEquipBusy(false);
+    },
+    [profile],
+  );
+  const onUnequipToBag = useCallback(
+    async (slot: EquipSlot, bagIndex: number) => {
+      setEquipBusy(true);
+      setEquipError(null);
+      const res = await profile.unequipToBag(slot, bagIndex);
+      if (!res.ok) setEquipError(res.error);
+      setEquipBusy(false);
+    },
+    [profile],
+  );
+  const onMoveBagItem = useCallback(
+    async (fromIndex: number, toIndex: number) => {
+      setEquipBusy(true);
+      setEquipError(null);
+      const res = await profile.moveBagItem(fromIndex, toIndex);
       if (!res.ok) setEquipError(res.error);
       setEquipBusy(false);
     },
@@ -3467,8 +3618,13 @@ export function RoomStage({
   const onChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (chatSuggestions.length > 0) return;
+    // Wysyłanie zbyt szybko (Enter x2 zanim pierwsza wiadomość dojedzie) trafiało tu z
+    // `chatSending === true` — traktowane wcześniej jak "puste wysłanie", więc czyściło draft i
+    // zamykało panel, gubiąc wiadomość, którą user właśnie pisał. Teraz drugi submit w trakcie
+    // wysyłki jest po prostu ignorowany: draft i panel zostają, focus zostaje na polu.
+    if (chatSending) return;
     const text = chatDraft.trim();
-    if (!text || chatSending) {
+    if (!text) {
       setChatOpen(false);
       setChatDraft("");
       return;
@@ -3696,8 +3852,11 @@ export function RoomStage({
               equippedHelm={profile.equippedHelm}
               equippedArmor={profile.equippedArmor}
               equippedBoots={profile.equippedBoots}
+              equipmentBag={profile.equipmentBag}
               shurikenAmmo={profile.shurikenAmmo}
-              onUnequipEquipment={onUnequipEquipment}
+              onEquipFromBag={onEquipFromBag}
+              onUnequipToBag={onUnequipToBag}
+              onMoveBagItem={onMoveBagItem}
               equipBusy={equipBusy}
             />
           ) : (
@@ -3796,7 +3955,7 @@ export function RoomStage({
                   filter: dead ? "grayscale(1) brightness(1.3)" : undefined,
                 }}
               >
-                {bubbles[k] && <ChatBubble text={bubbles[k].text} />}
+                {bubbles[k] && <ChatBubble key={bubbles[k].id} text={bubbles[k].text} />}
                 {emoteBubbles[k] && <EmoteBubble emoji={emoteBubbles[k].emoji} />}
                 {rewards[k] && <RewardPopup coins={rewards[k].coins} xp={rewards[k].xp} id={rewards[k].id} />}
                 <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
@@ -3887,7 +4046,7 @@ export function RoomStage({
           ref={personRef}
           className={`absolute left-0 top-0 opacity-70 will-change-transform ${superseded ? "invisible" : ""}`}
         >
-          {bubbles.me && <ChatBubble text={bubbles.me.text} />}
+          {bubbles.me && <ChatBubble key={bubbles.me.id} text={bubbles.me.text} />}
           {emoteBubbles.me && <EmoteBubble emoji={emoteBubbles.me.emoji} />}
           {rewards.me && <RewardPopup coins={rewards.me.coins} xp={rewards.me.xp} id={rewards.me.id} />}
           <NameTag name={nick} xp={session ? profile.xp : undefined} />
@@ -4032,7 +4191,6 @@ export function RoomStage({
                   onChange={(e) => setChatDraft(e.target.value)}
                   onKeyDown={onChatKeyDown}
                   maxLength={MAX_BODY}
-                  disabled={chatSending}
                   placeholder="Message… Tab: room/all · Enter: send · Esc: close"
                   className="flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500 dark:text-zinc-900"
                 />

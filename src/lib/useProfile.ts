@@ -85,8 +85,29 @@ type ShurikenAmmoFields = { shurikenAmmo: number };
  * carry a real gameplay stat bonus, so besides riding along in the profile (this file) they're
  * also re-read server-side by src/app/api/realtime/token/route.ts and signed into the entry token
  * realtime-server trusts (see mintEntryToken in realtime-server/shared/entryToken.ts) — the client
- * never tells realtime-server its own stats directly. */
-type EquipmentFields = { equippedHelm: string | null; equippedArmor: string | null; equippedBoots: string | null };
+ * never tells realtime-server its own stats directly.
+ *
+ * `equipmentBag` (supabase/migrations/0044_equipment_bag.sql): 20 fixed slots (the 4x5 grid in the
+ * Tab inventory panel, RoomStage.tsx) holding owned-but-not-equipped gear, `null` for an empty
+ * slot — realtime-server never reads this, only the equipped_* columns carry a stat bonus. */
+type EquipmentFields = {
+  equippedHelm: string | null;
+  equippedArmor: string | null;
+  equippedBoots: string | null;
+  equipmentBag: (string | null)[];
+};
+
+/** Fixed bag size — matches the `text[20]` default in 0044_equipment_bag.sql and the 4x5 grid in
+ * RoomStage.tsx's inventory panel. */
+export const EQUIPMENT_BAG_SIZE = 20;
+
+/** Pads/truncates a raw `equipment_bag` value to the fixed EQUIPMENT_BAG_SIZE — defensive against
+ * a missing column (pre-migration) or a row whose array length drifted. */
+function normalizeBag(raw: (string | null)[] | null | undefined): (string | null)[] {
+  const bag = raw ? raw.slice(0, EQUIPMENT_BAG_SIZE) : [];
+  while (bag.length < EQUIPMENT_BAG_SIZE) bag.push(null);
+  return bag;
+}
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
 function activeCosmetic(f: CosmeticFields): string | null {
@@ -144,6 +165,9 @@ export type MyProfile = {
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
+  /** STU-77/0044: 20-slot bag of owned-but-unequipped gear, `null` for an empty slot — see
+   * EquipmentFields' doc comment above. Private, same as coins/flashGrenades. */
+  equipmentBag: (string | null)[];
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -193,16 +217,25 @@ export type MyProfile = {
    */
   purchaseShurikenAmmo: () => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
-   * Buys and equips an equipment item (see EQUIPMENT_ITEMS in
-   * realtime-server/shared/constants.ts and supabase/migrations/0043_equipment.sql) — same atomic
-   * balance-check-deduct-and-equip RPC pattern as purchaseCosmetic. Free (no coin check) when
-   * re-equipping an item already owned, enforced server-side by the same RPC — same shape as
-   * purchaseCharacter's free re-pick.
+   * Buys an equipment item into the bag (see EQUIPMENT_ITEMS in realtime-server/shared/constants.ts
+   * and supabase/migrations/0044_equipment_bag.sql) — same atomic balance-check-deduct RPC pattern
+   * as purchaseCosmetic. Free (no coin check) when already owned — equipped, or already sitting in
+   * the bag — enforced server-side by the same RPC. Does NOT equip it; use equipFromBag for that.
    */
   purchaseEquipment: (slug: string) => Promise<{ ok: true } | { ok: false; error: string }>;
-  /** Clears one equipment slot back to empty — free, direct column update (see
-   * unequip_equipment's grant in supabase/migrations/0043_equipment.sql). */
-  unequipEquipment: (slot: "helm" | "armor" | "boots") => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * STU-77/0044: equips the item sitting at `equipmentBag[bagIndex]` into its slot, swapping
+   * whatever was equipped there (if anything) back into that bag slot — the "drag a bag item onto
+   * a gear slot" gesture in RoomStage.tsx's inventory panel. Free.
+   */
+  equipFromBag: (bagIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * STU-77/0044: clears one equipment slot and drops the item into a specific empty bag slot — the
+   * "drag an equipped item back into the bag" gesture. Free. Fails if that bag slot isn't empty.
+   */
+  unequipToBag: (slot: "helm" | "armor" | "boots", bagIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** STU-77/0044: swaps two bag slots — the "drag within the bag" reorder gesture. Free. */
+  moveBagItem: (fromIndex: number, toIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -240,7 +273,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, shuriken_ammo, equipped_helm, equipped_armor, equipped_boots",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, shuriken_ammo, equipped_helm, equipped_armor, equipped_boots, equipment_bag",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -268,6 +301,7 @@ export function useMyProfile(): MyProfile {
           equippedHelm: data?.equipped_helm ?? null,
           equippedArmor: data?.equipped_armor ?? null,
           equippedBoots: data?.equipped_boots ?? null,
+          equipmentBag: normalizeBag(data?.equipment_bag),
         });
       });
     return () => {
@@ -322,6 +356,7 @@ export function useMyProfile(): MyProfile {
             equipped_helm?: string | null;
             equipped_armor?: string | null;
             equipped_boots?: string | null;
+            equipment_bag?: (string | null)[] | null;
           };
           if (!p.nickname) return;
           setLoaded({
@@ -344,6 +379,7 @@ export function useMyProfile(): MyProfile {
             equippedHelm: p.equipped_helm ?? null,
             equippedArmor: p.equipped_armor ?? null,
             equippedBoots: p.equipped_boots ?? null,
+            equipmentBag: normalizeBag(p.equipment_bag),
           });
         },
       )
@@ -371,6 +407,7 @@ export function useMyProfile(): MyProfile {
   const currentEquippedHelm = loaded?.userId === userId ? loaded.equippedHelm : null;
   const currentEquippedArmor = loaded?.userId === userId ? loaded.equippedArmor : null;
   const currentEquippedBoots = loaded?.userId === userId ? loaded.equippedBoots : null;
+  const currentEquipmentBag = loaded?.userId === userId ? loaded.equipmentBag : normalizeBag(null);
 
   const save = useCallback(
     async (color: string) => {
@@ -423,6 +460,7 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equipmentBag: currentEquipmentBag,
           },
         }),
       );
@@ -448,6 +486,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquipmentBag,
     ],
   );
 
@@ -493,6 +532,7 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equipmentBag: currentEquipmentBag,
           },
         }),
       );
@@ -518,6 +558,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquipmentBag,
     ],
   );
 
@@ -566,6 +607,7 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equipmentBag: currentEquipmentBag,
           },
         }),
       );
@@ -590,6 +632,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquipmentBag,
     ],
   );
 
@@ -638,6 +681,7 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equipmentBag: currentEquipmentBag,
           },
         }),
       );
@@ -663,6 +707,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquipmentBag,
     ],
   );
 
@@ -701,6 +746,7 @@ export function useMyProfile(): MyProfile {
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
+          equipmentBag: currentEquipmentBag,
         },
       }),
     );
@@ -726,6 +772,7 @@ export function useMyProfile(): MyProfile {
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
+    currentEquipmentBag,
   ]);
 
   const saveBallSkin = useCallback(
@@ -761,6 +808,7 @@ export function useMyProfile(): MyProfile {
             equippedHelm: currentEquippedHelm,
             equippedArmor: currentEquippedArmor,
             equippedBoots: currentEquippedBoots,
+            equipmentBag: currentEquipmentBag,
           },
         }),
       );
@@ -786,6 +834,7 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquipmentBag,
     ],
   );
 
@@ -824,6 +873,7 @@ export function useMyProfile(): MyProfile {
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
+          equipmentBag: currentEquipmentBag,
         },
       }),
     );
@@ -849,6 +899,7 @@ export function useMyProfile(): MyProfile {
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
+    currentEquipmentBag,
   ]);
 
   const purchaseShurikenAmmo = useCallback(async () => {
@@ -887,6 +938,7 @@ export function useMyProfile(): MyProfile {
           equippedHelm: currentEquippedHelm,
           equippedArmor: currentEquippedArmor,
           equippedBoots: currentEquippedBoots,
+          equipmentBag: currentEquipmentBag,
         },
       }),
     );
@@ -912,15 +964,16 @@ export function useMyProfile(): MyProfile {
     currentEquippedHelm,
     currentEquippedArmor,
     currentEquippedBoots,
+    currentEquipmentBag,
   ]);
 
   const purchaseEquipment = useCallback(
     async (slug: string) => {
       if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
       if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
-      // Jedno RPC: sprawdza saldo, odejmuje coiny i zapisuje wyekwipowany przedmiot w jednej
-      // transakcji po stronie bazy (patrz supabase/migrations/0043_equipment.sql) — darmowe, gdy
-      // to już aktywny przedmiot w danym slocie, tak jak purchaseCharacter.
+      // Jedno RPC: sprawdza saldo, odejmuje coiny i wkłada przedmiot do pierwszego wolnego slota
+      // bagażu w jednej transakcji po stronie bazy (patrz supabase/migrations/0044_equipment_bag.sql)
+      // — darmowe, gdy to już przedmiot posiadany (wyekwipowany albo już w bagażu).
       const { data, error } = await sb.rpc("purchase_equipment", { p_slug: slug });
       if (error) {
         console.error("purchase_equipment", error);
@@ -929,11 +982,19 @@ export function useMyProfile(): MyProfile {
             ? "Not enough copper coins."
             : error.message === "unknown_item"
               ? "Unknown item."
-              : `Purchase failed: ${saveHint(error)}`;
+              : error.message === "bag_full"
+                ? "Backpack is full."
+                : `Purchase failed: ${saveHint(error)}`;
         return { ok: false as const, error: message };
       }
       const row = (Array.isArray(data) ? data[0] : data) as
-        | { equipped_helm?: string | null; equipped_armor?: string | null; equipped_boots?: string | null; coins?: number | string }
+        | {
+            equipped_helm?: string | null;
+            equipped_armor?: string | null;
+            equipped_boots?: string | null;
+            equipment_bag?: (string | null)[] | null;
+            coins?: number | string;
+          }
         | null;
       const newCoins = Number(row?.coins ?? currentCoins);
       saved.dispatchEvent(
@@ -958,6 +1019,7 @@ export function useMyProfile(): MyProfile {
             equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
             equippedArmor: row?.equipped_armor ?? currentEquippedArmor,
             equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
+            equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
           },
         }),
       );
@@ -984,18 +1046,27 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquipmentBag,
     ],
   );
 
-  const unequipEquipment = useCallback(
-    async (slot: "helm" | "armor" | "boots") => {
+  const equipFromBag = useCallback(
+    async (bagIndex: number) => {
       if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
       if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
-      const { error } = await sb.rpc("unequip_equipment", { p_slot: slot });
+      const { data, error } = await sb.rpc("equip_from_bag", { p_bag_index: bagIndex + 1 });
       if (error) {
-        console.error("unequip_equipment", error);
+        console.error("equip_from_bag", error);
         return { ok: false as const, error: `Failed: ${saveHint(error)}` };
       }
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | {
+            equipped_helm?: string | null;
+            equipped_armor?: string | null;
+            equipped_boots?: string | null;
+            equipment_bag?: (string | null)[] | null;
+          }
+        | null;
       saved.dispatchEvent(
         new CustomEvent("saved", {
           detail: {
@@ -1015,9 +1086,10 @@ export function useMyProfile(): MyProfile {
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
-            equippedHelm: slot === "helm" ? null : currentEquippedHelm,
-            equippedArmor: slot === "armor" ? null : currentEquippedArmor,
-            equippedBoots: slot === "boots" ? null : currentEquippedBoots,
+            equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
+            equippedArmor: row?.equipped_armor ?? currentEquippedArmor,
+            equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
+            equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
           },
         }),
       );
@@ -1044,6 +1116,141 @@ export function useMyProfile(): MyProfile {
       currentEquippedHelm,
       currentEquippedArmor,
       currentEquippedBoots,
+      currentEquipmentBag,
+    ],
+  );
+
+  const unequipToBag = useCallback(
+    async (slot: "helm" | "armor" | "boots", bagIndex: number) => {
+      if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      const { data, error } = await sb.rpc("unequip_to_bag", { p_slot: slot, p_bag_index: bagIndex + 1 });
+      if (error) {
+        console.error("unequip_to_bag", error);
+        const message = error.message === "slot_occupied" ? "That backpack slot is taken." : `Failed: ${saveHint(error)}`;
+        return { ok: false as const, error: message };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | {
+            equipped_helm?: string | null;
+            equipped_armor?: string | null;
+            equipped_boots?: string | null;
+            equipment_bag?: (string | null)[] | null;
+          }
+        | null;
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            mobKills: currentMobKills,
+            coins: currentCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: row?.equipped_helm ?? (slot === "helm" ? null : currentEquippedHelm),
+            equippedArmor: row?.equipped_armor ?? (slot === "armor" ? null : currentEquippedArmor),
+            equippedBoots: row?.equipped_boots ?? (slot === "boots" ? null : currentEquippedBoots),
+            equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
+          },
+        }),
+      );
+      return { ok: true as const };
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentMobKills,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
+      currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
+      currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
+      currentEquipmentBag,
+    ],
+  );
+
+  const moveBagItem = useCallback(
+    async (fromIndex: number, toIndex: number) => {
+      if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      const { data, error } = await sb.rpc("move_bag_item", { p_from_index: fromIndex + 1, p_to_index: toIndex + 1 });
+      if (error) {
+        console.error("move_bag_item", error);
+        return { ok: false as const, error: `Failed: ${saveHint(error)}` };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as { equipment_bag?: (string | null)[] | null } | null;
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            mobKills: currentMobKills,
+            coins: currentCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: currentEquippedHelm,
+            equippedArmor: currentEquippedArmor,
+            equippedBoots: currentEquippedBoots,
+            equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
+          },
+        }),
+      );
+      return { ok: true as const };
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentMobKills,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
+      currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
+      currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
+      currentEquipmentBag,
     ],
   );
 
@@ -1074,6 +1281,7 @@ export function useMyProfile(): MyProfile {
     equippedHelm: mine?.equippedHelm ?? null,
     equippedArmor: mine?.equippedArmor ?? null,
     equippedBoots: mine?.equippedBoots ?? null,
+    equipmentBag: mine?.equipmentBag ?? normalizeBag(null),
     error,
     save,
     purchaseColor,
@@ -1084,7 +1292,9 @@ export function useMyProfile(): MyProfile {
     useShuriken,
     purchaseShurikenAmmo,
     purchaseEquipment,
-    unequipEquipment,
+    equipFromBag,
+    unequipToBag,
+    moveBagItem,
   };
 }
 

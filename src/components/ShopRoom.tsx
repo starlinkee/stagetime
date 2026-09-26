@@ -91,11 +91,11 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     equippedHelm,
     equippedArmor,
     equippedBoots,
+    equipmentBag,
     purchaseCosmetic,
     purchaseCharacter,
     purchaseShurikenAmmo,
     purchaseEquipment,
-    unequipEquipment,
   } = useMyProfile();
   const [floristOpen, setFloristOpen] = useState(false);
   const [activeItem, setActiveItem] = useState<CosmeticSlug | null>(null);
@@ -225,6 +225,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   }, [gunmanBusy, purchaseShurikenAmmo]);
 
   const equippedBySlot: Record<EquipSlot, string | null> = { helm: equippedHelm, armor: equippedArmor, boots: equippedBoots };
+  const ownedSlugs = new Set([equippedHelm, equippedArmor, equippedBoots, ...equipmentBag].filter((s): s is string => s !== null));
 
   const buyGear = useCallback(
     async (slug: string, name: string) => {
@@ -237,25 +238,9 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
         setGearError(result.error);
         return;
       }
-      setToast(`${name} equipped!`);
+      setToast(`${name} added to your backpack — equip it from Tab.`);
     },
     [gearBusy, purchaseEquipment],
-  );
-
-  const unequipGear = useCallback(
-    async (slot: EquipSlot) => {
-      if (gearBusy) return;
-      setGearBusy(true);
-      setGearError(null);
-      const result = await unequipEquipment(slot);
-      setGearBusy(false);
-      if (!result.ok) {
-        setGearError(result.error);
-        return;
-      }
-      setToast("Unequipped.");
-    },
-    [gearBusy, unequipEquipment],
   );
 
   const activeItemInfo = activeItem ? COSMETIC_ITEMS[activeItem] : null;
@@ -466,12 +451,13 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
               </span>
             </div>
             <p className="mb-5 text-center text-sm text-zinc-400">
-              Helm, armor and boots — each grants a real combat bonus. Unequip anytime from Tab for free; re-equipping
-              costs coins again.
+              Helm, armor and boots — each grants a real combat bonus. Buying drops it into your backpack; equip or
+              unequip it anytime for free by dragging it in the Tab inventory panel.
             </p>
             <div className="mb-5 flex flex-col gap-3">
               {EQUIPMENT_ITEMS.map((item) => {
                 const equipped = equippedBySlot[item.slot] === item.slug;
+                const owned = ownedSlugs.has(item.slug);
                 const bonus = item.maxHpBonus
                   ? `+${item.maxHpBonus} max HP`
                   : item.damageReductionBonus
@@ -488,15 +474,10 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
                       <p className="text-sm font-medium text-zinc-100">{item.name}</p>
                       <p className="text-xs text-emerald-400">{bonus}</p>
                     </div>
-                    {equipped ? (
-                      <button
-                        type="button"
-                        onClick={() => void unequipGear(item.slot)}
-                        disabled={gearBusy}
-                        className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
-                      >
-                        Unequip
-                      </button>
+                    {owned ? (
+                      <span className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400">
+                        {equipped ? "Equipped" : "In backpack"}
+                      </span>
                     ) : (
                       <button
                         type="button"
