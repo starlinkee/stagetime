@@ -33,6 +33,7 @@ import type { BallSkin } from "@/lib/useProfile";
 import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
 import { coinsForMinutes } from "@/lib/coins";
+import { VoiceChat } from "@/lib/voiceChat";
 import { useStudyXp } from "@/lib/useStudyXp";
 import { levelFromXp, xpForMinutes } from "@/lib/xp";
 import type { ClientMessage, DummyState, EnemyState, HitEvent, PomodoroSessionState, ServerBall, ServerMessage } from "@realtime-shared/types";
@@ -1772,6 +1773,9 @@ export function RoomStage({
    * fetched asynchronously after that join (see useProfile's DEFAULT_COLOR fallback) would leave
    * every ball this player throws stuck showing the placeholder color forever. */
   const realtimeWsRef = useRef<WebSocket | null>(null);
+  /** Proximity voice chat (hold Z) — lives for the same lifetime as the connect effect's own `ws`
+   * below (created alongside it, destroyed in its cleanup), see src/lib/voiceChat.ts. */
+  const voiceChatRef = useRef<VoiceChat | null>(null);
   /**
    * Faza F4 (docs/combat_sync_plan.md): only populated when REALTIME_SERVER_URL is set. Holds the
    * shooter's own just-fired ball/slash for instant local feedback — never checked against
@@ -2028,6 +2032,18 @@ export function RoomStage({
     // widzi aktualne połączenie bez własnej logiki reconnect.
     let ws: WebSocket | null = null;
     let wsCleanedUp = false;
+    // Proximity voice chat (hold Z) — only meaningful on the realtime-server branch, same gate as
+    // everything else in this effect; `ws` is captured by reference via this closure's own
+    // `sendSignal`, so a reconnect (which reassigns `ws` below) doesn't need this recreated.
+    const voiceChat = REALTIME_SERVER_URL
+      ? new VoiceChat(netKey, (to, data) => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            const signal: ClientMessage = { type: "voiceSignal", to, data };
+            ws.send(JSON.stringify(signal));
+          }
+        })
+      : null;
+    voiceChatRef.current = voiceChat;
     let reconnectAttempts = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     // Ostatnia znana autorytatywna pozycja z serwera dla nas — NIE jest zerowana po jednym użyciu:
@@ -2138,6 +2154,10 @@ export function RoomStage({
           // and was torn down server-side (see the tick loop in realtime-server/src/server.ts).
           window.sessionStorage.removeItem(SPAWN_FROM_KEY);
           router.push("/");
+          return;
+        }
+        if (msg.type === "voiceSignal") {
+          voiceChat?.handleSignal(msg.from, msg.data);
           return;
         }
         if (msg.type === "emote") {
@@ -3183,6 +3203,10 @@ export function RoomStage({
       for (const k of Object.keys(othersDisplayRef.current)) {
         if (!othersRef.current[k]) delete othersDisplayRef.current[k];
       }
+      if (voiceChat) {
+        const distances = voiceChat.updateProximity(myPos.current, othersDisplayRef.current);
+        voiceChat.syncPeers(Object.keys(othersRef.current), distances);
+      }
       // Same easing as remote players above, for the room's own enemy (see enemyPosRef's doc
       // comment) — always alive, never a corpse/ghost, so there's no dead-branch to mirror here.
       for (const k of Object.keys(enemyPosRef.current)) {
@@ -3375,11 +3399,21 @@ export function RoomStage({
         }
         return;
       }
+      // Proximity voice chat: push-to-talk, not gated by myDead/frozenByWork() — talking isn't
+      // an attack, same reasoning as the KeyB skin-cycle key above.
+      if (e.code === "KeyZ") {
+        if (!e.repeat) voiceChat?.setTransmitting(true);
+        return;
+      }
       if (!ARROWS.has(e.key)) return;
       e.preventDefault(); // strzałki nie przewijają strony
       held.add(e.key);
     };
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "KeyZ") {
+        voiceChat?.setTransmitting(false);
+        return;
+      }
       if (e.code === "ControlLeft" || e.code === "ControlRight") {
         if (emoteWheelActive) {
           emoteWheelActive = false;
@@ -3428,6 +3462,7 @@ export function RoomStage({
     };
     const onBlur = () => {
       held.clear();
+      voiceChat?.setTransmitting(false);
       if (emoteWheelActive) {
         emoteWheelActive = false;
         wheelHeld.clear();
@@ -3458,6 +3493,8 @@ export function RoomStage({
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
       realtimeWsRef.current = null;
+      voiceChat?.destroy();
+      voiceChatRef.current = null;
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", persist);
       cancelAnimationFrame(raf);
@@ -3824,7 +3861,7 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · tap 1-4 to pick a weapon (throw, slash, shuriken, fireball) · hold Space to charge and release for throw/fireball, tap Space to fire slash/shuriken · tap C to roll in the direction you're facing (faster than walking) · hold Ctrl to open the emote wheel, pick a direction with the arrow keys and release Ctrl to send it (works even during work)";
+      "Use the arrow keys ← ↑ ↓ → to move around · tap 1-4 to pick a weapon (throw, slash, shuriken, fireball) · hold Space to charge and release for throw/fireball, tap Space to fire slash/shuriken · tap C to roll in the direction you're facing (faster than walking) · hold Ctrl to open the emote wheel, pick a direction with the arrow keys and release Ctrl to send it (works even during work) · hold Z to talk (voice chat)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";

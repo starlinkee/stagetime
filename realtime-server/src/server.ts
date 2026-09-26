@@ -1412,6 +1412,17 @@ wss.on("connection", (ws, req) => {
       lamps.set(lamp.id, !lamps.get(lamp.id));
       return;
     }
+    // Proximity voice chat: pure relay, same "request, not an assertion" shape as toggleLamp
+    // above — only relayed when `to` actually names a connection in this connection's own room
+    // right now, never trusted to cross rooms. The signaling payload itself (`data`) is opaque;
+    // this server never inspects it, the audio it sets up is peer-to-peer, never through here.
+    if (msg.type === "voiceSignal") {
+      const targetSet = rooms.get(conn.roomSlug);
+      const target = targetSet ? [...targetSet].find((c) => c.id === msg.to) : undefined;
+      if (!target) return;
+      send(target.ws, { type: "voiceSignal", from: conn.id, data: msg.data });
+      return;
+    }
   });
 
   ws.on("close", () => {

@@ -264,7 +264,16 @@ export type ClientMessage =
    * this room even has lamps at all (lobby only) before flipping that lamp's state and
    * broadcasting it to the room in the next "state" message's `lamps` field.
    */
-  | { type: "toggleLamp"; id: string };
+  | { type: "toggleLamp"; id: string }
+  /**
+   * Proximity voice chat: an opaque WebRTC signaling payload (SDP offer/answer or a trickled
+   * ICE candidate) addressed to one other connection id in the same room. realtime-server never
+   * inspects `data`, only relays it — the actual audio is peer-to-peer (WebRTC), never touching
+   * this server. `to` is a request, not an assertion: the server only relays when `to` names a
+   * connection actually in this connection's own room right now (see the "voiceSignal" handler
+   * in server.ts), same "same room only" reasoning as toggleLamp above.
+   */
+  | { type: "voiceSignal"; to: string; data: unknown };
 
 /**
  * One room-owned enemy (see ARENA_ROOM_SLUG/ENEMY_* in shared/constants.ts) — everyone in the
@@ -380,4 +389,10 @@ export type ServerMessage =
    * and was torn down server-side (see the tick loop in server.ts) — same "server already moved
    * you, only the client's own router can navigate" reasoning as `respawn_redirect` above.
    */
-  | { type: "session_ended_redirect" };
+  | { type: "session_ended_redirect" }
+  /**
+   * Relayed straight through from the sender's own "voiceSignal" ClientMessage above — `from` is
+   * the sender's connection id (matches PlayerState.id) so the recipient's RTCPeerConnection-per-
+   * peer map can route it. Sent only to the one addressed connection, never broadcast.
+   */
+  | { type: "voiceSignal"; from: string; data: unknown };
