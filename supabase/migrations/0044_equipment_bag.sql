@@ -43,7 +43,11 @@ $$;
 -- purchase_equipment: now buys INTO the bag (first empty slot) instead of equipping directly —
 -- equipping is a separate, free drag gesture (equip_from_bag below). Still free/no-op when already
 -- owned, but "owned" now means equipped OR already sitting in the bag (items stay unique per slug).
-create or replace function public.purchase_equipment(p_slug text)
+-- The OUT-parameter row type changed from 0043's (adding equipment_bag), and Postgres refuses to
+-- CREATE OR REPLACE a function across a return-type change — drop it first.
+drop function if exists public.purchase_equipment(text);
+
+create function public.purchase_equipment(p_slug text)
 returns table (equipped_helm text, equipped_armor text, equipped_boots text, equipment_bag text[], coins double precision)
 language plpgsql
 security definer
