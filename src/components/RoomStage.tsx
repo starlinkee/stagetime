@@ -3963,6 +3963,17 @@ export function RoomStage({
         </div>
       </div>
     )}
+    {REALTIME_SERVER_URL && (
+      <div className="fixed bottom-0 right-4 z-20 pb-1">
+        <button
+          type="button"
+          onClick={() => setStatsOpen(true)}
+          className="text-xs font-medium text-zinc-300/80 [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)] hover:text-white"
+        >
+          Press Tab for all stats
+        </button>
+      </div>
+    )}
     {respawnRemainingSec > 0 && (
       <div className="pointer-events-none fixed inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-zinc-950/60">
         <p className="text-4xl font-extrabold text-red-500">You died…</p>
