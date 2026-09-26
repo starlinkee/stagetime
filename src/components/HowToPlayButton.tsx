@@ -22,10 +22,14 @@ export function HowToPlayButton() {
     <>
       {open &&
         createPortal(
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/40 p-6">
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/40 p-6"
+            onClick={close}
+          >
           <div
             role="alertdialog"
             aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
             className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900/85 p-6 text-zinc-100 shadow-2xl backdrop-blur-md"
           >
             <h2 className="mb-4 font-fredoka text-lg font-semibold">How to play</h2>

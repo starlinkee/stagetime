@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 /**
  * Coordinates the header's dropdown buttons (Admin, How to play, About, Idea) so opening one
@@ -15,8 +15,19 @@ function setCurrent(next: string | null) {
   for (const l of listeners) l(current);
 }
 
-/** Reactive open state + toggle/close for a single header panel identified by `id`. */
-export function useHeaderPanel(id: string): [boolean, () => void, () => void] {
+/**
+ * Reactive open state + toggle/close for a single header panel identified by `id`.
+ * `containerRef` (optional) should be attached to the element wrapping both the toggle button
+ * and the panel's own dropdown content — for panels rendered in place (About, Admin) this makes
+ * a click anywhere else on the page close the panel. Panels rendered through a portal (Help,
+ * Idea) have a full-screen backdrop element instead and don't need this — clicking their
+ * backdrop already calls `close` directly, and a containerRef wouldn't reach portaled content
+ * anyway (it lives outside the container's DOM subtree once portaled).
+ */
+export function useHeaderPanel(
+  id: string,
+  containerRef?: RefObject<HTMLElement | null>
+): [boolean, () => void, () => void] {
   const [open, setOpen] = useState(() => current === id);
   useEffect(() => {
     const listener: Listener = (openId) => setOpen(openId === id);
@@ -30,6 +41,8 @@ export function useHeaderPanel(id: string): [boolean, () => void, () => void] {
   const close = () => {
     if (current === id) setCurrent(null);
   };
+  const closeRef = useRef(close);
+  closeRef.current = close;
 
   // Escape closes whichever header panel is open — consistent with every other overlay in the
   // app (chat, stats, ProfileMenu), so users always have a keyboard way out even if a panel's
@@ -37,12 +50,24 @@ export function useHeaderPanel(id: string): [boolean, () => void, () => void] {
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") closeRef.current();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Clicking anywhere outside the panel (and its toggle button) closes it — same expectation
+  // as every other overlay here, so a stray click elsewhere on the page never leaves a panel
+  // stuck open behind whatever the user meant to interact with.
+  useEffect(() => {
+    if (!open || !containerRef) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const el = containerRef.current;
+      if (el && !el.contains(e.target as Node)) closeRef.current();
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [open, containerRef]);
 
   return [open, toggle, close];
 }

@@ -72,8 +72,13 @@ export function IdeaBox() {
     <div className="relative">
       {open &&
         createPortal(
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-[2px]">
-          <div className="max-h-[85vh] w-full max-w-md min-w-[20rem] overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
+          <div
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-[2px]"
+            onClick={close}
+          >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] w-full max-w-md min-w-[20rem] overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
             <div className="mb-3 flex items-center justify-between">
               <span className="font-semibold">Ideas</span>
               <button type="button" onClick={close} className="text-xs text-zinc-400 hover:text-zinc-200">

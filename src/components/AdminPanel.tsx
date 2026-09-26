@@ -1,4 +1,5 @@
 "use client";
+import { useRef } from "react";
 import {
   ADMIN_SETTINGS_SCHEMA,
   DEFAULT_ADMIN_SETTINGS,
@@ -16,13 +17,14 @@ import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
  * od razu w całej apce na tej wersji, trzymane w localStorage.
  */
 export function AdminPanel() {
-  const [open, toggle] = useHeaderPanel("admin");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [open, toggle] = useHeaderPanel("admin", containerRef);
   const settings = useAdminSettings();
 
   if (!isAdminUiEnabled()) return null;
 
   return (
-    <div className="relative">
+    <div className="relative" ref={containerRef}>
       {open && (
         <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
           <div className="mb-3 flex items-center justify-between">
