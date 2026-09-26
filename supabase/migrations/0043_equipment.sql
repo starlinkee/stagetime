@@ -41,14 +41,16 @@ begin
     raise exception 'unknown_item' using errcode = 'P0001';
   end if;
 
-  -- Already equipped in its own slot: free re-pick, same shape as purchase_character.
+  -- Already equipped in its own slot: free re-pick, same shape as purchase_character. Bare column
+  -- names here are ambiguous against this function's own RETURNS TABLE output parameters (same
+  -- bug 0029/0032/0039 already hit for this exact pattern) — qualified from the start.
   update public.profiles
   set updated_at = now()
   where id = auth.uid()
     and (
-      (v_slot = 'helm' and equipped_helm = p_slug)
-      or (v_slot = 'armor' and equipped_armor = p_slug)
-      or (v_slot = 'boots' and equipped_boots = p_slug)
+      (v_slot = 'helm' and profiles.equipped_helm = p_slug)
+      or (v_slot = 'armor' and profiles.equipped_armor = p_slug)
+      or (v_slot = 'boots' and profiles.equipped_boots = p_slug)
     );
 
   if not found then
