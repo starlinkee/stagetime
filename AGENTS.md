@@ -12,7 +12,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Architektura Projektu: stan na 2026-09-23
 
 Ta appka to coworking z timerem Pomodoro (nie gra RPG). Repo **nie jest** monorepo — nie ma
-`/client`, `/server`, `/shared`, nie ma Colyseus, nie ma AI potworów ani FSM.
+`/client`, `/server`, `/shared`, nie ma Colyseus. AI potwory/FSM (moby, bossowie) są **planowane**,
+ale jeszcze nie zaimplementowane — patrz "Decyzja (2026-09-23)" niżej o tym, kiedy to uzasadnia
+migrację na Colyseus.
 
 ### `src/` — Next.js (App Router), warstwa prezentacji + część danych
 - Frontend na Vercel; `src/app/api/*` to bezstanowe route handlery Next.js.
@@ -44,8 +46,9 @@ Ta appka to coworking z timerem Pomodoro (nie gra RPG). Repo **nie jest** monore
 - To jest **PvP kosmetyczne między prawdziwymi graczami**: HP (`MAX_HP` w
   `realtime-server/shared/constants.ts`, dmg/respawn/immunity w `server.ts`) **już istnieje** —
   obrażenia liczą się tylko poza lobby (`isLobbyRoom` w `server.ts` pomija odejmowanie HP). Brak
-  tu za to ekonomii (transakcyjnej — dziś jest tylko `coins`) i nagród za trafienie; nie ma tu, i
-  nie jest planowane, AI/FSM/przeciwników sterowanych komputerowo.
+  tu za to ekonomii (transakcyjnej — dziś jest tylko `coins`) i nagród za trafienie. AI/FSM
+  przeciwników sterowanych komputerowo (moby, bossowie) nie ma tu jeszcze, ale **jest planowane**
+  (patrz backlog: STU-14 dungeons, STU-27 boss fight).
 
 ### Decyzja (2026-09-23): Colyseus przy dodaniu ekonomii / AI przeciwników
 HP poszło jako pola w `Conn` (`realtime-server/src/server.ts`) i logika w tej samej pętli tick —
@@ -111,8 +114,9 @@ tylko wtedy, gdy jest faktycznie coś do zacommitowania.
 2. Nową mechanikę ruchu/walki/współdzielonego stanu zacznij od typów/stałych w
    `realtime-server/shared/`, potem logika w `realtime-server/src/server.ts`, na końcu
    `src/components/RoomStage.tsx` wyłącznie jako prezentacja tego, co przyszło z serwera.
-3. Nic, co dotyczy AI przeciwników/FSM potworów — to nie ma zastosowania w tym repo i nie jest
-   planowane.
+3. AI przeciwnicy/FSM potworów (moby, bossowie) **są planowane** (STU-14, STU-27) — jeszcze nie
+   zaimplementowane. Przy pisaniu takiej mechaniki trzymaj się kolejności z punktu 2 (typy w
+   `realtime-server/shared/`, logika w `server.ts`, `RoomStage.tsx` tylko jako prezentacja).
 4. Jeśli ktoś poprosi o zmiany w HP albo o dodanie ekonomii/AI przeciwników, nie proponuj przy tej
    okazji migracji na Colyseus — patrz "Decyzja (2026-09-23)" wyżej o tym, kiedy to faktycznie
    byłoby zasadne.
