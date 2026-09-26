@@ -22,9 +22,10 @@ const LAMP_GLOW_SIZE = 160;
  * DECOR_SCALE) placement, per request (started at 5x, then halved). */
 const HOUSE_SIZE = 450;
 
-/** CSS px square for the Fountain of Wealth's sprite — close to filling its 140px-tall zone box
- * (see fountainZone in src/app/page.tsx) without touching the box's edges. */
-const FOUNTAIN_SIZE = 130;
+/** CSS px square for the Fountain of Wealth's sprite — 2x its original 130px size (which closely
+ * filled its 140px-tall zone box, see fountainZone in src/app/page.tsx), per request. Now
+ * overflows that box on purpose so the fountain reads bigger than its floor trigger area. */
+const FOUNTAIN_SIZE = 260;
 
 export function LobbyDecor({
   width,
