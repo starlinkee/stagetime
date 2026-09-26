@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Fredoka, Geist, Geist_Mono } from "next/font/google";
+import { AboutGameButton } from "@/components/AboutGameButton";
 import { AdminPanel } from "@/components/AdminPanel";
 import { AuthButton } from "@/components/AuthButton";
 import { HowToPlayButton } from "@/components/HowToPlayButton";
@@ -38,16 +39,17 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} ${fredoka.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <header className="sticky top-0 z-20 flex h-14 items-center border-b border-zinc-800/60 bg-zinc-950/90 px-6 backdrop-blur">
-          <div className="flex flex-1 items-center gap-2">
+        <header className="sticky top-0 z-20 flex h-14 items-center gap-2 border-b border-zinc-800/60 bg-zinc-950/90 px-3 backdrop-blur sm:px-6">
+          <div className="flex flex-1 items-center gap-1 sm:gap-2">
             <AdminPanel />
             <AllIdeasLink />
           </div>
-          <div className="flex justify-center">
+          <div className="flex shrink-0 justify-center">
             <PresenceBar />
           </div>
-          <div className="flex flex-1 items-center justify-end gap-2">
+          <div className="flex flex-1 items-center justify-end gap-1 sm:gap-2">
             <SoundToggleButton />
+            <AboutGameButton />
             <HowToPlayButton />
             <IdeaBox />
             <AuthButton />

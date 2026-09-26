@@ -176,3 +176,5 @@ Wiadomość commita jest wymagana tylko wtedy, gdy jest faktycznie coś do zacom
    tu z korzenia repo, nie z `public/`, więc nie zachowują pełnej ścieżki źródłowej jak w
    przykładzie wyżej. Trzymane jako materiał wejściowy do (re)generowania spriteów w grze, nie
    jako aktywne assety gry.
+
+   Po każdym rozwiązaniu commituj lub merguj od razu zmiany do dev

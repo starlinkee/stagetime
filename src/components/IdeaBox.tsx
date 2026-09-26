@@ -4,6 +4,7 @@ import { useState } from "react";
 import { MAX_IDEA_AUTHOR, MAX_IDEA_BODY, useIdeas } from "@/lib/useIdeas";
 import { useMyProfile } from "@/lib/useProfile";
 import { useSession } from "@/lib/useSession";
+import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 
 /** Only this account sees the link to the ideas list (see supabase/migrations/0008). */
 const ADMIN_NICK = "v_everything";
@@ -17,11 +18,8 @@ export function AllIdeasLink() {
   if (nick !== ADMIN_NICK) return null;
 
   return (
-    <Link
-      href="/ideas"
-      className="rounded-full bg-zinc-800/90 px-3 py-2 text-xs font-medium text-zinc-200 shadow-lg ring-1 ring-zinc-600 hover:bg-zinc-700"
-    >
-      📋 All ideas
+    <Link href="/ideas" className={HEADER_BUTTON_CLASS}>
+      Ideas
     </Link>
   );
 }
@@ -132,12 +130,8 @@ export function IdeaBox() {
             )}
           </div>
         )}
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="rounded-full bg-zinc-800/90 px-3 py-2 text-xs font-medium text-zinc-200 shadow-lg ring-1 ring-zinc-600 hover:bg-zinc-700"
-        >
-          💡 Report idea
+        <button type="button" onClick={() => setOpen((o) => !o)} className={HEADER_BUTTON_CLASS}>
+          Idea
         </button>
     </div>
   );

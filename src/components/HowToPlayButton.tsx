@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useHowToPlay } from "@/lib/howToPlay";
+import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 
 /** Header button next to "Report idea": shows the current room's controls on click, on demand. */
 export function HowToPlayButton() {
@@ -26,12 +27,8 @@ export function HowToPlayButton() {
           </ul>
         </div>
       )}
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="rounded-full bg-zinc-800/90 px-3 py-2 text-xs font-medium text-zinc-200 shadow-lg ring-1 ring-zinc-600 hover:bg-zinc-700"
-      >
-        🎮 How to play
+      <button type="button" onClick={() => setOpen((o) => !o)} className={HEADER_BUTTON_CLASS}>
+        Help
       </button>
     </div>
   );

@@ -43,7 +43,6 @@ import {
   HITBOX_W,
   HIT_PAD,
   IMMUNITY_MS,
-  MAX_HP,
   ORB_R_MAX,
   ORB_R_MIN,
   PERSON_H,
@@ -923,10 +922,18 @@ async function handleJoin(conn: Conn, ws: WebSocket, msg: Extract<ClientMessage,
   conn.userId = verified.userId;
   conn.nick = typeof msg.nick === "string" ? msg.nick.slice(0, 40) : null;
   conn.color = typeof msg.color === "string" ? msg.color : "#ffffff";
+  // STU-77: equipped-gear bonuses, signed onto the entry token by /api/realtime/token (see
+  // EquipBonuses's doc comment in shared/entryToken.ts) — reset to the plain defaults first so
+  // regear-then-rejoin (or losing an item) can't leave a stale bonus from a previous join on this
+  // same long-lived Conn/stats object.
+  conn.stats.maxHp = DEFAULT_CHARACTER_STATS.maxHp + verified.equip.maxHpBonus;
+  conn.stats.damageReduction = DEFAULT_CHARACTER_STATS.damageReduction + verified.equip.damageReduction;
+  conn.stats.moveSpeed = DEFAULT_CHARACTER_STATS.moveSpeed + verified.equip.moveSpeedBonus;
+  conn.speed = conn.stats.moveSpeed;
   // Only a reconnect-ghost resume carries HP/respawn/immunity forward — `loaded` (a saved
   // position from Postgres) and every other branch below are treated as a fresh life, same as a
   // brand-new connection.
-  conn.hp = resumeFrom?.hp ?? MAX_HP;
+  conn.hp = resumeFrom?.hp ?? conn.stats.maxHp;
   conn.respawnAt = resumeFrom?.respawnAt ?? 0;
   conn.immuneUntil = resumeFrom?.immuneUntil ?? 0;
   // Same "only a reconnect-ghost resume carries this forward" rule as hp/respawnAt/immuneUntil —
@@ -1028,7 +1035,7 @@ wss.on("connection", (ws, req) => {
     staminaUpdatedAt: Date.now(),
     speed: stats.moveSpeed,
     stats,
-    hp: MAX_HP,
+    hp: stats.maxHp,
     respawnAt: 0,
     immuneUntil: 0,
     gx: 0,
@@ -1279,7 +1286,7 @@ setInterval(() => {
       const spawn = clampPos(worldW(true) / 2, worldH(true) / 2, true);
       conn.x = spawn.x;
       conn.y = spawn.y;
-      conn.hp = MAX_HP;
+      conn.hp = conn.stats.maxHp;
       conn.respawnAt = 0;
       conn.immuneUntil = now + IMMUNITY_MS;
       // Ghost only exists for the respawn countdown that just ended — snap it back onto the body
@@ -1524,10 +1531,14 @@ setInterval(() => {
         continue; // one hit ends the ball/hitbox, same as hitting a player
       }
       if (target) {
+        // STU-77: target's own armor (see CharacterStats.damageReduction) shaves the incoming hit
+        // before anything else sees it, so the HitEvent's `dmg` (what the killer's client shows)
+        // and the actual hp subtraction below always agree.
+        const dmg = Math.round(b.dmg * (1 - target.stats.damageReduction));
         // Decided before mutating target.hp below, so the HitEvent (which the killer's own client
         // uses to trigger the "KILL"/reward callout — see the `killed` doc comment in
         // shared/types.ts) and the actual kill are always in agreement.
-        const killed = !isLobby && target.hp > 0 && target.hp - b.dmg <= 0;
+        const killed = !isLobby && target.hp > 0 && target.hp - dmg <= 0;
         const hits = roomHits.get(slug) ?? [];
         hits.push({
           targetId: target.id,
@@ -1540,14 +1551,14 @@ setInterval(() => {
           // the lobby (where `dmg` below is zeroed for gameplay) so the splash still matches
           // whatever tier color the ball was flying with.
           color: dmgTint(b.dmg),
-          dmg: isLobby ? 0 : b.dmg,
+          dmg: isLobby ? 0 : dmg,
           killed,
         });
         roomHits.set(slug, hits);
         // The lobby stays a safe space (see MAX_HP's doc comment in shared/constants.ts): the hit
         // still resolves and flashes for everyone, it just never costs HP or a life there.
         if (!isLobby) {
-          target.hp = Math.max(0, target.hp - b.dmg);
+          target.hp = Math.max(0, target.hp - dmg);
           if (killed) {
             target.respawnAt = now + RESPAWN_MS;
             target.inputDx = 0;
@@ -1610,6 +1621,7 @@ setInterval(() => {
       y: c.y,
       d: c.d,
       hp: c.hp,
+      maxHp: c.stats.maxHp,
       respawnAt: c.respawnAt,
       immuneUntil: c.immuneUntil,
       gx: c.gx,

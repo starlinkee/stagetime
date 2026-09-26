@@ -80,6 +80,13 @@ type FlashGrenadeFields = { flashGrenades: number };
 type BallSkinFields = { ballSkin: string | null };
 /** Third weapon (shuriken, weapon slot 3) ammo stock — see supabase/migrations/0040_shuriken_ammo.sql. */
 type ShurikenAmmoFields = { shurikenAmmo: number };
+/** STU-77: equipped gear slugs (see EQUIPMENT_ITEMS in realtime-server/shared/constants.ts and
+ * supabase/migrations/0043_equipment.sql) — null means that slot is empty. Unlike cosmetic these
+ * carry a real gameplay stat bonus, so besides riding along in the profile (this file) they're
+ * also re-read server-side by src/app/api/realtime/token/route.ts and signed into the entry token
+ * realtime-server trusts (see mintEntryToken in realtime-server/shared/entryToken.ts) — the client
+ * never tells realtime-server its own stats directly. */
+type EquipmentFields = { equippedHelm: string | null; equippedArmor: string | null; equippedBoots: string | null };
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
 function activeCosmetic(f: CosmeticFields): string | null {
@@ -131,6 +138,12 @@ export type MyProfile = {
    * supabase/migrations/0040_shuriken_ammo.sql. Same "ownership/quantity is Postgres, *use* is
    * realtime-server" split as flashGrenades above. Private, like coins/flashGrenades. */
   shurikenAmmo: number;
+  /** STU-77: equipped helm/armor/boots slugs, or null for an empty slot — see EquipmentFields'
+   * doc comment above. Private, like coins/flashGrenades: only this player's own client needs to
+   * know its slugs, since the resulting stat bonus already travels via the signed entry token. */
+  equippedHelm: string | null;
+  equippedArmor: string | null;
+  equippedBoots: string | null;
   error: string | null;
   /** Zapisuje kolor (nick zawsze pochodzi z Discorda); zwraca true przy powodzeniu. */
   save: (color: string) => Promise<boolean>;
@@ -179,6 +192,17 @@ export type MyProfile = {
    * balance check, coin deduction and the ammo grant happen in one transaction.
    */
   purchaseShurikenAmmo: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * Buys and equips an equipment item (see EQUIPMENT_ITEMS in
+   * realtime-server/shared/constants.ts and supabase/migrations/0043_equipment.sql) — same atomic
+   * balance-check-deduct-and-equip RPC pattern as purchaseCosmetic. Free (no coin check) when
+   * re-equipping an item already owned, enforced server-side by the same RPC — same shape as
+   * purchaseCharacter's free re-pick.
+   */
+  purchaseEquipment: (slug: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Clears one equipment slot back to empty — free, direct column update (see
+   * unequip_equipment's grant in supabase/migrations/0043_equipment.sql). */
+  unequipEquipment: (slot: "helm" | "armor" | "boots") => Promise<{ ok: true } | { ok: false; error: string }>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -205,7 +229,8 @@ export function useMyProfile(): MyProfile {
         CharacterFields &
         FlashGrenadeFields &
         BallSkinFields &
-        ShurikenAmmoFields)
+        ShurikenAmmoFields &
+        EquipmentFields)
     | null
   >(null);
   const [error, setError] = useState<string | null>(null);
@@ -215,7 +240,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, shuriken_ammo",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, shuriken_ammo, equipped_helm, equipped_armor, equipped_boots",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -240,6 +265,9 @@ export function useMyProfile(): MyProfile {
           flashGrenades: data?.flash_grenades ?? 0,
           ballSkin: data?.ball_skin ?? null,
           shurikenAmmo: data?.shuriken_ammo ?? 0,
+          equippedHelm: data?.equipped_helm ?? null,
+          equippedArmor: data?.equipped_armor ?? null,
+          equippedBoots: data?.equipped_boots ?? null,
         });
       });
     return () => {
@@ -255,7 +283,8 @@ export function useMyProfile(): MyProfile {
             CharacterFields &
             FlashGrenadeFields &
             BallSkinFields &
-            ShurikenAmmoFields
+            ShurikenAmmoFields &
+            EquipmentFields
         >
       ).detail;
       if (next.userId === userId) setLoaded(next);
@@ -290,6 +319,9 @@ export function useMyProfile(): MyProfile {
             flash_grenades?: number;
             ball_skin?: string | null;
             shuriken_ammo?: number;
+            equipped_helm?: string | null;
+            equipped_armor?: string | null;
+            equipped_boots?: string | null;
           };
           if (!p.nickname) return;
           setLoaded({
@@ -309,6 +341,9 @@ export function useMyProfile(): MyProfile {
             flashGrenades: p.flash_grenades ?? 0,
             ballSkin: p.ball_skin ?? null,
             shurikenAmmo: p.shuriken_ammo ?? 0,
+            equippedHelm: p.equipped_helm ?? null,
+            equippedArmor: p.equipped_armor ?? null,
+            equippedBoots: p.equipped_boots ?? null,
           });
         },
       )
@@ -333,6 +368,9 @@ export function useMyProfile(): MyProfile {
   const currentFlashGrenades = loaded?.userId === userId ? loaded.flashGrenades : 0;
   const currentBallSkin = loaded?.userId === userId ? safeBallSkin(loaded.ballSkin) : DEFAULT_BALL_SKIN;
   const currentShurikenAmmo = loaded?.userId === userId ? loaded.shurikenAmmo : 0;
+  const currentEquippedHelm = loaded?.userId === userId ? loaded.equippedHelm : null;
+  const currentEquippedArmor = loaded?.userId === userId ? loaded.equippedArmor : null;
+  const currentEquippedBoots = loaded?.userId === userId ? loaded.equippedBoots : null;
 
   const save = useCallback(
     async (color: string) => {
@@ -382,6 +420,9 @@ export function useMyProfile(): MyProfile {
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: currentEquippedHelm,
+            equippedArmor: currentEquippedArmor,
+            equippedBoots: currentEquippedBoots,
           },
         }),
       );
@@ -404,6 +445,9 @@ export function useMyProfile(): MyProfile {
       currentFlashGrenades,
       currentBallSkin,
       currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
     ],
   );
 
@@ -446,6 +490,9 @@ export function useMyProfile(): MyProfile {
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: currentEquippedHelm,
+            equippedArmor: currentEquippedArmor,
+            equippedBoots: currentEquippedBoots,
           },
         }),
       );
@@ -468,6 +515,9 @@ export function useMyProfile(): MyProfile {
       currentFlashGrenades,
       currentBallSkin,
       currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
     ],
   );
 
@@ -513,6 +563,9 @@ export function useMyProfile(): MyProfile {
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: currentEquippedHelm,
+            equippedArmor: currentEquippedArmor,
+            equippedBoots: currentEquippedBoots,
           },
         }),
       );
@@ -534,6 +587,9 @@ export function useMyProfile(): MyProfile {
       currentFlashGrenades,
       currentBallSkin,
       currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
     ],
   );
 
@@ -579,6 +635,9 @@ export function useMyProfile(): MyProfile {
             flashGrenades: currentFlashGrenades,
             ballSkin: currentBallSkin,
             shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: currentEquippedHelm,
+            equippedArmor: currentEquippedArmor,
+            equippedBoots: currentEquippedBoots,
           },
         }),
       );
@@ -601,6 +660,9 @@ export function useMyProfile(): MyProfile {
       currentFlashGrenades,
       currentBallSkin,
       currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
     ],
   );
 
@@ -636,6 +698,9 @@ export function useMyProfile(): MyProfile {
           flashGrenades: remaining,
           ballSkin: currentBallSkin,
           shurikenAmmo: currentShurikenAmmo,
+          equippedHelm: currentEquippedHelm,
+          equippedArmor: currentEquippedArmor,
+          equippedBoots: currentEquippedBoots,
         },
       }),
     );
@@ -658,6 +723,9 @@ export function useMyProfile(): MyProfile {
     currentFlashGrenades,
     currentBallSkin,
     currentShurikenAmmo,
+    currentEquippedHelm,
+    currentEquippedArmor,
+    currentEquippedBoots,
   ]);
 
   const saveBallSkin = useCallback(
@@ -690,6 +758,9 @@ export function useMyProfile(): MyProfile {
             flashGrenades: currentFlashGrenades,
             ballSkin: skin,
             shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: currentEquippedHelm,
+            equippedArmor: currentEquippedArmor,
+            equippedBoots: currentEquippedBoots,
           },
         }),
       );
@@ -712,6 +783,9 @@ export function useMyProfile(): MyProfile {
       currentCharacter,
       currentFlashGrenades,
       currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
     ],
   );
 
@@ -747,6 +821,9 @@ export function useMyProfile(): MyProfile {
           flashGrenades: currentFlashGrenades,
           ballSkin: currentBallSkin,
           shurikenAmmo: remaining,
+          equippedHelm: currentEquippedHelm,
+          equippedArmor: currentEquippedArmor,
+          equippedBoots: currentEquippedBoots,
         },
       }),
     );
@@ -769,6 +846,9 @@ export function useMyProfile(): MyProfile {
     currentFlashGrenades,
     currentBallSkin,
     currentShurikenAmmo,
+    currentEquippedHelm,
+    currentEquippedArmor,
+    currentEquippedBoots,
   ]);
 
   const purchaseShurikenAmmo = useCallback(async () => {
@@ -804,6 +884,9 @@ export function useMyProfile(): MyProfile {
           flashGrenades: currentFlashGrenades,
           ballSkin: currentBallSkin,
           shurikenAmmo: newAmmo,
+          equippedHelm: currentEquippedHelm,
+          equippedArmor: currentEquippedArmor,
+          equippedBoots: currentEquippedBoots,
         },
       }),
     );
@@ -826,7 +909,143 @@ export function useMyProfile(): MyProfile {
     currentFlashGrenades,
     currentBallSkin,
     currentShurikenAmmo,
+    currentEquippedHelm,
+    currentEquippedArmor,
+    currentEquippedBoots,
   ]);
+
+  const purchaseEquipment = useCallback(
+    async (slug: string) => {
+      if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      // Jedno RPC: sprawdza saldo, odejmuje coiny i zapisuje wyekwipowany przedmiot w jednej
+      // transakcji po stronie bazy (patrz supabase/migrations/0043_equipment.sql) — darmowe, gdy
+      // to już aktywny przedmiot w danym slocie, tak jak purchaseCharacter.
+      const { data, error } = await sb.rpc("purchase_equipment", { p_slug: slug });
+      if (error) {
+        console.error("purchase_equipment", error);
+        const message =
+          error.message === "insufficient_coins"
+            ? "Not enough copper coins."
+            : error.message === "unknown_item"
+              ? "Unknown item."
+              : `Purchase failed: ${saveHint(error)}`;
+        return { ok: false as const, error: message };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | { equipped_helm?: string | null; equipped_armor?: string | null; equipped_boots?: string | null; coins?: number | string }
+        | null;
+      const newCoins = Number(row?.coins ?? currentCoins);
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            mobKills: currentMobKills,
+            coins: newCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: row?.equipped_helm ?? currentEquippedHelm,
+            equippedArmor: row?.equipped_armor ?? currentEquippedArmor,
+            equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
+          },
+        }),
+      );
+      return { ok: true as const };
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentMobKills,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
+      currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
+      currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
+    ],
+  );
+
+  const unequipEquipment = useCallback(
+    async (slot: "helm" | "armor" | "boots") => {
+      if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      const { error } = await sb.rpc("unequip_equipment", { p_slot: slot });
+      if (error) {
+        console.error("unequip_equipment", error);
+        return { ok: false as const, error: `Failed: ${saveHint(error)}` };
+      }
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            mobKills: currentMobKills,
+            coins: currentCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: slot === "helm" ? null : currentEquippedHelm,
+            equippedArmor: slot === "armor" ? null : currentEquippedArmor,
+            equippedBoots: slot === "boots" ? null : currentEquippedBoots,
+          },
+        }),
+      );
+      return { ok: true as const };
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentMobKills,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
+      currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
+      currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
+    ],
+  );
 
   // Bez Supabase albo bez konta nie ma czego wczytywać — profil jest gotowy od razu.
   const offline = !sb || !userId;
@@ -848,7 +1067,12 @@ export function useMyProfile(): MyProfile {
     character: mine ? safeCharacter(mine.character) : DEFAULT_CHARACTER,
     flashGrenades: mine?.flashGrenades ?? 0,
     ballSkin: mine ? safeBallSkin(mine.ballSkin) : DEFAULT_BALL_SKIN,
-    shurikenAmmo: mine?.shurikenAmmo ?? 0,
+    // Sygnalizowani goście dostają taki sam startowy zapas jak nowe konto z Postgresa (default 10
+    // w supabase/migrations/0040_shuriken_ammo.sql) — bez tego niezalogowany gracz startuje z 0.
+    shurikenAmmo: mine?.shurikenAmmo ?? 10,
+    equippedHelm: mine?.equippedHelm ?? null,
+    equippedArmor: mine?.equippedArmor ?? null,
+    equippedBoots: mine?.equippedBoots ?? null,
     error,
     save,
     purchaseColor,
@@ -858,6 +1082,8 @@ export function useMyProfile(): MyProfile {
     saveBallSkin,
     useShuriken,
     purchaseShurikenAmmo,
+    purchaseEquipment,
+    unequipEquipment,
   };
 }
 
@@ -943,6 +1169,22 @@ export function useProfiles(userIds: string[]): Profiles {
   }, [sb, channelId]);
 
   return profiles;
+}
+
+/**
+ * Szuka profili po fragmencie nicku (case-insensitive) — do startowania nowej rozmowy DM po
+ * username. `profiles` jest publicznie czytelne (RLS `profiles_select_all`), więc to zwykłe
+ * zapytanie klienckie, bez nowego route'a API ani supabaseAdmin.
+ */
+export async function searchProfilesByNickname(
+  sb: ReturnType<typeof getSupabase>,
+  query: string,
+): Promise<{ id: string; nickname: string }[]> {
+  const q = query.trim();
+  if (!sb || q.length === 0) return [];
+  const { data, error } = await sb.from("profiles").select("id, nickname").ilike("nickname", `%${q}%`).limit(8);
+  if (error || !data) return [];
+  return data as { id: string; nickname: string }[];
 }
 
 /** Zamienia błąd PostgREST na wskazówkę, co naprawić. */

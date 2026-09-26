@@ -1,7 +1,7 @@
 "use client";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CharacterSprite } from "@/components/CharacterSprite";
 import { CoinBadge, CoinIcon } from "@/components/CoinBadge";
 import { DungeonBackground } from "@/components/DungeonBackground";
@@ -16,7 +16,9 @@ import { roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
-import { BALL_SKINS, safeBallSkin, safeCharacter, safeColor, useMyProfile } from "@/lib/useProfile";
+import { MAX_DM_BODY, useConversations, useThread } from "@/lib/useDirectMessages";
+import { useFriends } from "@/lib/useFriends";
+import { BALL_SKINS, safeBallSkin, safeCharacter, safeColor, searchProfilesByNickname, useMyProfile, useProfiles } from "@/lib/useProfile";
 import type { BallSkin } from "@/lib/useProfile";
 import { useServerNow } from "@/lib/useServerClock";
 import { useSession } from "@/lib/useSession";
@@ -24,6 +26,7 @@ import { coinsForMinutes } from "@/lib/coins";
 import { useStudyXp } from "@/lib/useStudyXp";
 import { levelFromXp, xpForMinutes } from "@/lib/xp";
 import type { ClientMessage, DummyState, EnemyState, HitEvent, PomodoroSessionState, ServerBall, ServerMessage } from "@realtime-shared/types";
+import type { EquipSlot } from "@realtime-shared/constants";
 import {
   BALL_SPEED,
   CHARGE_MS,
@@ -35,6 +38,7 @@ import {
   DUMMY_H,
   DUMMY_W,
   EMOJI_EMOTES,
+  EQUIPMENT_ITEMS,
   ENEMY_H,
   ENEMY_W,
   GHOST_OPACITY,
@@ -90,6 +94,11 @@ const LOBBY_ROUTES: Record<string, string> = { lobby: "/", lobby2: "/lobby2" };
 /** STU-58: reserved zone slug for a pomodoro room's center "start session" button — special-cased
  * in the E-hold handler below the same way `isLobbySlug(zone.slug)` already is for the exit zone. */
 const START_SESSION_ZONE_SLUG = "start-session";
+
+/** STU-76: dostępne komendy czatu z opisem do podpowiedzi — trzymane alfabetycznie po `name`. */
+const CHAT_COMMANDS: { name: string; description: string }[] = [
+  { name: "/flex-money", description: "Show off how many coins you have" },
+];
 
 /** Pisanie w polu/textarea/select nie może być przechwycone przez sterowanie postacią ani skrótem otwierającym czat. */
 function isTypingTarget(el: EventTarget | null) {
@@ -726,10 +735,87 @@ const CHARACTER_NAMES: Record<string, string> = { classic: "Classic", girl: "Gir
  * dziś jest tylko jeden. */
 const COSMETIC_NAMES: Record<string, string> = { flower: "Flower crown" };
 
+/** Display name/short blurb for an EQUIPMENT_ITEMS bonus field, for InventorySlot's "+N stat"
+ * line — kept next to EQUIPMENT_ITEMS instead of in shared/constants.ts since it's UI-only text,
+ * not a number both sides need to agree on. */
+function equipBonusLabel(item: (typeof EQUIPMENT_ITEMS)[number]): string {
+  if (item.maxHpBonus) return `+${item.maxHpBonus} max HP`;
+  if (item.damageReductionBonus) return `-${Math.round(item.damageReductionBonus * 100)}% damage taken`;
+  if (item.moveSpeedBonus) return `+${item.moveSpeedBonus} move speed`;
+  return "";
+}
+
 /**
- * Panel statystyk postaci pod Tab (STU-49): serwerowe staty walki (HP, atak, roll — patrz
- * realtime-server/shared/constants.ts, jedyne źródło prawdy dla tych liczb, patrz AGENTS.md),
- * profil z Supabase (poziom/XP/coins/liczniki) i aktualnie wybrany strój/kosmetyk.
+ * STU-77: one equip slot in the inventory panel below — shows the equipped item (if any) and its
+ * bonus, plus a Buy/Equip or Unequip button. `owned` is approximated as "currently equipped" (see
+ * EQUIPMENT_ITEMS' doc comment in shared/constants.ts: buying an item equips it directly, there's
+ * no separate "owned but not worn" state yet, same one-slot-per-category shape as `cosmetic`), so
+ * re-equipping a different item you've bought before still re-charges its cost — same trade-off
+ * the cosmetic shop already makes.
+ */
+function InventorySlot({
+  label,
+  equippedSlug,
+  slot,
+  onBuy,
+  onUnequip,
+  busy,
+}: {
+  label: string;
+  equippedSlug: string | null;
+  slot: EquipSlot;
+  onBuy: (slug: string) => void;
+  onUnequip: () => void;
+  busy: boolean;
+}) {
+  const items = EQUIPMENT_ITEMS.filter((i) => i.slot === slot);
+  const equipped = items.find((i) => i.slug === equippedSlug) ?? null;
+  return (
+    <div className="rounded-lg bg-zinc-900 px-2.5 py-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-zinc-400">{label}</span>
+        {equipped ? (
+          <span className="font-semibold text-zinc-200">{equipped.name}</span>
+        ) : (
+          <span className="text-zinc-500">Empty</span>
+        )}
+      </div>
+      {equipped && <p className="text-[11px] text-emerald-400">{equipBonusLabel(equipped)}</p>}
+      <div className="mt-1 flex flex-wrap gap-1">
+        {equipped ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onUnequip}
+            className="rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] font-medium text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+          >
+            Unequip
+          </button>
+        ) : null}
+        {items
+          .filter((i) => i.slug !== equippedSlug)
+          .map((i) => (
+            <button
+              key={i.slug}
+              type="button"
+              disabled={busy}
+              onClick={() => onBuy(i.slug)}
+              className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[11px] font-medium text-amber-300 hover:bg-amber-500/30 disabled:opacity-50"
+            >
+              {i.name} · {i.cost}🪙
+            </button>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Panel statystyk postaci pod Tab (STU-49, rozbudowany do prawdziwego inventory w STU-77):
+ * slots na helm/zbroję/buty (serwerowy bonus staty — patrz EQUIPMENT_ITEMS w
+ * realtime-server/shared/constants.ts, jedyne źródło prawdy, patrz AGENTS.md), serwerowe staty
+ * walki (HP, atak, roll), profil z Supabase (poziom/XP/coins/liczniki) i aktualnie wybrany
+ * strój/kosmetyk.
  */
 function CharacterInfoPanel({
   nick,
@@ -745,6 +831,13 @@ function CharacterInfoPanel({
   myHp,
   myStamina,
   myStaminaMax,
+  equippedHelm,
+  equippedArmor,
+  equippedBoots,
+  shurikenAmmo,
+  onBuyEquipment,
+  onUnequipEquipment,
+  equipBusy,
 }: {
   nick: string | null;
   xp: number;
@@ -759,6 +852,13 @@ function CharacterInfoPanel({
   myHp: number;
   myStamina: number;
   myStaminaMax: number;
+  equippedHelm: string | null;
+  equippedArmor: string | null;
+  equippedBoots: string | null;
+  shurikenAmmo: number;
+  onBuyEquipment: (slug: string) => void;
+  onUnequipEquipment: (slot: EquipSlot) => void;
+  equipBusy: boolean;
 }) {
   const { level, intoLevel, forNextLevel } = levelFromXp(xp);
   return (
@@ -780,6 +880,41 @@ function CharacterInfoPanel({
             {intoLevel.toFixed(1)}/{forNextLevel} XP
           </span>
         </div>
+      </div>
+
+      <span className="mt-1 text-zinc-400">Equipment</span>
+      <InventorySlot
+        label="Helm"
+        slot="helm"
+        equippedSlug={equippedHelm}
+        onBuy={onBuyEquipment}
+        onUnequip={() => onUnequipEquipment("helm")}
+        busy={equipBusy}
+      />
+      <InventorySlot
+        label="Armor"
+        slot="armor"
+        equippedSlug={equippedArmor}
+        onBuy={onBuyEquipment}
+        onUnequip={() => onUnequipEquipment("armor")}
+        busy={equipBusy}
+      />
+      <InventorySlot
+        label="Boots"
+        slot="boots"
+        equippedSlug={equippedBoots}
+        onBuy={onBuyEquipment}
+        onUnequip={() => onUnequipEquipment("boots")}
+        busy={equipBusy}
+      />
+      <div className="rounded-lg bg-zinc-900 px-2.5 py-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-400">Extra attack</span>
+          <span className="font-semibold text-zinc-200">Shuriken</span>
+        </div>
+        <p className="text-[11px] text-zinc-500">
+          {shurikenAmmo} ammo left · press 3 to select, buy more from the gunman in the Shop
+        </p>
       </div>
 
       <span className="mt-1 text-zinc-400">Combat</span>
@@ -1237,6 +1372,10 @@ export function RoomStage({
   // handler below), never predicted locally: unlike movement, there's nothing useful to predict
   // here, and the server is broadcasting at BROADCAST_MS anyway.
   const [myHp, setMyHp] = useState(MAX_HP);
+  // STU-77: this connection's own HP ceiling (see PlayerState.maxHp's doc comment in
+  // realtime-server/shared/types.ts) — not the global MAX_HP once an equipped helm can raise it,
+  // same "server broadcasts, we just display" rule as myStaminaMax below.
+  const [myMaxHp, setMyMaxHp] = useState(MAX_HP);
   // Fire stamina — same "server broadcasts, we just display" rule as myHp above, for the green
   // meter under the health bar (see the JSX below). `myStaminaMax` isn't STAMINA_MAX: it's this
   // connection's own stats.staminaMax (see PlayerState.staminaMax's doc comment in
@@ -1664,6 +1803,7 @@ export function RoomStage({
             serverDirPending = true;
             setMyHp(p.hp);
             myHpNow = p.hp;
+            setMyMaxHp(p.maxHp);
             setMyStamina(p.stamina);
             setMyStaminaMax(p.staminaMax);
             // Resyncs the local predicted mirror (see predictedStamina below) to the server's own
@@ -2997,20 +3137,133 @@ export function RoomStage({
   // `statsOpen`. Osobny stan od `chatOpen`, bo Tab wewnątrz pola czatu ma inne znaczenie
   // (przełącza zakres "room"/"all", patrz onChatKeyDown) i tam panel nie powinien się otwierać.
   const [statsOpen, setStatsOpen] = useState(false);
-  const [chatScope, setChatScope] = useState<"room" | "all">("room");
+  // STU-77: disables the inventory panel's buy/unequip buttons while a purchase_equipment/
+  // unequip_equipment RPC is in flight, same "one at a time" guard ShopRoom uses for its own
+  // purchase button — prevents a double-click from firing two RPCs for the same slot.
+  const [equipBusy, setEquipBusy] = useState(false);
+  const [equipError, setEquipError] = useState<string | null>(null);
+  const onBuyEquipment = useCallback(
+    async (slug: string) => {
+      setEquipBusy(true);
+      setEquipError(null);
+      const res = await profile.purchaseEquipment(slug);
+      if (!res.ok) setEquipError(res.error);
+      setEquipBusy(false);
+    },
+    [profile],
+  );
+  const onUnequipEquipment = useCallback(
+    async (slot: EquipSlot) => {
+      setEquipBusy(true);
+      setEquipError(null);
+      const res = await profile.unequipEquipment(slot);
+      if (!res.ok) setEquipError(res.error);
+      setEquipBusy(false);
+    },
+    [profile],
+  );
+  const [chatScope, setChatScope] = useState<"room" | "all" | "dm">("room");
   const [chatDraft, setChatDraft] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const chatInputRef = useRef<HTMLInputElement>(null);
+  // STU-76: pokazuje do 5 komend pasujących do tego, co jest wpisane po "/" — tylko dopóki
+  // komenda jest pierwszym i jedynym słowem (spacja = użytkownik przeszedł do argumentów/treści).
+  const [chatSuggestIndex, setChatSuggestIndex] = useState(0);
+  const chatSuggestions = useMemo(() => {
+    if (!chatDraft.startsWith("/") || chatDraft.includes(" ")) return [];
+    const query = chatDraft.slice(1).toLowerCase();
+    return CHAT_COMMANDS.filter((c) => c.name.slice(1).toLowerCase().startsWith(query)).slice(0, 5);
+  }, [chatDraft]);
+  useEffect(() => {
+    setChatSuggestIndex(0);
+  }, [chatSuggestions.length, chatDraft]);
+  const applyChatSuggestion = (name: string) => {
+    setChatDraft(`${name} `);
+    chatInputRef.current?.focus();
+  };
   // "all" scope subskrybujemy zawsze (nie tylko gdy panel jest otwarty na tej zakładce) — to
   // źródło danych zarówno dla podglądu w panelu, jak i dla pływających toastów niżej, które mają
   // pokazywać wiadomości z całego serwera, a nie tylko z pokoju, w którym akurat stoi postać.
   const chatAll = useChat(roomSlug, { scope: "all" });
-  const chatPreview = chatScope === "room" ? chat.messages : chatAll.messages;
+  const chatPreview = chatScope === "room" ? chat.messages : chatScope === "all" ? chatAll.messages : [];
   const chatListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = chatListRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [chatPreview]);
+
+  // STU-75: prywatny czat 1:1 (DM) + znajomi — trzecia zakładka w tym samym panelu czatu
+  // (chatScope "dm"), ale własny model danych: rozmowa z konkretną osobą, nie pokój, więc osobny
+  // stan/wysyłanie zamiast dopisywania do onChatSubmit/onChatKeyDown powyżej.
+  const conversations = useConversations();
+  const friends = useFriends();
+  const [dmView, setDmView] = useState<"list" | "thread">("list");
+  const [dmPeerId, setDmPeerId] = useState<string | null>(null);
+  const [dmComposeOpen, setDmComposeOpen] = useState(false);
+  const [dmComposeQuery, setDmComposeQuery] = useState("");
+  const [dmSearchResults, setDmSearchResults] = useState<{ id: string; nickname: string }[]>([]);
+  const thread = useThread(dmView === "thread" ? dmPeerId : null);
+  const [dmDraft, setDmDraft] = useState("");
+  const [dmSending, setDmSending] = useState(false);
+  const dmInputRef = useRef<HTMLInputElement>(null);
+  const dmListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = dmListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [thread.messages]);
+
+  // Szukanie po nicku z lekkim debounce — zapytanie do bazy tylko, gdy jest co szukać.
+  useEffect(() => {
+    if (!dmComposeOpen || dmComposeQuery.trim().length === 0) {
+      setDmSearchResults([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void searchProfilesByNickname(getSupabase(), dmComposeQuery).then((results) => {
+        if (!cancelled) setDmSearchResults(results.filter((r) => r.id !== userId));
+      });
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [dmComposeOpen, dmComposeQuery, userId]);
+
+  const openDmThread = (peerId: string) => {
+    setDmPeerId(peerId);
+    setDmView("thread");
+    setDmComposeOpen(false);
+    setDmComposeQuery("");
+    setDmSearchResults([]);
+  };
+
+  const dmPeerIds = useMemo(() => conversations.conversations.map((c) => c.peerId), [conversations.conversations]);
+  const dmProfileIds = useMemo(() => (dmPeerId ? [...dmPeerIds, dmPeerId] : dmPeerIds), [dmPeerIds, dmPeerId]);
+  const dmProfiles = useProfiles(dmProfileIds);
+
+  // Stan zaproszenia do znajomych dla aktualnie otwartego wątku — steruje jednym przyciskiem w
+  // nagłówku wątku (patrz JSX niżej): "+ Add friend" / "Request sent" / "Accept request" / "✓ Friends".
+  const dmFriendship = useMemo(() => {
+    if (!dmPeerId) return null;
+    const incoming = friends.incomingRequests.find((r) => r.requester_id === dmPeerId);
+    if (incoming) return { kind: "incoming" as const, id: incoming.id };
+    const outgoing = friends.outgoingRequests.find((r) => r.addressee_id === dmPeerId);
+    if (outgoing) return { kind: "outgoing" as const, id: outgoing.id };
+    if (friends.friends.includes(dmPeerId)) return { kind: "friends" as const };
+    return { kind: "none" as const };
+  }, [dmPeerId, friends.incomingRequests, friends.outgoingRequests, friends.friends]);
+
+  const onDmSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = dmDraft.trim();
+    if (!text || dmSending) return;
+    setDmSending(true);
+    const ok = await thread.send(text);
+    setDmSending(false);
+    if (ok) setDmDraft("");
+    else dmInputRef.current?.focus();
+  };
 
   // Publikujemy sterowanie tego pokoju do przycisku "How to play" w headerze (poza drzewem RoomStage) —
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
@@ -3142,6 +3395,17 @@ export function RoomStage({
   }, [chatOpen]);
 
   const onChatKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (chatSuggestions.length > 0 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      const len = chatSuggestions.length;
+      setChatSuggestIndex((i) => (e.key === "ArrowDown" ? (i + 1) % len : (i - 1 + len) % len));
+      return;
+    }
+    if (chatSuggestions.length > 0 && (e.key === "Enter" || e.key === "Tab")) {
+      e.preventDefault();
+      applyChatSuggestion(chatSuggestions[chatSuggestIndex].name);
+      return;
+    }
     if (e.key === "Tab") {
       e.preventDefault();
       setChatScope((s) => (s === "room" ? "all" : "room"));
@@ -3154,14 +3418,17 @@ export function RoomStage({
 
   const onChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (chatSuggestions.length > 0) return;
     const text = chatDraft.trim();
     if (!text || chatSending) {
       setChatOpen(false);
       setChatDraft("");
       return;
     }
+    // /flex-money: brag about your own coin balance instead of sending the raw command text.
+    const toSend = text === "/flex-money" ? `💰 flexing ${Math.floor(profile.coins)} coins` : text;
     setChatSending(true);
-    const ok = await chat.send(text);
+    const ok = await chat.send(toSend);
     setChatSending(false);
     // Zamykamy tylko po udanym wysłaniu — przy błędzie (np. rate limit) tekst i panel zostają,
     // żeby było widać komunikat błędu i dało się spróbować jeszcze raz.
@@ -3220,7 +3487,7 @@ export function RoomStage({
       // than hidden. Spans from the left screen edge to where the HP/stamina bars start on the
       // right (those are w-72 anchored at right-4, hence the right-[20rem] here).
       <div
-        className="pointer-events-none fixed bottom-20 left-4 right-[20rem] z-20 flex items-end justify-between gap-2 opacity-75"
+        className="pointer-events-none fixed bottom-20 left-4 right-[20rem] z-20 flex items-end justify-start gap-2 opacity-75"
       >
         {WEAPON_SLOTS.map((slot, i) => (
           <div
@@ -3254,19 +3521,19 @@ export function RoomStage({
     {REALTIME_SERVER_URL && (
       <div className="pointer-events-none fixed bottom-12 right-4 z-20 flex items-center gap-3">
         <span className="text-base font-semibold tabular-nums text-white [text-shadow:0_1px_2px_rgb(0_0_0_/_0.8)]">
-          {Math.max(0, myHp)}/{MAX_HP}
+          {Math.max(0, myHp)}/{myMaxHp}
         </span>
         <div
           role="meter"
           aria-label="Health"
           aria-valuemin={0}
-          aria-valuemax={MAX_HP}
+          aria-valuemax={myMaxHp}
           aria-valuenow={myHp}
           className="h-6 w-72 overflow-hidden rounded-full bg-zinc-900/80 shadow-lg outline outline-2 outline-black/40"
         >
           <div
             className="h-full rounded-full bg-red-600 transition-[width]"
-            style={{ width: `${(Math.max(0, myHp) / MAX_HP) * 100}%` }}
+            style={{ width: `${(Math.max(0, myHp) / myMaxHp) * 100}%` }}
           />
         </div>
       </div>
@@ -3305,7 +3572,7 @@ export function RoomStage({
     {statsOpen && (
       <div
         role="dialog"
-        aria-label="Character info"
+        aria-label="Inventory"
         className="fixed inset-0 z-40 flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-[2px]"
         onClick={() => setStatsOpen(false)}
       >
@@ -3328,10 +3595,18 @@ export function RoomStage({
               myHp={myHp}
               myStamina={myStamina}
               myStaminaMax={myStaminaMax}
+              equippedHelm={profile.equippedHelm}
+              equippedArmor={profile.equippedArmor}
+              equippedBoots={profile.equippedBoots}
+              shurikenAmmo={profile.shurikenAmmo}
+              onBuyEquipment={onBuyEquipment}
+              onUnequipEquipment={onUnequipEquipment}
+              equipBusy={equipBusy}
             />
           ) : (
             <p className="text-zinc-500">Sign in to see your character info.</p>
           )}
+          {equipError && <p className="mt-2 text-center text-xs text-rose-400">{equipError}</p>}
           <p className="mt-3 text-center text-xs text-zinc-600">Press Tab or Esc to close</p>
         </div>
       </div>
@@ -3593,46 +3868,214 @@ export function RoomStage({
             >
               All
             </button>
-          </div>
-          <div className="flex flex-1 flex-col gap-2">
-            <div
-              ref={chatListRef}
-              className="flex h-64 flex-col gap-1.5 overflow-y-auto rounded-xl bg-zinc-900/5 p-3 text-sm shadow-lg backdrop-blur-[1px]"
+            <button
+              type="button"
+              onClick={() => setChatScope("dm")}
+              className={`relative rounded-lg px-2 py-1.5 ${chatScope === "dm" ? "bg-zinc-700 text-zinc-100 dark:bg-zinc-300 dark:text-zinc-900" : "text-zinc-400 hover:text-zinc-200 dark:text-zinc-600 dark:hover:text-zinc-800"}`}
             >
-              {chatPreview.length === 0 ? (
-                <p className="m-auto text-xs text-zinc-500">No messages yet.</p>
-              ) : (
-                chatPreview.map((m) => (
-                  <p key={m.id} className="break-words text-zinc-100 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
-                    {chatScope === "all" && (
-                      <span className="mr-1 rounded bg-zinc-800/70 px-1.5 py-0.5 text-xs text-zinc-300">{roomLabel(m.room_slug)}</span>
-                    )}
-                    <span className="font-medium text-sky-300">
-                      {m.authorXp !== undefined && <LevelBadge xp={m.authorXp} className="mr-1" />}
-                      {m.author}:{" "}
-                    </span>
-                    {m.body}
-                  </p>
-                ))
+              Messages
+              {friends.incomingRequests.length > 0 && (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-600 px-1 text-[10px] font-medium text-white">
+                  {friends.incomingRequests.length}
+                </span>
               )}
-            </div>
-            {chat.error && <p className="text-xs text-rose-400">{chat.error}</p>}
-            <form
-              onSubmit={(e) => void onChatSubmit(e)}
-              className="flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/90 px-4 py-2 shadow-lg backdrop-blur dark:bg-zinc-100/90"
-            >
-              <input
-                ref={chatInputRef}
-                value={chatDraft}
-                onChange={(e) => setChatDraft(e.target.value)}
-                onKeyDown={onChatKeyDown}
-                maxLength={MAX_BODY}
-                disabled={chatSending}
-                placeholder="Message… Tab: room/all · Enter: send · Esc: close"
-                className="flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500 dark:text-zinc-900"
-              />
-            </form>
+            </button>
           </div>
+          {chatScope !== "dm" ? (
+            <div className="flex flex-1 flex-col gap-2">
+              <div
+                ref={chatListRef}
+                className="flex h-64 flex-col gap-1.5 overflow-y-auto rounded-xl bg-zinc-900/5 p-3 text-sm shadow-lg backdrop-blur-[1px]"
+              >
+                {chatPreview.length === 0 ? (
+                  <p className="m-auto text-xs text-zinc-500">No messages yet.</p>
+                ) : (
+                  chatPreview.map((m) => (
+                    <p key={m.id} className="break-words text-zinc-100 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
+                      {chatScope === "all" && (
+                        <span className="mr-1 rounded bg-zinc-800/70 px-1.5 py-0.5 text-xs text-zinc-300">{roomLabel(m.room_slug)}</span>
+                      )}
+                      <span className="font-medium text-sky-300">
+                        {m.authorXp !== undefined && <LevelBadge xp={m.authorXp} className="mr-1" />}
+                        {m.author}:{" "}
+                      </span>
+                      {m.body}
+                    </p>
+                  ))
+                )}
+              </div>
+              {chat.error && <p className="text-xs text-rose-400">{chat.error}</p>}
+              {chatSuggestions.length > 0 && (
+                <div className="overflow-hidden rounded-xl bg-zinc-900/95 text-sm shadow-lg backdrop-blur">
+                  {chatSuggestions.map((cmd, i) => (
+                    <button
+                      key={cmd.name}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyChatSuggestion(cmd.name);
+                      }}
+                      className={`flex w-full items-center justify-between gap-3 px-3 py-1.5 text-left ${
+                        i === chatSuggestIndex ? "bg-zinc-700 text-zinc-100" : "text-zinc-300 hover:bg-zinc-800"
+                      }`}
+                    >
+                      <span className="font-mono">{cmd.name}</span>
+                      <span className="text-xs text-zinc-500">{cmd.description}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <form
+                onSubmit={(e) => void onChatSubmit(e)}
+                className="flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/90 px-4 py-2 shadow-lg backdrop-blur dark:bg-zinc-100/90"
+              >
+                <input
+                  ref={chatInputRef}
+                  value={chatDraft}
+                  onChange={(e) => setChatDraft(e.target.value)}
+                  onKeyDown={onChatKeyDown}
+                  maxLength={MAX_BODY}
+                  disabled={chatSending}
+                  placeholder="Message… Tab: room/all · Enter: send · Esc: close"
+                  className="flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500 dark:text-zinc-900"
+                />
+              </form>
+            </div>
+          ) : dmView === "list" ? (
+            <div className="flex flex-1 flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDmComposeOpen((v) => !v);
+                    setDmComposeQuery("");
+                  }}
+                  className="rounded-full bg-zinc-800/90 px-3 py-1 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
+                >
+                  + New message
+                </button>
+              </div>
+              {dmComposeOpen && (
+                <div className="flex flex-col gap-1 rounded-xl bg-zinc-900/90 p-2 shadow-lg backdrop-blur">
+                  <input
+                    autoFocus
+                    value={dmComposeQuery}
+                    onChange={(e) => setDmComposeQuery(e.target.value)}
+                    placeholder="Username…"
+                    className="rounded-lg bg-zinc-800 px-2 py-1 text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
+                  />
+                  {dmSearchResults.length > 0 && (
+                    <div className="flex flex-col">
+                      {dmSearchResults.map((r) => (
+                        <button
+                          key={r.id}
+                          type="button"
+                          onClick={() => openDmThread(r.id)}
+                          className="rounded-lg px-2 py-1 text-left text-sm text-zinc-200 hover:bg-zinc-800"
+                        >
+                          {r.nickname}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="flex h-64 flex-col gap-1 overflow-y-auto rounded-xl bg-zinc-900/5 p-2 text-sm shadow-lg backdrop-blur-[1px]">
+                {conversations.conversations.length === 0 ? (
+                  <p className="m-auto text-xs text-zinc-500">No conversations yet.</p>
+                ) : (
+                  conversations.conversations.map((c) => (
+                    <button
+                      key={c.peerId}
+                      type="button"
+                      onClick={() => openDmThread(c.peerId)}
+                      className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-zinc-100 hover:bg-zinc-800/70"
+                    >
+                      <span className="flex shrink-0 items-center gap-1 font-medium text-sky-300">
+                        {dmProfiles[c.peerId]?.xp !== undefined && <LevelBadge xp={dmProfiles[c.peerId].xp} />}
+                        {dmProfiles[c.peerId]?.nickname ?? "…"}
+                      </span>
+                      <span className="truncate text-xs text-zinc-400">{c.lastMessage.body}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-1 flex-col gap-2">
+              <div className="flex items-center justify-between gap-2 rounded-xl bg-zinc-900/90 px-3 py-1.5 shadow-lg backdrop-blur">
+                <button type="button" onClick={() => setDmView("list")} className="text-xs text-zinc-400 hover:text-zinc-200">
+                  ← Back
+                </button>
+                <span className="flex items-center gap-1 truncate text-sm font-medium text-sky-300">
+                  {dmPeerId && dmProfiles[dmPeerId]?.xp !== undefined && <LevelBadge xp={dmProfiles[dmPeerId].xp} />}
+                  {dmPeerId ? (dmProfiles[dmPeerId]?.nickname ?? "…") : ""}
+                </span>
+                {dmFriendship && dmPeerId && dmFriendship.kind === "none" && (
+                  <button
+                    type="button"
+                    onClick={() => void friends.sendRequest(dmPeerId)}
+                    className="shrink-0 rounded-full bg-zinc-800 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
+                  >
+                    + Add friend
+                  </button>
+                )}
+                {dmFriendship && dmFriendship.kind === "outgoing" && (
+                  <button
+                    type="button"
+                    onClick={() => void friends.cancelRequest(dmFriendship.id)}
+                    className="shrink-0 rounded-full bg-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-700"
+                  >
+                    Request sent
+                  </button>
+                )}
+                {dmFriendship && dmFriendship.kind === "incoming" && (
+                  <button
+                    type="button"
+                    onClick={() => void friends.acceptRequest(dmFriendship.id)}
+                    className="shrink-0 rounded-full bg-sky-700 px-2 py-1 text-xs text-white hover:bg-sky-600"
+                  >
+                    Accept request
+                  </button>
+                )}
+                {dmFriendship && dmFriendship.kind === "friends" && (
+                  <span className="shrink-0 rounded-full bg-zinc-800 px-2 py-1 text-xs text-emerald-400">✓ Friends</span>
+                )}
+              </div>
+              <div
+                ref={dmListRef}
+                className="flex h-64 flex-col gap-1.5 overflow-y-auto rounded-xl bg-zinc-900/5 p-3 text-sm shadow-lg backdrop-blur-[1px]"
+              >
+                {thread.messages.length === 0 ? (
+                  <p className="m-auto text-xs text-zinc-500">No messages yet.</p>
+                ) : (
+                  thread.messages.map((m) => (
+                    <p key={m.id} className="break-words text-zinc-100 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
+                      <span className="font-medium text-sky-300">
+                        {m.sender_id === userId ? "You" : (dmProfiles[m.sender_id]?.nickname ?? "…")}:{" "}
+                      </span>
+                      {m.body}
+                    </p>
+                  ))
+                )}
+              </div>
+              {thread.error && <p className="text-xs text-rose-400">{thread.error}</p>}
+              <form
+                onSubmit={(e) => void onDmSubmit(e)}
+                className="flex items-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/90 px-4 py-2 shadow-lg backdrop-blur dark:bg-zinc-100/90"
+              >
+                <input
+                  ref={dmInputRef}
+                  value={dmDraft}
+                  onChange={(e) => setDmDraft(e.target.value)}
+                  maxLength={MAX_DM_BODY}
+                  disabled={dmSending}
+                  placeholder="Message…"
+                  className="flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500 dark:text-zinc-900"
+                />
+              </form>
+            </div>
+          )}
         </div>
       </div>
     )}

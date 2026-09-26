@@ -8,9 +8,10 @@ import {
   setAdminSetting,
   useAdminSettings,
 } from "@/lib/adminSettings";
+import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
 
 /**
- * Przycisk w lewym dolnym rogu + panel z ustawieniami admina. Widoczny tylko lokalnie
+ * Przycisk w headerze + panel z ustawieniami admina. Widoczny tylko lokalnie
  * i na Vercel Preview (nigdy na produkcji, patrz isAdminUiEnabled) — zmiany działają
  * od razu w całej apce na tej wersji, trzymane w localStorage.
  */
@@ -62,9 +63,9 @@ export function AdminPanel() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="rounded-full bg-zinc-800/90 px-3 py-2 text-xs font-medium text-zinc-200 shadow-lg ring-1 ring-zinc-600 hover:bg-zinc-700"
+        className={HEADER_BUTTON_CLASS}
       >
-        ⚙ Admin
+        Admin
       </button>
     </div>
   );

@@ -22,6 +22,15 @@ export interface CharacterStats {
   /** Multiplier applied to a shot's/slash's base damage (see spawnBall/spawnSlash in
    * server.ts). 1 = base damage, unmodified. */
   attackPower: number;
+  /** This connection's own HP ceiling (STU-77: base MAX_HP plus any equipped helm's bonus, see
+   * EQUIPMENT_ITEMS in constants.ts). Conn.hp is clamped to this, not the global MAX_HP, once
+   * equipment can raise it. */
+  maxHp: number;
+  /** Fraction (0..1) of incoming damage this connection ignores (STU-77: from an equipped armor
+   * piece, see EQUIPMENT_ITEMS in constants.ts). 0 = no reduction, unmodified damage. Applied once,
+   * where a ball/slash actually subtracts from a player's hp — never to enemy/dummy hp, which have
+   * no CharacterStats of their own. */
+  damageReduction: number;
 }
 
 export interface PlayerState {
@@ -56,6 +65,10 @@ export interface PlayerState {
   /** This connection's own stamina pool size — a per-character/item stat (see CharacterStats in
    * this file), not a global constant, so the client can't just read STAMINA_MAX itself. */
   staminaMax: number;
+  /** This connection's own HP ceiling — a per-character/item stat (see CharacterStats.maxHp,
+   * STU-77's helm equip bonus), not the global MAX_HP constant, same reasoning as staminaMax
+   * above: the client can't just read MAX_HP itself once a helm can raise it. */
+  maxHp: number;
 }
 
 /**

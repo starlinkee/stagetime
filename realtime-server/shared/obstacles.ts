@@ -30,6 +30,8 @@ export type DecorItem = {
   /** Blocks movement and thrown balls/melee (see buildLobbyObstacles below) — omitted/false for
    * purely decorative items. */
   solid?: boolean;
+  /** CSS opacity (0-1) for the rendered <img>; omitted means fully opaque. */
+  opacity?: number;
 };
 
 /** Native-pixel -> CSS-px scale, matched to PlayerSprite's 24px source -> 96px-tall box (4x). */
@@ -46,12 +48,13 @@ export const DECOR_SCALE = 4;
  * a tile's entry, so a future solid addition here should double-check that against LOBBY_OBSTACLES.
  */
 export const CENTER_ITEMS: DecorItem[] = [
+  // One big rug covering most of the content square, centered, faded so it reads as a floor
+  // texture under everything else rather than competing with the room-grid tiles on top of it.
+  { file: "rug-fst", w: 450, h: 255, x: -54, y: -32, opacity: 0.35 },
   // Empty band above the room grid (world y 0-220, full width).
-  { file: "rug", w: 32, h: 48, x: 40, y: 5 },
   { file: "floor-lamp", w: 15, h: 46, x: 110, y: 2 },
   { file: "plant", w: 10, h: 23, x: 200, y: 10 },
   { file: "mug", w: 10, h: 9, x: 250, y: 30 },
-  { file: "rug", w: 32, h: 48, x: 300, y: 5 },
   { file: "book-open", w: 11, h: 8, x: 20, y: 35 },
   // Left/right margins beside the 20-5 row (world y 390-490, x 0-133 / x 1233-1366).
   { file: "plant", w: 10, h: 23, x: 5, y: 98 },
@@ -68,7 +71,6 @@ export const CENTER_ITEMS: DecorItem[] = [
 export const QUADRANT_ITEMS: Record<Quadrant, DecorItem[]> = {
   // Reading nook.
   "top-left": [
-    { file: "rug", w: 32, h: 48, x: 13, y: 45 },
     { file: "armchair", w: 22, h: 55, x: 20, y: 5, solid: true },
     { file: "bookshelf", w: 46, h: 47, x: 58, y: 3, solid: true },
     { file: "floor-lamp", w: 15, h: 46, x: 110, y: 5 },
@@ -86,9 +88,7 @@ export const QUADRANT_ITEMS: Record<Quadrant, DecorItem[]> = {
     { file: "grandfather-clock", w: 21, h: 46, x: 38, y: 25, solid: true },
     { file: "plant", w: 10, h: 23, x: 70, y: 45 },
   ],
-  // Cozy rug corner.
   "bottom-right": [
-    { file: "rug", w: 32, h: 48, x: 113, y: 38 },
     { file: "plant", w: 10, h: 23, x: 125, y: 15 },
     { file: "plant", w: 10, h: 23, x: 38, y: 55 },
   ],

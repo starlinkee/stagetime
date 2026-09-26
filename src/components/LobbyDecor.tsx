@@ -51,6 +51,7 @@ export function LobbyDecor({ width, height }: { width: number; height: number })
               // which then caps every image at 0px via that percentage — override it back off.
               maxWidth: "none",
               imageRendering: "pixelated",
+              opacity: item.opacity,
             }}
           />
         )),
@@ -69,6 +70,7 @@ export function LobbyDecor({ width, height }: { width: number; height: number })
             height: item.h * DECOR_SCALE,
             maxWidth: "none",
             imageRendering: "pixelated",
+            opacity: item.opacity,
           }}
         />
       ))}

@@ -189,6 +189,14 @@ export const STAMINA_REGEN_PER_SEC = STAMINA_MAX / 1.8;
 export const ROLL_STAMINA_COST = 40;
 
 /**
+ * HP/damage/respawn — combat only deals damage outside the lobby (a decision made when this was
+ * added: the lobby stays a safe social space, balls/slashes still fly and visually hit there, but
+ * `isLobbyRoom` in server.ts skips the HP subtraction). Every connection starts and respawns at
+ * `MAX_HP`, or more with an equipped helm (see CharacterStats.maxHp, EQUIPMENT_ITEMS below).
+ */
+export const MAX_HP = 25;
+
+/**
  * Every connection's stats until character selection exists (see AGENTS.md's 2026-09-23 note:
  * no character classes/items yet) — copied into `Conn.stats` per connection (never shared by
  * reference, so a future per-connection item bonus can mutate its own copy without touching this
@@ -200,15 +208,10 @@ export const DEFAULT_CHARACTER_STATS: CharacterStats = {
   staminaCostPerShot: STAMINA_COST_PER_SHOT,
   staminaRegenPerSec: STAMINA_REGEN_PER_SEC,
   attackPower: 1,
+  maxHp: MAX_HP,
+  damageReduction: 0,
 };
 
-/**
- * HP/damage/respawn — combat only deals damage outside the lobby (a decision made when this was
- * added: the lobby stays a safe social space, balls/slashes still fly and visually hit there, but
- * `isLobbyRoom` in server.ts skips the HP subtraction). Every connection starts and respawns at
- * `MAX_HP`.
- */
-export const MAX_HP = 25;
 /**
  * "Desperation" threshold (STU-44, an intentional feature, not a bug): at this HP or below, the
  * stamina gate on `fire` is skipped entirely (see the `fire` handler in server.ts) — a nearly-dead
@@ -246,7 +249,7 @@ export const IMMUNITY_MS = 5000;
 export const IMMUNE_OPACITY = 0.4;
 /** Client-side rendering hint: sprite opacity for a ghost (dead player, controllable for
  * RESPAWN_MS — see PlayerState.gx/gy/gd's doc comment in shared/types.ts). */
-export const GHOST_OPACITY = 0.35;
+export const GHOST_OPACITY = 0.6;
 
 /**
  * Kill reward shown to the killer only (as "+N xp"/"+N gold" text next to the big "KILL" callout,
@@ -317,3 +320,34 @@ export const DUMMY_MAX_HP = 10_000;
 export const DUMMY_W = 96;
 export const DUMMY_H = 96;
 export const DUMMY_RESPAWN_MS = 3000;
+
+/**
+ * STU-77: equipment slots shown in the Tab inventory panel (RoomStage.tsx). Each slot holds at
+ * most one owned item at a time (see equipped_helm/equipped_armor/equipped_boots in
+ * supabase/migrations/0043_equipment.sql) — same "one active slot" shape as `cosmetic`
+ * (0027_cosmetic_items.sql), just three slots instead of one. Unlike cosmetic, these carry a real
+ * CharacterStats bonus, so this catalog is the single source of truth both sides read from:
+ * src/app/api/realtime/token/route.ts turns a player's equipped slugs into signed bonus numbers on
+ * the entry token (see mintEntryToken in entryToken.ts), and server.ts applies those numbers to
+ * `Conn.stats` at join — realtime-server never looks up a slug against this table itself, so this
+ * file changing shape doesn't require a server.ts change beyond the join-time lookup.
+ */
+export type EquipSlot = "helm" | "armor" | "boots";
+export interface EquipmentItem {
+  slug: string;
+  slot: EquipSlot;
+  name: string;
+  /** Copper coins, same currency as purchase_cosmetic/buy_shuriken_ammo. */
+  cost: number;
+  /** Flat addition to CharacterStats.maxHp. */
+  maxHpBonus?: number;
+  /** Flat addition to CharacterStats.damageReduction (0..1 fraction of incoming damage ignored). */
+  damageReductionBonus?: number;
+  /** Flat addition to CharacterStats.moveSpeed (world units/s). */
+  moveSpeedBonus?: number;
+}
+export const EQUIPMENT_ITEMS: readonly EquipmentItem[] = [
+  { slug: "iron_helm", slot: "helm", name: "Iron helm", cost: 150, maxHpBonus: 10 },
+  { slug: "iron_armor", slot: "armor", name: "Iron armor", cost: 200, damageReductionBonus: 0.15 },
+  { slug: "swift_boots", slot: "boots", name: "Swift boots", cost: 150, moveSpeedBonus: 40 },
+];

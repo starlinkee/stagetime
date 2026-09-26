@@ -1,8 +1,42 @@
+import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { getRoom } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
-import { mintEntryToken } from "@realtime-shared/entryToken";
+import { EQUIPMENT_ITEMS } from "@realtime-shared/constants";
+import { mintEntryToken, type EquipBonuses } from "@realtime-shared/entryToken";
 import { isLobbySlug } from "@realtime-shared/rooms";
+
+/**
+ * STU-77: turns this user's equipped_helm/equipped_armor/equipped_boots (see
+ * supabase/migrations/0043_equipment.sql) into the signed bonus numbers realtime-server trusts —
+ * see EquipBonuses's doc comment in entryToken.ts for why this has to happen here (Next.js, which
+ * has the real session) rather than realtime-server looking the slugs up itself.
+ */
+async function resolveEquipBonuses(accessToken: string, userId: string): Promise<EquipBonuses> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) return { maxHpBonus: 0, damageReduction: 0, moveSpeedBonus: 0 };
+  // A fresh, request-scoped client carrying this caller's own access token, so the query below
+  // runs under their RLS identity (own row only) instead of the shared anon client's.
+  const sb = createClient(url, anonKey, { global: { headers: { Authorization: `Bearer ${accessToken}` } } });
+  const { data } = await sb
+    .from("profiles")
+    .select("equipped_helm, equipped_armor, equipped_boots")
+    .eq("id", userId)
+    .maybeSingle();
+  const equippedSlugs = [data?.equipped_helm, data?.equipped_armor, data?.equipped_boots].filter(
+    (slug): slug is string => Boolean(slug),
+  );
+  const bonuses: EquipBonuses = { maxHpBonus: 0, damageReduction: 0, moveSpeedBonus: 0 };
+  for (const slug of equippedSlugs) {
+    const item = EQUIPMENT_ITEMS.find((i) => i.slug === slug);
+    if (!item) continue;
+    bonuses.maxHpBonus += item.maxHpBonus ?? 0;
+    bonuses.damageReduction += item.damageReductionBonus ?? 0;
+    bonuses.moveSpeedBonus += item.moveSpeedBonus ?? 0;
+  }
+  return bonuses;
+}
 
 /**
  * Mints the short-lived signed token realtime-server requires on WS `join` (see
@@ -33,5 +67,7 @@ export async function POST(request: Request) {
   const { data } = accessToken && sb ? await sb.auth.getUser(accessToken) : { data: null };
   const userId = data?.user?.id ?? null;
 
-  return NextResponse.json({ token: mintEntryToken(secret, userId, slug as string) });
+  const equip = accessToken && userId ? await resolveEquipBonuses(accessToken, userId) : undefined;
+
+  return NextResponse.json({ token: mintEntryToken(secret, userId, slug as string, equip) });
 }
