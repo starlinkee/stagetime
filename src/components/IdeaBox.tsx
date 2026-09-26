@@ -70,7 +70,8 @@ export function IdeaBox() {
   return (
     <div className="relative">
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-[2px]">
+          <div className="max-h-[85vh] w-full max-w-md min-w-[20rem] overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
             <div className="mb-3 flex items-center justify-between">
               <span className="font-semibold">Ideas</span>
               <button type="button" onClick={close} className="text-xs text-zinc-400 hover:text-zinc-200">
@@ -130,10 +131,11 @@ export function IdeaBox() {
               </form>
             )}
           </div>
-        )}
-        <button type="button" onClick={toggle} className={HEADER_BUTTON_CLASS}>
-          Got an idea?
-        </button>
+        </div>
+      )}
+      <button type="button" onClick={toggle} className={HEADER_BUTTON_CLASS}>
+        Got an idea?
+      </button>
     </div>
   );
 }
