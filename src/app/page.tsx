@@ -147,7 +147,7 @@ const fountainZone: RoomZone = {
   name: "Fountain of Wealth",
   kind: "action",
   x: RING_CENTER_X - FOUNTAIN_ZONE_W / 2,
-  y: 0,
+  y: -50,
   w: FOUNTAIN_ZONE_W,
   h: FOUNTAIN_ZONE_H,
   color: "#ca8a04",

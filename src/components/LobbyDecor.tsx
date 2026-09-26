@@ -123,9 +123,9 @@ export function LobbyDecor({
       {/* Fountain of Wealth's floor button (see FOUNTAIN_ZONE_SLUG in src/app/page.tsx) is drawn
           as a plain rounded-rect + label by RoomStage's canvas, on top of this component — this
           just gives that zone an actual fountain to stand behind the label. Position mirrors
-          fountainZone there: content-square-relative x/y (573, 0) of a 220x140 box (y nudged up
-          from 20 per request, kept in sync with fountainZone's own y), kept square and centered
-          in it since the source art is square. Source PNG has a real alpha channel (re-exported
+          fountainZone there: content-square-relative x/y (573, -50) of a 220x140 box (y nudged up
+          from 20 -> 0 -> -50 per request, kept in sync with fountainZone's own y), kept square and
+          centered in it since the source art is square. Source PNG has a real alpha channel (re-exported
           from the original basic-fountain.png, whose "transparent" background was actually a
           baked-in gray checkerboard floor — see
           archive/public/map/structures/fountains/basic-fountain.png). */}
@@ -136,7 +136,7 @@ export function LobbyDecor({
         style={{
           position: "absolute",
           left: centerOrigin.x + 573 + (220 - FOUNTAIN_SIZE) / 2,
-          top: centerOrigin.y + 0 + (140 - FOUNTAIN_SIZE) / 2,
+          top: centerOrigin.y - 50 + (140 - FOUNTAIN_SIZE) / 2,
           width: FOUNTAIN_SIZE,
           height: FOUNTAIN_SIZE,
           maxWidth: "none",
