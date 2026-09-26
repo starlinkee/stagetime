@@ -48,13 +48,13 @@ export function AboutGameButton() {
             ) : (
               <span className="block">
                 <span className="font-semibold text-zinc-200">{accounts.toLocaleString()}</span>{" "}
-                real warriors
+                accounts created
               </span>
             )}
             {players !== null && (
               <span className="block">
                 <span className="font-semibold text-zinc-200">{players.toLocaleString()}</span>{" "}
-                distinct players have entered the game
+                distinct players have logged in at least once
               </span>
             )}
           </div>
