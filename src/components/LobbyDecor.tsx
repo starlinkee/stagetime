@@ -47,8 +47,9 @@ const LIBRARY_SPRITE_SIZE = 260;
 
 /** Faded down (per request) so the door's name/reward text — which only appears once the player
  * is standing on it, see `hidden` on pomodoroZones in page.tsx — reads clearly against the busy
- * bookshelf/floor art instead of competing with it. */
-const LIBRARY_SPRITE_OPACITY = 0.45;
+ * bookshelf/floor art instead of competing with it. Started at 0.45, bumped back up to 0.7 (same
+ * as the house sprite) per follow-up request — too faded read as washed-out. */
+const LIBRARY_SPRITE_OPACITY = 0.7;
 
 /** One isometric library room per Pomodoro door (slug must match POMODORO_ROOMS in
  * src/lib/rooms.ts), picked for color-mood: "25-5" (blue) gets the cooler/neutral room, "20-5"
