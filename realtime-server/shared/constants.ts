@@ -119,7 +119,7 @@ export const HIT_PAD = 8;
  * `Conn.weapons` (server.ts), only ever different from these defaults when DEV_OVERRIDES_ENABLED
  * is on (same gate as playerSpeed/staminaRegenPerSec overrides).
  */
-export const SHURIKEN_DMG = 5;
+export const SHURIKEN_DMG = 7;
 /** Flight speed, px/s — deliberately faster than BALL_SPEED so a shuriken reads as a quicker,
  * sharper throw than the charge-and-lob ball. */
 export const SHURIKEN_SPEED = 900;

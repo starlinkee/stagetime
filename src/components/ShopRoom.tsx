@@ -405,7 +405,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
               </span>
             </div>
             <p className="mb-5 text-center text-sm text-zinc-400">
-              Shurikens: 5 damage, much faster than a thrown ball. You have{" "}
+              Shurikens: 7 damage, much faster than a thrown ball. You have{" "}
               <span className="font-semibold text-zinc-100">{shurikenAmmo}</span> left. Buy a pack of{" "}
               {SHURIKEN_AMMO_PACK} more for {SHURIKEN_AMMO_COST} coins.
             </p>

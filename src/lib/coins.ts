@@ -47,5 +47,5 @@ export const CHARACTER_CHANGE_COST = 10;
  * supabase/migrations/0045_shuriken_bag_item.sql is what actually charges the player.
  */
 export const SHURIKEN_AMMO_START = 10;
-export const SHURIKEN_AMMO_PACK = 10;
+export const SHURIKEN_AMMO_PACK = 2;
 export const SHURIKEN_AMMO_COST = 10;
