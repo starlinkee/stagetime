@@ -24,10 +24,10 @@ const LAMP_GLOW_SIZE = 160;
  * magic number (see housePortalZone there). */
 export const HOUSE_SIZE = 450;
 
-/** CSS px square for the Fountain of Wealth's sprite — 2x its original 130px size (which closely
- * filled its 140px-tall zone box, see fountainZone in src/app/page.tsx), per request. Now
- * overflows that box on purpose so the fountain reads bigger than its floor trigger area. */
-const FOUNTAIN_SIZE = 260;
+/** CSS px square for the Fountain of Wealth's sprite — 2x its original 130px size, then +25% again
+ * per request (130 -> 260 -> 325). Overflows its 140px-tall zone box on purpose so the fountain
+ * reads bigger than its floor trigger area — see fountainZone in src/app/page.tsx. */
+const FOUNTAIN_SIZE = 325;
 
 export function LobbyDecor({
   width,
@@ -123,10 +123,11 @@ export function LobbyDecor({
       {/* Fountain of Wealth's floor button (see FOUNTAIN_ZONE_SLUG in src/app/page.tsx) is drawn
           as a plain rounded-rect + label by RoomStage's canvas, on top of this component — this
           just gives that zone an actual fountain to stand behind the label. Position mirrors
-          fountainZone there: content-square-relative x/y (573, 20) of a 220x140 box, kept square
-          and centered in it since the source art is square. Source PNG has a real alpha channel
-          (re-exported from the original basic-fountain.png, whose "transparent" background was
-          actually a baked-in gray checkerboard floor — see
+          fountainZone there: content-square-relative x/y (573, 0) of a 220x140 box (y nudged up
+          from 20 per request, kept in sync with fountainZone's own y), kept square and centered
+          in it since the source art is square. Source PNG has a real alpha channel (re-exported
+          from the original basic-fountain.png, whose "transparent" background was actually a
+          baked-in gray checkerboard floor — see
           archive/public/map/structures/fountains/basic-fountain.png). */}
       <img
         src="/map/structures/fountains/basic-fountain.png"
@@ -135,7 +136,7 @@ export function LobbyDecor({
         style={{
           position: "absolute",
           left: centerOrigin.x + 573 + (220 - FOUNTAIN_SIZE) / 2,
-          top: centerOrigin.y + 20 + (140 - FOUNTAIN_SIZE) / 2,
+          top: centerOrigin.y + 0 + (140 - FOUNTAIN_SIZE) / 2,
           width: FOUNTAIN_SIZE,
           height: FOUNTAIN_SIZE,
           maxWidth: "none",
