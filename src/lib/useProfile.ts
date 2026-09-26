@@ -90,9 +90,10 @@ type ShurikenAmmoFields = { shurikenAmmo: number };
  * realtime-server trusts (see mintEntryToken in realtime-server/shared/entryToken.ts) — the client
  * never tells realtime-server its own stats directly.
  *
- * `equipmentBag` (supabase/migrations/0044_equipment_bag.sql): 20 fixed slots (the 4x5 grid in the
- * Tab inventory panel, RoomStage.tsx) holding owned-but-not-equipped gear, `null` for an empty
- * slot — realtime-server never reads this, only the equipped_* columns carry a stat bonus.
+ * `equipmentBag` (supabase/migrations/0044_equipment_bag.sql, size reduced to 8 in
+ * supabase/migrations/0049_bag_size_8.sql): 8 fixed slots (the 4x2 grid in the Tab inventory
+ * panel, RoomStage.tsx) holding owned-but-not-equipped gear, `null` for an empty slot —
+ * realtime-server never reads this, only the equipped_* columns carry a stat bonus.
  *
  * `equipmentBagQty` (supabase/migrations/0045_shuriken_bag_item.sql): one quantity per bag slot,
  * meaningless (always 1) for a unique gear slug like iron_helm — the only slug that ever stacks
@@ -105,9 +106,9 @@ type EquipmentFields = {
   equipmentBagQty: number[];
 };
 
-/** Fixed bag size — matches the `text[20]` default in 0044_equipment_bag.sql and the 4x5 grid in
- * RoomStage.tsx's inventory panel. */
-export const EQUIPMENT_BAG_SIZE = 20;
+/** Fixed bag size — for now, reduced from 20 to 8 (supabase/migrations/0049_bag_size_8.sql),
+ * matching the 4x2 grid in RoomStage.tsx's inventory panel. */
+export const EQUIPMENT_BAG_SIZE = 8;
 
 /** Bag slug for the stackable shuriken item (see supabase/migrations/0045_shuriken_bag_item.sql) —
  * the only bag item whose `equipmentBagQty` entry can be greater than 1. */
