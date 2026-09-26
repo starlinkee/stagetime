@@ -12,7 +12,7 @@ import { DIR_DOWN, type Dir } from "@/components/PixelPerson";
 import { getAdminSettings, isAdminUiEnabled } from "@/lib/adminSettings";
 import { playAttackSound, playHitSound } from "@/lib/chime";
 import { setHowToPlay } from "@/lib/howToPlay";
-import { roomLabel } from "@/lib/rooms";
+import { getRoom, roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
@@ -1779,14 +1779,18 @@ export function RoomStage({
     // expired ticket the moment it *does* refresh, bouncing to lobby exactly like the bug this
     // ticket fixes. Re-POSTing here periodically means the cookie is never more than
     // ROOM_TICKET_REFRESH_MS stale, regardless of how long the tab sat idle before a refresh.
-    const refreshTicket = () => {
-      void fetch("/api/rooms/enter", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug: roomSlug }),
-      }).catch(() => {});
-    };
-    const ticketTimer = setInterval(refreshTicket, ROOM_TICKET_REFRESH_MS);
+    // Lobby/lobby2 nie mają biletu wejścia (proxy.ts nie gate'uje "/" ani "/lobby2") — nie ma
+    // tam nic do odświeżania, więc pomijamy timer, żeby nie bić w /api/rooms/enter co 8s po
+    // próżnicy (400 "unknown room", bo "lobby"/"lobby2" nie są w ROOMS z src/lib/rooms.ts).
+    const ticketTimer = getRoom(roomSlug)
+      ? setInterval(() => {
+          void fetch("/api/rooms/enter", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ slug: roomSlug }),
+          }).catch(() => {});
+        }, ROOM_TICKET_REFRESH_MS)
+      : undefined;
 
     // Serwer ruchu (realtime-server/) — tylko na gałęzi podglądowej, patrz REALTIME_SERVER_URL.
     // Serwer jest źródłem prawdy o własnej pozycji: co event "state" nadpisujemy nią lokalne
