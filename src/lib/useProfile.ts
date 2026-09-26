@@ -234,6 +234,13 @@ export type MyProfile = {
    */
   purchaseCosmetic: (slug: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
+   * Donates coins into the Fountain of Wealth's room fund (see
+   * supabase/migrations/0052_fountain_of_wealth.sql) — same atomic-RPC pattern as purchaseColor:
+   * balance check, coin deduction and the fund credit happen in one transaction. `amount` must be
+   * a positive number no larger than the caller's own balance (enforced server-side).
+   */
+  donateToFountain: (amount: number) => Promise<{ ok: true; fundTotal: number } | { ok: false; error: string }>;
+  /**
    * Switches character look (see supabase/migrations/0031_character_selection.sql) — same
    * atomic-RPC pattern as purchaseColor/purchaseCosmetic: balance check, coin deduction and the
    * write happen in one transaction. Free (no coin check) when re-picking the character already
@@ -713,6 +720,87 @@ export function useMyProfile(): MyProfile {
       currentDeaths,
       currentMobKills,
       currentCoins,
+      currentCharacter,
+      currentFlashGrenades,
+      currentBallSkin,
+      currentShurikenAmmo,
+      currentEquippedHelm,
+      currentEquippedArmor,
+      currentEquippedBoots,
+      currentEquippedExtraAttack,
+      currentEquippedExtraAttackQty,
+      currentEquipmentBag,
+      currentEquipmentBagQty,
+    ],
+  );
+
+  const donateToFountain = useCallback(
+    async (amount: number) => {
+      if (!sb) return { ok: false as const, error: "Donating requires Supabase to be configured." };
+      if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+      // One RPC: balance check, coin deduction and the room fund credit in one transaction (see
+      // supabase/migrations/0052_fountain_of_wealth.sql), same atomic pattern as purchase_cosmetic.
+      const { data, error } = await sb.rpc("donate_to_fountain", { p_amount: amount });
+      if (error) {
+        console.error("donate_to_fountain", error);
+        const message =
+          error.message === "insufficient_coins"
+            ? "Not enough copper coins."
+            : error.message === "invalid_amount"
+              ? "Enter an amount greater than zero."
+              : `Donation failed: ${saveHint(error)}`;
+        return { ok: false as const, error: message };
+      }
+      const row = (Array.isArray(data) ? data[0] : data) as
+        | { coins?: number | string; fund_total?: number | string }
+        | null;
+      const newCoins = Number(row?.coins ?? currentCoins);
+      const fundTotal = Number(row?.fund_total ?? 0);
+      saved.dispatchEvent(
+        new CustomEvent("saved", {
+          detail: {
+            userId,
+            nickname: currentNickname,
+            color: currentColor,
+            xp: currentXp,
+            ballsShot: currentBallsShot,
+            fistSwings: currentFistSwings,
+            kills: currentKills,
+            deaths: currentDeaths,
+            mobKills: currentMobKills,
+            coins: newCoins,
+            cosmetic: currentCosmetic,
+            cosmeticExpiresAt: currentCosmeticExpiresAt,
+            character: currentCharacter,
+            flashGrenades: currentFlashGrenades,
+            ballSkin: currentBallSkin,
+            shurikenAmmo: currentShurikenAmmo,
+            equippedHelm: currentEquippedHelm,
+            equippedArmor: currentEquippedArmor,
+            equippedBoots: currentEquippedBoots,
+            equippedExtraAttack: currentEquippedExtraAttack,
+            equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equipmentBag: currentEquipmentBag,
+            equipmentBagQty: currentEquipmentBagQty,
+          },
+        }),
+      );
+      return { ok: true as const, fundTotal };
+    },
+    [
+      sb,
+      userId,
+      currentNickname,
+      currentColor,
+      currentXp,
+      currentBallsShot,
+      currentFistSwings,
+      currentKills,
+      currentDeaths,
+      currentMobKills,
+      currentCoins,
+      currentCosmetic,
+      currentCosmeticExpiresAt,
       currentCharacter,
       currentFlashGrenades,
       currentBallSkin,
@@ -1470,6 +1558,7 @@ export function useMyProfile(): MyProfile {
     save,
     purchaseColor,
     purchaseCosmetic,
+    donateToFountain,
     purchaseCharacter,
     useFlashGrenade,
     saveBallSkin,

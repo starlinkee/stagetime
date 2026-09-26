@@ -1,8 +1,11 @@
 "use client";
-import { Suspense } from "react";
+import { useCallback, useEffect, useState, Suspense } from "react";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
 import { ROOMS } from "@/lib/rooms";
+import { getSupabase } from "@/lib/supabase";
+import { useMyProfile } from "@/lib/useProfile";
 import { useRoomOccupancy } from "@/lib/useRoomOccupancy";
+import { useSession } from "@/lib/useSession";
 import { SCREEN_W, worldH, worldW } from "@realtime-shared/constants";
 
 /**
@@ -104,26 +107,207 @@ const lobby2PortalZone: RoomZone = {
   noReward: true,
 };
 
-const LOBBY_ZONES: RoomZone[] = [...pomodoroZones, ...stopwatchZones, ...shopZones, ...arenaZones, lobby2PortalZone];
+// Fountain of Wealth: donate coins into a room-scoped fund (see
+// supabase/migrations/0052_fountain_of_wealth.sql). Hand-placed at the top of the ring, above all
+// the pomodoro/timer/shop/arena doors, rather than via ringPos() — it isn't a navigable room, just
+// a floor button (kind: "action", same pattern as the Shop's floor buttons in ShopRoom.tsx) that
+// opens a donate dialog in place. `room_funds` is keyed by room slug so a future guild room can
+// reuse the same fund mechanism (see AGENTS.md).
+export const FOUNTAIN_ZONE_SLUG = "fountain-of-wealth";
+const FOUNTAIN_ZONE_W = 220;
+const FOUNTAIN_ZONE_H = 140;
+const fountainZone: RoomZone = {
+  slug: FOUNTAIN_ZONE_SLUG,
+  name: "Fountain of Wealth",
+  kind: "action",
+  x: RING_CENTER_X - FOUNTAIN_ZONE_W / 2,
+  y: 20,
+  w: FOUNTAIN_ZONE_W,
+  h: FOUNTAIN_ZONE_H,
+  color: "#ca8a04",
+  requiresAuth: true,
+  noReward: true,
+};
+
+const LOBBY_ZONES: RoomZone[] = [
+  fountainZone,
+  ...pomodoroZones,
+  ...stopwatchZones,
+  ...shopZones,
+  ...arenaZones,
+  lobby2PortalZone,
+];
 
 // STU-56: derived from LOBBY_ZONES (not the full ROOMS roster) so this only ever subscribes to
 // occupancy for zones actually shown on this page — ROOMS now also lists lobby2's own rooms
 // (arena-2/timer-2), which have no zone here. Including the portal's own "lobby2" slug shows a
-// live occupant count for lobby2 itself, same as any other zone.
-const ROOM_SLUGS = LOBBY_ZONES.map((z) => z.slug);
+// live occupant count for lobby2 itself, same as any other zone. Action zones (the fountain) are
+// excluded — they're floor buttons inside the lobby itself, not a separate room with its own
+// occupancy channel.
+const ROOM_SLUGS = LOBBY_ZONES.filter((z) => (z.kind ?? "nav") === "nav").map((z) => z.slug);
 
 export default function Home() {
   const occupancy = useRoomOccupancy(ROOM_SLUGS);
+  const { coins, donateToFountain } = useMyProfile();
+  const { ready: sessionReady, session } = useSession();
+  const signedIn = Boolean(session?.user);
+  const [fountainOpen, setFountainOpen] = useState(false);
+  const [fountainAmount, setFountainAmount] = useState("0");
+  const [fountainBusy, setFountainBusy] = useState(false);
+  const [fountainError, setFountainError] = useState<string | null>(null);
+  const [fundTotal, setFundTotal] = useState<number | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  // Fund total is public (see room_funds' select policy) — fetched fresh each time the dialog
+  // opens so it stays accurate even after other players donate.
+  useEffect(() => {
+    if (!fountainOpen) return;
+    const sb = getSupabase();
+    if (!sb) return;
+    let cancelled = false;
+    void sb
+      .from("room_funds")
+      .select("total")
+      .eq("room", FOUNTAIN_ZONE_SLUG)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setFundTotal(Number(data?.total ?? 0));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fountainOpen]);
+
+  const onZoneAction = useCallback((slug: string) => {
+    if (slug === FOUNTAIN_ZONE_SLUG) {
+      setFountainAmount("0");
+      setFountainError(null);
+      setFountainOpen(true);
+    }
+  }, []);
+
+  const closeFountain = useCallback(() => {
+    if (fountainBusy) return;
+    setFountainOpen(false);
+    setFountainError(null);
+  }, [fountainBusy]);
+
+  const parsedAmount = Number(fountainAmount);
+  const validAmount = Number.isFinite(parsedAmount) && parsedAmount > 0 && parsedAmount <= coins;
+
+  const donate = useCallback(async () => {
+    if (fountainBusy || !validAmount) return;
+    setFountainBusy(true);
+    setFountainError(null);
+    const result = await donateToFountain(parsedAmount);
+    setFountainBusy(false);
+    if (!result.ok) {
+      setFountainError(result.error);
+      return;
+    }
+    setFundTotal(result.fundTotal);
+    setFountainAmount("0");
+    setToast(`Donated ${parsedAmount} coins to the Fountain of Wealth!`);
+  }, [fountainBusy, validAmount, donateToFountain, parsedAmount]);
+
   return (
     <>
     <Suspense fallback={null}>
-      <RoomStage roomSlug="lobby" zones={LOBBY_ZONES} occupancy={occupancy} />
+      <RoomStage roomSlug="lobby" zones={LOBBY_ZONES} occupancy={occupancy} onZoneAction={onZoneAction} />
     </Suspense>
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center gap-2 p-8 pt-16 text-center">
       <div className="flex items-center justify-center gap-3">
         <h1 className="title-64 text-5xl sm:text-6xl">StudyQuest.Party</h1>
       </div>
+      {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
     </main>
+    {fountainOpen && sessionReady && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Fountain of Wealth"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      >
+        <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-zinc-100">Fountain of Wealth</h2>
+            {signedIn && (
+              <span className="flex flex-col gap-1 text-right text-sm text-zinc-400">
+                Your balance
+                <span className="text-lg font-semibold text-zinc-100">{coins.toFixed(1)} coins</span>
+              </span>
+            )}
+          </div>
+          <p className="mb-3 text-center text-sm text-zinc-400">
+            Donate coins into this room&apos;s fund. Coins donated here are gone from your balance for
+            good — there&apos;s no way to withdraw them.
+          </p>
+          {fundTotal !== null && (
+            <p className="mb-5 text-center text-sm text-amber-400">
+              Fund total so far: <span className="font-semibold">{fundTotal.toFixed(1)} coins</span>
+            </p>
+          )}
+          {signedIn ? (
+            <>
+              <div className="mb-3 flex items-center justify-center gap-3">
+                <input
+                  type="number"
+                  min={0}
+                  max={coins}
+                  step="any"
+                  value={fountainAmount}
+                  onChange={(e) => setFountainAmount(e.target.value)}
+                  disabled={fountainBusy}
+                  className="w-40 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-center text-sm text-zinc-100 disabled:opacity-50"
+                />
+                <span className="text-sm text-zinc-500">/ {coins.toFixed(1)} coins</span>
+              </div>
+              {!validAmount && parsedAmount > coins && (
+                <p className="mb-3 text-center text-sm text-rose-400">You don&apos;t have that many coins.</p>
+              )}
+              {fountainError && <p className="mb-3 text-center text-sm text-rose-400">{fountainError}</p>}
+              <div className="flex justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={closeFountain}
+                  disabled={fountainBusy}
+                  className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void donate()}
+                  disabled={fountainBusy || !validAmount}
+                  className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {fountainBusy ? "Processing…" : "Donate"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="mb-5 text-center text-sm text-rose-400">You must be signed in to donate.</p>
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={closeFountain}
+                  className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+                >
+                  Close
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    )}
     </>
   );
 }
