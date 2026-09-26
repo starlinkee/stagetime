@@ -198,9 +198,9 @@ export type MyProfile = {
   equippedHelm: string | null;
   equippedArmor: string | null;
   equippedBoots: string | null;
-  /** STU-77/0044: 20-slot bag of owned-but-unequipped gear (plus the stackable "shuriken" item,
-   * see 0045), `null` for an empty slot — see EquipmentFields' doc comment above. Private, same as
-   * coins/flashGrenades. */
+  /** STU-77/0044: 8-slot bag (0049) of owned-but-unequipped gear (plus the stackable "shuriken"
+   * item, see 0045), `null` for an empty slot — see EquipmentFields' doc comment above. Private,
+   * same as coins/flashGrenades. */
   equipmentBag: (string | null)[];
   /** Quantity per equipmentBag slot — see EquipmentFields' doc comment above. */
   equipmentBagQty: number[];

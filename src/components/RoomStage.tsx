@@ -845,7 +845,7 @@ function EquipSlotBox({
 }
 
 /**
- * One of the 20 backpack slots (4x5 grid) — an owned-but-unequipped item, draggable onto a
+ * One of the 8 backpack slots (4x2 grid, for now — see EQUIPMENT_BAG_SIZE) — an owned-but-unequipped item, draggable onto a
  * matching equip slot to wear it or onto another backpack slot to reorder. Also a drop target for
  * an equip slot being dragged off (unequip), as long as it's empty.
  */
