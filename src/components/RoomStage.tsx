@@ -35,8 +35,10 @@ import {
   DMG_MAX,
   DMG_MIN,
   dmgTint,
+  DUMMY_GOLD_REWARD,
   DUMMY_H,
   DUMMY_W,
+  DUMMY_XP_REWARD,
   EMOJI_EMOTES,
   EQUIPMENT_ITEMS,
   ENEMY_H,
@@ -1927,12 +1929,15 @@ export function RoomStage({
               dmgTextRef.current.push({ x: h.x, y: h.y, text: `${h.dmg}`, color: "#ffffff", born: t });
               // The killing blow: big "KILL" callout plus the reward that just landed (see
               // KILL_XP_REWARD/KILL_GOLD_REWARD's doc comment) — shown only here, on the killer's
-              // own screen, stacked under the regular "N" damage number above.
+              // own screen, stacked under the regular "N" damage number above. STU-65: the lobby
+              // dummy's `dummy:`-prefixed targetId pays out DUMMY_XP_REWARD/DUMMY_GOLD_REWARD
+              // instead, matching what /api/internal/combat actually credits for that kill.
               if (h.killed) {
+                const isDummyKill = h.targetId.startsWith("dummy:");
                 killTextRef.current.push(
                   { x: h.x, y: h.y, text: "KILL", color: "#ef4444", born: t, big: true, offset: 0 },
-                  { x: h.x, y: h.y, text: `+${KILL_XP_REWARD} xp`, color: "#facc15", born: t, offset: 24 },
-                  { x: h.x, y: h.y, text: `+${KILL_GOLD_REWARD} gold`, color: "#facc15", born: t, offset: 46 },
+                  { x: h.x, y: h.y, text: `+${isDummyKill ? DUMMY_XP_REWARD : KILL_XP_REWARD} xp`, color: "#facc15", born: t, offset: 24 },
+                  { x: h.x, y: h.y, text: `+${isDummyKill ? DUMMY_GOLD_REWARD : KILL_GOLD_REWARD} gold`, color: "#facc15", born: t, offset: 46 },
                 );
               }
             }
@@ -3279,7 +3284,7 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · hold Space to charge a ball, release to shoot · tap C to roll in the direction you're facing (faster than walking) · tap 1-6 to emote (works even during work)";
+      "Use the arrow keys ← ↑ ↓ → to move around · tap 1-3 to pick a weapon (throw, slash, shuriken) · hold Space to charge and release for throw, tap Space to fire slash/shuriken · tap C to roll in the direction you're facing (faster than walking) · tap 0, 4-8 to emote (works even during work)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";
