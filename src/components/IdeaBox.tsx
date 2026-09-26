@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { MAX_IDEA_AUTHOR, MAX_IDEA_BODY, useIdeas } from "@/lib/useIdeas";
 import { useMyProfile } from "@/lib/useProfile";
 import { useSession } from "@/lib/useSession";
@@ -69,8 +70,9 @@ export function IdeaBox() {
 
   return (
     <div className="relative">
-      {open && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-[2px]">
+      {open &&
+        createPortal(
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/60 p-4 backdrop-blur-[2px]">
           <div className="max-h-[85vh] w-full max-w-md min-w-[20rem] overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900/95 p-4 text-sm text-zinc-100 shadow-xl backdrop-blur">
             <div className="mb-3 flex items-center justify-between">
               <span className="font-semibold">Ideas</span>
@@ -131,8 +133,9 @@ export function IdeaBox() {
               </form>
             )}
           </div>
-        </div>
-      )}
+        </div>,
+          document.body
+        )}
       <button type="button" onClick={toggle} className={HEADER_BUTTON_CLASS}>
         Got an idea?
       </button>

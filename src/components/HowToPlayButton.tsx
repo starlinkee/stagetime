@@ -1,4 +1,5 @@
 "use client";
+import { createPortal } from "react-dom";
 import { useHowToPlay } from "@/lib/howToPlay";
 import { useHeaderPanel } from "@/lib/headerPanel";
 import { HEADER_BUTTON_CLASS } from "@/lib/headerButtonStyles";
@@ -19,8 +20,9 @@ export function HowToPlayButton() {
 
   return (
     <>
-      {open && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/40 p-6">
+      {open &&
+        createPortal(
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-zinc-950/40 p-6">
           <div
             role="alertdialog"
             aria-modal="true"
@@ -41,8 +43,9 @@ export function HowToPlayButton() {
               Got it
             </button>
           </div>
-        </div>
-      )}
+        </div>,
+          document.body
+        )}
       <button type="button" onClick={toggle} className={HEADER_BUTTON_CLASS}>
         Help
       </button>
