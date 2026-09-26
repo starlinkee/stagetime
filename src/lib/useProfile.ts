@@ -239,7 +239,9 @@ export type MyProfile = {
    * balance check, coin deduction and the fund credit happen in one transaction. `amount` must be
    * a positive number no larger than the caller's own balance (enforced server-side).
    */
-  donateToFountain: (amount: number) => Promise<{ ok: true; fundTotal: number } | { ok: false; error: string }>;
+  donateToFountain: (
+    amount: number,
+  ) => Promise<{ ok: true; fundTotal: number; myTotal: number } | { ok: false; error: string }>;
   /**
    * Switches character look (see supabase/migrations/0031_character_selection.sql) — same
    * atomic-RPC pattern as purchaseColor/purchaseCosmetic: balance check, coin deduction and the
@@ -752,10 +754,11 @@ export function useMyProfile(): MyProfile {
         return { ok: false as const, error: message };
       }
       const row = (Array.isArray(data) ? data[0] : data) as
-        | { coins?: number | string; fund_total?: number | string }
+        | { coins?: number | string; fund_total?: number | string; my_total?: number | string }
         | null;
       const newCoins = Number(row?.coins ?? currentCoins);
       const fundTotal = Number(row?.fund_total ?? 0);
+      const myTotal = Number(row?.my_total ?? 0);
       saved.dispatchEvent(
         new CustomEvent("saved", {
           detail: {
@@ -785,7 +788,7 @@ export function useMyProfile(): MyProfile {
           },
         }),
       );
-      return { ok: true as const, fundTotal };
+      return { ok: true as const, fundTotal, myTotal };
     },
     [
       sb,

@@ -156,6 +156,7 @@ export default function Home() {
   const [fountainBusy, setFountainBusy] = useState(false);
   const [fountainError, setFountainError] = useState<string | null>(null);
   const [fundTotal, setFundTotal] = useState<number | null>(null);
+  const [myDonated, setMyDonated] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -183,6 +184,31 @@ export default function Home() {
       cancelled = true;
     };
   }, [fountainOpen]);
+
+  // Own donated-so-far total (room_fund_donors, added in 0054) — restricted by RLS to the caller's
+  // own row, so this only ever shows the signed-in player their own history, not anyone else's.
+  // Refetched whenever the dialog opens for the same reason as fundTotal above.
+  useEffect(() => {
+    if (!fountainOpen || !session?.user) {
+      setMyDonated(null);
+      return;
+    }
+    const sb = getSupabase();
+    if (!sb) return;
+    let cancelled = false;
+    void sb
+      .from("room_fund_donors")
+      .select("total")
+      .eq("room", FOUNTAIN_ZONE_SLUG)
+      .eq("user_id", session.user.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setMyDonated(Number(data?.total ?? 0));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fountainOpen, session?.user]);
 
   const zones = useMemo(
     () =>
@@ -222,6 +248,7 @@ export default function Home() {
       return;
     }
     setFundTotal(result.fundTotal);
+    setMyDonated(result.myTotal);
     setFountainAmount("0");
     setToast(`Donated ${parsedAmount} coins to the Fountain of Wealth!`);
   }, [fountainBusy, validAmount, donateToFountain, parsedAmount]);
@@ -259,8 +286,13 @@ export default function Home() {
             good — there&apos;s no way to withdraw them.
           </p>
           {fundTotal !== null && (
-            <p className="mb-5 text-center text-sm text-amber-400">
+            <p className="mb-1 text-center text-sm text-amber-400">
               Fund total so far: <span className="font-semibold">{fundTotal.toFixed(1)} coins</span>
+            </p>
+          )}
+          {signedIn && myDonated !== null && (
+            <p className="mb-5 text-center text-sm text-zinc-400">
+              You&apos;ve donated <span className="font-semibold text-zinc-200">{myDonated.toFixed(1)} coins</span>
             </p>
           )}
           {signedIn ? (
