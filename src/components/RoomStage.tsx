@@ -696,11 +696,23 @@ function drawSlash(ctx: CanvasRenderingContext2D, cx: number, cy: number, angle:
   ctx.restore();
 }
 
+/** Weapon slot 3's on-shop-shelf look (see PISTOL_GALLERY in ShopRoom.tsx) — reused here as the
+ * in-flight sprite for weapon slot 3, replacing the old vector shuriken shape below (kept as a
+ * fallback for the brief window before this image finishes loading). Mechanics (damage/cooldown/
+ * ammo/hit-testing) are unchanged — this is a reskin only, still internally called "shuriken". */
+const SHURIKEN_SPRITE_SRC = "/map/items/modern-items-pack/sliced/pistols/pistol_black.png";
+let shurikenSpriteImg: HTMLImageElement | null = null;
+if (typeof window !== "undefined") {
+  shurikenSpriteImg = new Image();
+  shurikenSpriteImg.src = SHURIKEN_SPRITE_SRC;
+}
+
 /**
- * Weapon slot 3: a small spinning 4-pointed star, deliberately not drawOrb/drawSlash's look —
- * reads as a thrown blade rather than a glowing projectile or a swipe. Spin is driven by `t`
- * (this client's own render clock) rather than distance traveled, so it keeps spinning even while
- * at rest in a screenshot-freeze — purely cosmetic, never used for hit-testing.
+ * Weapon slot 3: spins in place, driven by `t` (this client's own render clock) rather than
+ * distance traveled, so it keeps spinning even while at rest in a screenshot-freeze — purely
+ * cosmetic, never used for hit-testing. Draws the pistol sprite once loaded (see
+ * shurikenSpriteImg above); the vector 4-pointed star below is only a fallback for the brief
+ * window before that image finishes loading.
  */
 function drawShuriken(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, t: number) {
   ctx.save();
@@ -708,6 +720,12 @@ function drawShuriken(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: 
   ctx.rotate((t / 120) % (Math.PI * 2));
   ctx.shadowColor = color;
   ctx.shadowBlur = 8;
+  if (shurikenSpriteImg && shurikenSpriteImg.complete && shurikenSpriteImg.naturalWidth > 0) {
+    const size = r * 2.6;
+    ctx.drawImage(shurikenSpriteImg, -size / 2, -size / 2, size, size);
+    ctx.restore();
+    return;
+  }
   ctx.fillStyle = "#d4d4d8";
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
@@ -3918,7 +3936,12 @@ export function RoomStage({
                     : "border-zinc-800/60 bg-zinc-900/40 text-zinc-600"
               }`}
             >
-              <span className="text-2xl leading-none">{emptyShurikenSlot ? "—" : slot.icon || "—"}</span>
+              {slot.id === "shuriken" && !emptyShurikenSlot ? (
+                // eslint-disable-next-line @next/next/no-img-element -- small canvas-adjacent hotbar icon, not a page image worth next/image's overhead
+                <img src={SHURIKEN_SPRITE_SRC} alt="Pistol" className="h-7 w-7 object-contain" />
+              ) : (
+                <span className="text-2xl leading-none">{emptyShurikenSlot ? "—" : slot.icon || "—"}</span>
+              )}
               {slot.cost != null && (
                 <span className="text-[10px] font-bold leading-none text-amber-300">{slot.cost}</span>
               )}

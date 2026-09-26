@@ -65,6 +65,16 @@ const FLORIST_ZONE: RoomZone = { slug: FLORIST_ZONE_SLUG, name: "Florist", kind:
  * granted" guarantee as purchaseCosmetic. */
 const GUNMAN_ZONE_SLUG = "gunman";
 const GUNMAN_ZONE: RoomZone = { slug: GUNMAN_ZONE_SLUG, name: "Gunman", kind: "action", x: 763, y: 280, w: 220, h: 140 };
+/** Pistol gallery shown in the Gunman dialog below — browsing only, no gameplay effect yet (no
+ * cost, no stats, not purchasable). `black` is weapon slot 3's current in-game look (see
+ * SHURIKEN_SPRITE_SRC in RoomStage.tsx — still internally "shuriken", just reskinned), the other
+ * three are new sprites with nothing behind them yet. */
+const PISTOL_GALLERY: { slug: string; name: string; src: string; equipped: boolean }[] = [
+  { slug: "pistol_black", name: "Pistol (black)", src: "/map/items/modern-items-pack/sliced/pistols/pistol_black.png", equipped: true },
+  { slug: "pistol_gray", name: "Pistol (gray)", src: "/map/items/modern-items-pack/sliced/pistols/pistol_gray.png", equipped: false },
+  { slug: "pistol_silver", name: "Pistol (silver)", src: "/map/items/modern-items-pack/sliced/pistols/pistol_silver.png", equipped: false },
+  { slug: "pistol_tan", name: "Pistol (tan)", src: "/map/items/modern-items-pack/sliced/pistols/pistol_tan.png", equipped: false },
+];
 /** STU-77: the only place helm/armor/boots (see EQUIPMENT_ITEMS in
  * realtime-server/shared/constants.ts) can be bought/equipped — the Tab inventory panel
  * (RoomStage.tsx) only shows what's already equipped and lets you unequip, same "buy here, view
@@ -458,7 +468,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
               </p>
             )}
             {gunmanError && <p className="mb-3 text-center text-sm text-rose-400">{gunmanError}</p>}
-            <div className="flex justify-center gap-3">
+            <div className="mb-5 flex justify-center gap-3">
               <button
                 type="button"
                 onClick={closeGunman}
@@ -475,6 +485,25 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
               >
                 {gunmanBusy ? "Processing…" : `Buy ${SHURIKEN_AMMO_PACK} shurikens`}
               </button>
+            </div>
+            <div className="border-t border-zinc-800 pt-4">
+              <h3 className="mb-1 text-center text-sm font-semibold text-zinc-200">Pistols</h3>
+              <p className="mb-3 text-center text-xs text-zinc-500">Just a look at what&apos;s coming — no stats yet, not for sale.</p>
+              <div className="grid grid-cols-4 gap-2">
+                {PISTOL_GALLERY.map((p) => (
+                  <div
+                    key={p.slug}
+                    className={`flex flex-col items-center gap-1 rounded-xl border px-2 py-3 ${
+                      p.equipped ? "border-amber-500 bg-amber-500/10" : "border-zinc-700"
+                    }`}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element -- small fixed-size shop thumbnail, not worth next/image's overhead */}
+                    <img src={p.src} alt={p.name} className="h-10 w-10 object-contain" />
+                    <span className="text-center text-[11px] font-medium text-zinc-200">{p.name}</span>
+                    <span className="text-[10px] text-zinc-500">{p.equipped ? "Equipped" : "Coming soon"}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
