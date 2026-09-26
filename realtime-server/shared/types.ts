@@ -77,7 +77,7 @@ export interface PlayerState {
  * cooldown rules differ too much per kind for that), but named here so `ClientMessage`'s combat
  * variants and any future per-kind bookkeeping share one vocabulary instead of drifting.
  */
-export type AttackKind = "roll" | "fire" | "slash" | "shuriken";
+export type AttackKind = "roll" | "fire" | "slash" | "shuriken" | "fireball";
 
 /**
  * A live projectile (thrown ball) or melee hitbox, decided and simulated server-side (Faza F3).
@@ -110,6 +110,11 @@ export interface ServerBall {
    * never used for hit-testing/physics, same role `melee` plays for the slash swipe. Flies exactly
    * like a thrown ball (see spawnShuriken in server.ts), just faster and for a fixed damage. */
   shuriken?: boolean;
+  /** Weapon slot 4: renders as one of a small set of fireball sprite frames (see
+   * FIREBALL_TIER_COUNT/fireballTier in shared/constants.ts) instead of the continuous orb glow —
+   * purely a rendering hint, never used for hit-testing/physics. Flies exactly like a thrown ball
+   * (see spawnFireball in server.ts), charged the same way over a much longer FIREBALL_CHARGE_MS. */
+  fireball?: boolean;
 }
 
 /**
@@ -208,6 +213,16 @@ export type ClientMessage =
    * that round-trip.
    */
   | { type: "shuriken" }
+  /**
+   * Weapon slot 4: charge-and-throw, same request shape as `fire` above — the server derives
+   * direction/position from this connection's own `d`/`x`/`y` and independently caps `chargeMs`
+   * against how long `charge: { on: true }` actually elapsed, this time against
+   * FIREBALL_CHARGE_MS (shared/constants.ts) instead of CHARGE_MS. Shares the same `charge`
+   * message/`conn.chargeStartAt` as `fire` — only one charge-and-throw attack can be held at a
+   * time client-side (see the weapon hotbar in RoomStage.tsx), so there's no ambiguity about which
+   * one a given `charge`/release pair belongs to.
+   */
+  | { type: "fireball"; chargeMs: number }
   /**
    * STU-45: one of EMOJI_EMOTES (shared/constants.ts). Unlike roll/charge/fire/slash this is
    * accepted during the work phase too — see isFrozen's doc comment in server.ts — so it never

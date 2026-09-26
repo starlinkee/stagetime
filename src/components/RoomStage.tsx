@@ -53,6 +53,13 @@ import {
   EQUIPMENT_ITEMS,
   ENEMY_H,
   ENEMY_W,
+  FIREBALL_CHARGE_MS,
+  FIREBALL_R_MAX,
+  FIREBALL_R_MIN,
+  FIREBALL_SPEED,
+  FIREBALL_STAMINA_COST,
+  FIREBALL_TIER_COUNT,
+  fireballTier,
   GHOST_OPACITY,
   HITBOX_H,
   HITBOX_OFFSET_X,
@@ -268,6 +275,12 @@ type Ball = {
   /** Weapon slot 3: renders as a spinning shuriken instead of an orb — see ServerBall.shuriken's
    * doc comment in realtime-shared/types. */
   shuriken?: boolean;
+  /** Weapon slot 4: renders as one of the fireball sprite frames instead of an orb — see
+   * ServerBall.fireball's doc comment in realtime-shared/types. */
+  fireball?: boolean;
+  /** Which fireball sprite frame (1..FIREBALL_TIER_COUNT, see fireballTier) this ball renders as —
+   * only meaningful when `fireball` is true, decided once at launch from the charge fraction. */
+  fireballTier?: number;
 };
 type Shard = {
   x: number;
@@ -553,6 +566,34 @@ function spawnShuriken(balls: Ball[], x: number, y: number, d: Dir, color: strin
   });
 }
 
+/** Środek fireballa ładowanego nad głową postaci — same shape as `orbAt()` above, just against
+ * FIREBALL_R_MIN/MAX instead of ORB_R_MIN/MAX. */
+function fireballOrbAt(x: number, y: number, p: number) {
+  const r = FIREBALL_R_MIN + (FIREBALL_R_MAX - FIREBALL_R_MIN) * p;
+  return { r, cx: x + PERSON_W / 2, cy: Math.max(r + 2, y - r - 4) };
+}
+
+/** Wypuszcza fireballa znad postaci stojącej w (x, y) w kierunku d — purely a local/predicted
+ * preview, same "instant local feedback, server confirms the real one" role as `launch()` above
+ * (see spawnFireball's own doc comment in realtime-server/src/server.ts for the authoritative,
+ * server-side version). */
+function launchFireball(balls: Ball[], x: number, y: number, d: Dir, p: number, owner: string, color: string) {
+  const { r, cx, cy } = fireballOrbAt(x, y, p);
+  const [ux, uy] = DIRS[d];
+  const n = Math.hypot(ux, uy) || 1;
+  balls.push({
+    x: cx,
+    y: cy,
+    vx: (ux / n) * FIREBALL_SPEED,
+    vy: (uy / n) * FIREBALL_SPEED,
+    r,
+    color,
+    owner,
+    fireball: true,
+    fireballTier: fireballTier(p),
+  });
+}
+
 /**
  * STU-41: `skin` (one of BALL_SKINS, see src/lib/useProfile.ts) only changes what gets drawn
  * *around/on top of* the base orb below — the base gradient/glow/outline is "classic" and every
@@ -568,9 +609,10 @@ function chargeTint(p: number): string {
 
 /**
  * STU-23: a client-only input router picking which existing attack Space triggers (charge-and-
- * throw, melee slash, or the ammo-limited shuriken, wired server-side via ClientMessage "slash"/
- * "shuriken"/spawnSlash/spawnShuriken in server.ts). Slots 4..10 are deliberate placeholders for
- * future real weapons, not a bug — rendered disabled below.
+ * throw, melee slash, the ammo-limited shuriken, or the slow-charging fireball, wired server-side
+ * via ClientMessage "slash"/"shuriken"/"fireball"/spawnSlash/spawnShuriken/spawnFireball in
+ * server.ts). Slots 5..10 are deliberate placeholders for future real weapons, not a bug —
+ * rendered disabled below.
  * STU-61: this slot used to be a fist swing rendered as a glowing orb (same shape as the thrown
  * ball, just stationary) — replaced by a slash (see drawSlash below) both because it now looks
  * distinct from the ball and because the orb's radius/glow scaled off a life fraction computed by
@@ -581,12 +623,12 @@ function chargeTint(p: number): string {
  * a live count via the hotbar's own shurikenAmmo badge (see the WEAPON_SLOTS.map render below),
  * not a fixed per-shot number like STAMINA_COST_PER_SHOT/SLASH_STAMINA_COST.
  */
-type WeaponId = "ball" | "slash" | "shuriken";
+type WeaponId = "ball" | "slash" | "shuriken" | "fireball";
 const WEAPON_SLOTS: readonly { key: string; id: WeaponId | null; icon: string; label: string; cost: number | null }[] = [
   { key: "1", id: "ball", icon: "\u{1F534}", label: "Throw", cost: STAMINA_COST_PER_SHOT },
   { key: "2", id: "slash", icon: "\u{2694}\u{FE0F}", label: "Slash", cost: SLASH_STAMINA_COST },
   { key: "3", id: "shuriken", icon: "\u{2733}\u{FE0F}", label: "Shuriken", cost: null },
-  { key: "", id: null, icon: "", label: "Empty", cost: null },
+  { key: "4", id: "fireball", icon: "\u{1F525}", label: "Fireball", cost: FIREBALL_STAMINA_COST },
   { key: "", id: null, icon: "", label: "Empty", cost: null },
   { key: "", id: null, icon: "", label: "Empty", cost: null },
   { key: "", id: null, icon: "", label: "Empty", cost: null },
@@ -743,6 +785,49 @@ function drawShuriken(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: 
   ctx.beginPath();
   ctx.arc(0, 0, r * 0.18, 0, Math.PI * 2);
   ctx.fillStyle = "#3f3f46";
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Weapon slot 4: the FIREBALL_TIER_COUNT sprite frames sliced from
+ * public/effects/attacks/fireball/fireball.jpg (see fireballTier in @realtime-shared/constants),
+ * indexed 1..3 to match that function's return value — index 0 is unused on purpose so a tier
+ * number can index straight into this array without an off-by-one. */
+const FIREBALL_SPRITE_SRCS = [
+  "",
+  "/effects/attacks/fireball/fireball_1.png",
+  "/effects/attacks/fireball/fireball_2.png",
+  "/effects/attacks/fireball/fireball_3.png",
+];
+const fireballSpriteImgs: (HTMLImageElement | null)[] = [null, null, null, null];
+if (typeof window !== "undefined") {
+  for (let i = 1; i < FIREBALL_SPRITE_SRCS.length; i++) {
+    const img = new Image();
+    img.src = FIREBALL_SPRITE_SRCS[i];
+    fireballSpriteImgs[i] = img;
+  }
+}
+
+/**
+ * Weapon slot 4: draws the sprite frame for the given charge tier (1..FIREBALL_TIER_COUNT, see
+ * fireballTier), used both for the charging preview above a player's head and for the ball in
+ * flight — same "vector fallback while the image loads" shape as drawShuriken above, just a
+ * glowing circle instead of a vector star since there's no cheap vector fireball worth drawing.
+ */
+function drawFireball(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, tier: number) {
+  const img = fireballSpriteImgs[tier];
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 10;
+  if (img && img.complete && img.naturalWidth > 0) {
+    const size = r * 2.4;
+    ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size);
+    ctx.restore();
+    return;
+  }
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
@@ -1715,6 +1800,11 @@ export function RoomStage({
   const hitRef = useRef<Record<string, number>>({});
   /** Kto teraz ładuje kulę: klucz → początek ładowania (performance.now). */
   const chargingRef = useRef<Record<string, number>>({});
+  /** Which weapon each key in `chargingRef` is charging — "ball" for any key absent here (older
+   * peer whose "charge" broadcast predates weapon slot 4, or simply the common case), "fireball"
+   * only once that peer's own "charge" broadcast said so (see the "charge" broadcast handler
+   * below) — lets the charging-halo render loop pick drawOrb vs. drawFireball per other player. */
+  const chargingWeaponRef = useRef<Record<string, WeaponId>>({});
   const othersRef = useRef<Others>({});
   const colorRef = useRef(color);
   const userIdRef = useRef(userId);
@@ -2168,6 +2258,11 @@ export function RoomStage({
             id: b.id,
             skin: b.owner === netKey ? ballSkinRef.current : othersRef.current[b.owner]?.ballSkin,
             shuriken: b.shuriken,
+            fireball: b.fireball,
+            // The server never sends a tier number directly (ServerBall.fireball is just a
+            // rendering hint) — recovered here from the radius it did send, the same charge
+            // fraction `p` spawnFireball used to compute both `r` and `dmg` from.
+            fireballTier: b.fireball ? fireballTier((b.r - FIREBALL_R_MIN) / (FIREBALL_R_MAX - FIREBALL_R_MIN)) : undefined,
           }),
         );
         // predictedRef only ever holds this connection's own shots, so the moment the server
@@ -2241,12 +2336,16 @@ export function RoomStage({
 
     const release = () => {
       if (chargeStart === null) return;
+      // Weapon slot 4: same charge-and-release flow as the ball below, just against
+      // FIREBALL_CHARGE_MS/FIREBALL_STAMINA_COST instead of CHARGE_MS/STAMINA_COST_PER_SHOT — see
+      // the "fireball" ClientMessage's doc comment in @realtime-shared/types.
+      const isFireball = selectedWeaponRef.current === "fireball";
       const chargeMs = performance.now() - chargeStart;
-      const p = Math.min(1, chargeMs / CHARGE_MS);
+      const p = Math.min(1, chargeMs / (isFireball ? FIREBALL_CHARGE_MS : CHARGE_MS));
       chargeStart = null;
       if (!activeRef.current) return;
-      // Same stamina rule the server enforces (see currentStamina()/the "fire" handler in
-      // realtime-server/src/server.ts): once our own predicted pool can't cover the cost, this
+      // Same stamina rule the server enforces (see currentStamina()/the "fire"/"fireball" handlers
+      // in realtime-server/src/server.ts): once our own predicted pool can't cover the cost, this
       // release doesn't actually fire — no predicted ball, no message, no stamina spent — but
       // still clears the charging halo below, same as a real shot would. Without this, spamming
       // fire kept adding unlimited local predicted balls while the server (and everyone else)
@@ -2256,26 +2355,32 @@ export function RoomStage({
       // gate is skipped (see the "fire" handler in server.ts), so mirror that here too — otherwise
       // this local prediction would still block a shot the server was about to accept anyway.
       const desperate = myHpNow <= DESPERATE_HP;
-      const firing =
-        !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || desperate || predictedStamina >= STAMINA_COST_PER_SHOT);
+      const staminaCost = isFireball ? FIREBALL_STAMINA_COST : STAMINA_COST_PER_SHOT;
+      const firing = !myDead && !frozenByWork() && (!REALTIME_SERVER_URL || desperate || predictedStamina >= staminaCost);
       if (firing) {
         playAttackSound();
         if (REALTIME_SERVER_URL) {
           // Faza F4: the server decides the real ball (chargeMs capped to what it actually saw
-          // elapse since our own `charge: { on: true }`, see the "fire" handler in
+          // elapse since our own `charge: { on: true }`, see the "fire"/"fireball" handlers in
           // realtime-server/src/server.ts) — this is only the shooter's own instant, cosmetic
           // preview. It flies under the same rule as a real ball (out-of-bounds, see tick()
           // below) rather than a short fixed timer, and gets handed off to ballsRef the moment
           // the server's own broadcast confirms it — see the "state" handler above.
-          launch(predictedRef.current, x, y, dir, p, chargeTint(p), keyRef.current || "me", ballSkinRef.current);
+          if (isFireball) {
+            launchFireball(predictedRef.current, x, y, dir, p, keyRef.current || "me", colorRef.current);
+          } else {
+            launch(predictedRef.current, x, y, dir, p, chargeTint(p), keyRef.current || "me", ballSkinRef.current);
+          }
           if (ws && ws.readyState === WebSocket.OPEN) {
-            const fire: ClientMessage = { type: "fire", chargeMs };
-            ws.send(JSON.stringify(fire));
+            const msg: ClientMessage = isFireball ? { type: "fireball", chargeMs } : { type: "fire", chargeMs };
+            ws.send(JSON.stringify(msg));
           }
           if (!desperate) {
-            predictedStamina -= STAMINA_COST_PER_SHOT;
+            predictedStamina -= staminaCost;
             setMyStamina(predictedStamina);
           }
+        } else if (isFireball) {
+          launchFireball(ballsRef.current, x, y, dir, p, keyRef.current || "me", colorRef.current);
         } else {
           launch(ballsRef.current, x, y, dir, p, chargeTint(p), keyRef.current || "me", ballSkinRef.current);
         }
@@ -2527,16 +2632,28 @@ export function RoomStage({
       // W pełni naładowana kula pulsuje.
       const pulse = (p: number) => (p >= 1 ? 1 + 0.06 * Math.sin(t / 70) : 1);
       if (chargeStart !== null) {
-        const p = Math.min(1, (t - chargeStart) / CHARGE_MS);
-        const { r, cx, cy } = orbAt(x, y, p);
-        drawOrb(ctx, cx, cy, r * pulse(p), chargeTint(p), p, ballSkinRef.current);
+        if (selectedWeaponRef.current === "fireball") {
+          const p = Math.min(1, (t - chargeStart) / FIREBALL_CHARGE_MS);
+          const { r, cx, cy } = fireballOrbAt(x, y, p);
+          drawFireball(ctx, cx, cy, r * pulse(p), colorRef.current, fireballTier(p));
+        } else {
+          const p = Math.min(1, (t - chargeStart) / CHARGE_MS);
+          const { r, cx, cy } = orbAt(x, y, p);
+          drawOrb(ctx, cx, cy, r * pulse(p), chargeTint(p), p, ballSkinRef.current);
+        }
       }
       for (const [k, start] of Object.entries(chargingRef.current)) {
         const pos = othersDisplayRef.current[k] ?? posRef.current[k];
         if (!pos) continue;
-        const p = Math.min(1, (t - start) / CHARGE_MS);
-        const { r, cx, cy } = orbAt(pos.x, pos.y, p);
-        drawOrb(ctx, cx, cy, r * pulse(p), chargeTint(p), p, othersRef.current[k]?.ballSkin);
+        if (chargingWeaponRef.current[k] === "fireball") {
+          const p = Math.min(1, (t - start) / FIREBALL_CHARGE_MS);
+          const { r, cx, cy } = fireballOrbAt(pos.x, pos.y, p);
+          drawFireball(ctx, cx, cy, r * pulse(p), othersRef.current[k]?.color ?? "#f97316", fireballTier(p));
+        } else {
+          const p = Math.min(1, (t - start) / CHARGE_MS);
+          const { r, cx, cy } = orbAt(pos.x, pos.y, p);
+          drawOrb(ctx, cx, cy, r * pulse(p), chargeTint(p), p, othersRef.current[k]?.ballSkin);
+        }
       }
       // predictedRef is empty in the legacy (no REALTIME_SERVER_URL) branch, so this concat is a
       // no-op there — see predictedRef's own doc comment.
@@ -2555,6 +2672,8 @@ export function RoomStage({
           drawSlash(ctx, b.x, b.y, b.angle ?? 0, b.r, life, b.color);
         } else if (b.shuriken) {
           drawShuriken(ctx, b.x, b.y, b.r, b.color, t);
+        } else if (b.fireball) {
+          drawFireball(ctx, b.x, b.y, b.r, b.color, b.fireballTier ?? FIREBALL_TIER_COUNT);
         } else {
           drawOrb(ctx, b.x, b.y, b.r, b.color, 0.6, b.skin);
         }
@@ -3139,7 +3258,11 @@ export function RoomStage({
             const on: ClientMessage = { type: "charge", on: true };
             ws.send(JSON.stringify(on));
           }
-          emit("charge", { on: true });
+          // `weapon` lets other clients' own "charge" handler pick drawOrb vs. drawFireball for
+          // this player's charging halo (see chargingWeaponRef) — purely cosmetic, never read
+          // server-side (the server derives the real attack from which ClientMessage release()
+          // actually sends, "fire" vs. "fireball").
+          emit("charge", { on: true, weapon: selectedWeaponRef.current });
         }
         return;
       }
@@ -3162,9 +3285,9 @@ export function RoomStage({
         if (!eLocked) eDown = true;
         return;
       }
-      // STU-23: Digit1..Digit3 pick the weapon slot Space fires — not gated by myDead/
+      // STU-23: Digit1..Digit4 pick the weapon slot Space fires — not gated by myDead/
       // frozenByWork(), same reasoning as KeyB's skin cycling below: selecting isn't an attack.
-      if ((e.code === "Digit1" || e.code === "Digit2" || e.code === "Digit3") && !e.repeat) {
+      if ((e.code === "Digit1" || e.code === "Digit2" || e.code === "Digit3" || e.code === "Digit4") && !e.repeat) {
         const slot = WEAPON_SLOTS.find((w) => w.key === e.code.slice(5));
         // 0050: slot 3 only selects if a shuriken is actually equipped into the extraAttack slot —
         // otherwise it's the same as pressing a digit with no bound slot (no-op).
@@ -3383,10 +3506,15 @@ export function RoomStage({
         setOthers((prev) => (prev[k] ? { ...prev, [k]: { ...prev[k], ...posRef.current[k] } } : prev));
       })
       .on("broadcast", { event: "charge" }, ({ payload }) => {
-        const { k, on } = payload as { k: string; on: boolean };
+        const { k, on, weapon } = payload as { k: string; on: boolean; weapon?: WeaponId };
         if (k === key) return;
-        if (on) chargingRef.current[k] = performance.now();
-        else delete chargingRef.current[k];
+        if (on) {
+          chargingRef.current[k] = performance.now();
+          chargingWeaponRef.current[k] = weapon === "fireball" ? "fireball" : "ball";
+        } else {
+          delete chargingRef.current[k];
+          delete chargingWeaponRef.current[k];
+        }
       })
       .on("broadcast", { event: "fire" }, ({ payload }) => {
         const { k, x, y, d, p } = payload as {
@@ -3398,6 +3526,7 @@ export function RoomStage({
         };
         if (k === key || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(p)) return;
         delete chargingRef.current[k];
+        delete chargingWeaponRef.current[k];
         // Faza F4 (docs/combat_sync_plan.md): once the combat server owns hits, this event is
         // only used above to clear the charging halo — the actual ball comes from realtime-
         // server's own "state" broadcast instead, so spawning a second, peer-simulated one here
@@ -3454,7 +3583,12 @@ export function RoomStage({
           };
         }
         for (const k of Object.keys(posRef.current)) if (!next[k]) delete posRef.current[k];
-        for (const k of Object.keys(chargingRef.current)) if (!next[k]) delete chargingRef.current[k];
+        for (const k of Object.keys(chargingRef.current)) {
+          if (!next[k]) {
+            delete chargingRef.current[k];
+            delete chargingWeaponRef.current[k];
+          }
+        }
         setOthers(next);
       })
       // Nowa osoba nie zna naszej pozycji, dopóki się nie ruszymy — podajemy ją od razu.
@@ -3474,6 +3608,7 @@ export function RoomStage({
       othersDisplayRef.current = {};
       othersDomRef.current = {};
       chargingRef.current = {};
+      chargingWeaponRef.current = {};
       setOthers({});
       enemyPosRef.current = {};
       enemyDisplayRef.current = {};
@@ -3505,6 +3640,7 @@ export function RoomStage({
     activeRef.current = !superseded;
     if (superseded) {
       for (const k of Object.keys(chargingRef.current)) delete chargingRef.current[k];
+      for (const k of Object.keys(chargingWeaponRef.current)) delete chargingWeaponRef.current[k];
       void channelRef.current?.untrack();
     }
   }, [superseded]);
@@ -3688,7 +3824,7 @@ export function RoomStage({
   // patrz src/lib/howToPlay.ts. Czyścimy przy odmontowaniu, żeby stary tekst nie wisiał po zmianie pokoju.
   useEffect(() => {
     let text =
-      "Use the arrow keys ← ↑ ↓ → to move around · tap 1-3 to pick a weapon (throw, slash, shuriken) · hold Space to charge and release for throw, tap Space to fire slash/shuriken · tap C to roll in the direction you're facing (faster than walking) · hold Ctrl to open the emote wheel, pick a direction with the arrow keys and release Ctrl to send it (works even during work)";
+      "Use the arrow keys ← ↑ ↓ → to move around · tap 1-4 to pick a weapon (throw, slash, shuriken, fireball) · hold Space to charge and release for throw/fireball, tap Space to fire slash/shuriken · tap C to roll in the direction you're facing (faster than walking) · hold Ctrl to open the emote wheel, pick a direction with the arrow keys and release Ctrl to send it (works even during work)";
     if (zones.some((z) => (z.kind ?? "nav") === "nav")) text += " · walk into a room and hold E to enter";
     if (zones.some((z) => z.kind === "action")) text += " · stand on a button and hold E to use it";
     if (chat.available && chat.canSend) text += " · Enter opens chat, Tab switches room/all";

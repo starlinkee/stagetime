@@ -36,6 +36,13 @@ import {
   EMOTE_COOLDOWN_MS,
   EMOJI_EMOTES,
   EXIT_ZONE,
+  FIREBALL_CHARGE_MS,
+  FIREBALL_DMG_MAX,
+  FIREBALL_DMG_MIN,
+  FIREBALL_R_MAX,
+  FIREBALL_R_MIN,
+  FIREBALL_SPEED,
+  FIREBALL_STAMINA_COST,
   FLASH_GRENADE_COOLDOWN_MS,
   HITBOX_H,
   HITBOX_OFFSET_X,
@@ -662,6 +669,30 @@ function spawnShuriken(conn: Conn) {
   });
 }
 
+/** Weapon slot 4: charge-and-throw exactly like spawnBall above — same above-the-head spawn
+ * point, straight-line flight, damage/radius scaled by charge fraction `p` — just at this
+ * attack's own (much larger, much slower-to-reach) FIREBALL_* range, and flagged `fireball` so
+ * the client renders one of its few sprite frames instead of the continuous orb glow. */
+function spawnFireball(conn: Conn, p: number) {
+  const [ux, uy] = DIRS[conn.d];
+  const n = Math.hypot(ux, uy) || 1;
+  const r = FIREBALL_R_MIN + (FIREBALL_R_MAX - FIREBALL_R_MIN) * p;
+  const baseDmg = FIREBALL_DMG_MIN + (FIREBALL_DMG_MAX - FIREBALL_DMG_MIN) * p;
+  const dmg = Math.round(baseDmg * conn.stats.attackPower);
+  pushBall(conn, {
+    id: `${conn.id}:${nextBallId++}`,
+    x: conn.x + PERSON_W / 2,
+    y: Math.max(r + 2, conn.y - r - 4),
+    vx: (ux / n) * FIREBALL_SPEED,
+    vy: (uy / n) * FIREBALL_SPEED,
+    r,
+    color: conn.color,
+    owner: conn.id,
+    dmg,
+    fireball: true,
+  });
+}
+
 /**
  * One room's enemy for one tick — chase the nearest valid target within ENEMY_AGGRO_RANGE, stick
  * with it until it dies/goes immune/wanders past ENEMY_LEASH_RANGE, and swing (into the shared
@@ -1240,6 +1271,28 @@ wss.on("connection", (ws, req) => {
       spawnBall(conn, chargeMs / CHARGE_MS);
       if (!desperate) {
         conn.staminaAt = stamina - conn.stats.staminaCostPerShot;
+        conn.staminaUpdatedAt = now;
+        conn.staminaRegenDelayUntil = now + STAMINA_REGEN_DELAY_MS;
+      }
+      return;
+    }
+    // Weapon slot 4: same charge-and-throw shape as "fire" above, sharing conn.chargeStartAt
+    // (only one charge-and-throw attack can be held at a time client-side, see the weapon hotbar
+    // in RoomStage.tsx) — just capped against FIREBALL_CHARGE_MS instead of CHARGE_MS, and gated
+    // by a full stamina bar (FIREBALL_STAMINA_COST) instead of staminaCostPerShot.
+    if (msg.type === "fireball") {
+      if (isDead(conn) || isFrozen(conn)) return;
+      const now = Date.now();
+      const desperate = conn.hp <= DESPERATE_HP;
+      const stamina = currentStamina(conn, now);
+      if (!desperate && stamina < FIREBALL_STAMINA_COST) return;
+      const elapsed = conn.chargeStartAt !== null ? now - conn.chargeStartAt : 0;
+      const claimed = typeof msg.chargeMs === "number" && Number.isFinite(msg.chargeMs) ? msg.chargeMs : 0;
+      const chargeMs = Math.max(0, Math.min(FIREBALL_CHARGE_MS, Math.min(elapsed, claimed)));
+      conn.chargeStartAt = null;
+      spawnFireball(conn, chargeMs / FIREBALL_CHARGE_MS);
+      if (!desperate) {
+        conn.staminaAt = stamina - FIREBALL_STAMINA_COST;
         conn.staminaUpdatedAt = now;
         conn.staminaRegenDelayUntil = now + STAMINA_REGEN_DELAY_MS;
       }

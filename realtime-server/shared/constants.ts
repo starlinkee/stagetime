@@ -214,6 +214,31 @@ export const ROLL_STAMINA_COST = 40;
 export const STAMINA_REGEN_DELAY_MS = 100;
 
 /**
+ * Weapon slot 4: charge-and-throw exactly like the ball above (same spawn point, straight-line
+ * flight, damage scaled by charge fraction — see spawnFireball in server.ts) but charges far
+ * longer (FIREBALL_CHARGE_MS vs. CHARGE_MS) for a bigger, heavier payoff, and costs a full
+ * stamina bar rather than a fraction of one. Unlike the ball, which renders as a continuously
+ * scaling/coloring orb, this renders with only FIREBALL_TIER_COUNT discrete sprite frames (see
+ * public/effects/attacks/fireball/fireball_{1,2,3}.png, sliced from the source sheet at
+ * public/effects/attacks/fireball/fireball.jpg) picked by charge tier — see fireballTier below
+ * and drawFireball in RoomStage.tsx.
+ */
+export const FIREBALL_CHARGE_MS = 9000;
+export const FIREBALL_SPEED = 420;
+export const FIREBALL_R_MIN = 24;
+export const FIREBALL_R_MAX = 72;
+export const FIREBALL_DMG_MIN = 3;
+export const FIREBALL_DMG_MAX = 14;
+export const FIREBALL_STAMINA_COST = STAMINA_MAX;
+export const FIREBALL_TIER_COUNT = 3;
+/** Which of the FIREBALL_TIER_COUNT sprite frames (1-indexed) a charge fraction (0..1) renders
+ * as — a fresh charge (p near 0) still shows frame 1 rather than nothing. */
+export function fireballTier(p: number): number {
+  const clamped = Math.max(0, Math.min(1, p));
+  return Math.min(FIREBALL_TIER_COUNT, Math.max(1, Math.ceil(clamped * FIREBALL_TIER_COUNT) || 1));
+}
+
+/**
  * HP/damage/respawn — combat only deals damage outside the lobby (a decision made when this was
  * added: the lobby stays a safe social space, balls/slashes still fly and visually hit there, but
  * `isLobbyRoom` in server.ts skips the HP subtraction). Every connection starts and respawns at

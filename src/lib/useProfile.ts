@@ -76,8 +76,10 @@ type CosmeticFields = { cosmetic: string | null; cosmeticExpiresAt: string | nul
 type CharacterFields = { character: string | null };
 /** STU-35: raw flash-grenade stock, see supabase/migrations/0037_flash_grenade_item.sql. */
 type FlashGrenadeFields = { flashGrenades: number };
-/** First consumable item (potion of swiftness), see supabase/migrations/0055_potion_of_swiftness.sql
- * — same plain-stock-column shape as flashGrenades above, no coin-check-free like ammo. */
+/** First consumable item (potion of swiftness) — since supabase/migrations/0057_usable_slots.sql
+ * this is derived from the two `usable` equip slots below (see UsableFields, potionsFromUsable),
+ * not a standalone stock column anymore; the old `potions_of_swiftness` counter
+ * (0055_potion_of_swiftness.sql) is superseded and no longer read here. */
 type PotionFields = { potionsOfSwiftness: number };
 /** STU-41: raw ball-skin column as stored. */
 type BallSkinFields = { ballSkin: string | null };
@@ -120,6 +122,22 @@ type EquipmentFields = {
   equipmentBagQty: number[];
 };
 
+/**
+ * STU-?? (supabase/migrations/0057_usable_slots.sql): two "usable" equip slots, alongside
+ * helm/armor/boots/extraAttack — each holds one stackable consumable slug + quantity (only
+ * "potion_of_swiftness" exists today, see POTION_ITEM_SLUG below), same swap-in-place shape as
+ * `equippedExtraAttack`/`equippedExtraAttackQty` just doubled up so a player isn't limited to one
+ * consumable type equipped at once. A consumable only counts toward `potionsOfSwiftness`
+ * (drinkable via H) while it sits in one of these two slots — owning a stack in `equipmentBag`
+ * doesn't count until it's dragged onto one, same "has to be equipped first" rule as shurikens.
+ */
+type UsableFields = {
+  equippedUsable1: string | null;
+  equippedUsable1Qty: number;
+  equippedUsable2: string | null;
+  equippedUsable2Qty: number;
+};
+
 /** Fixed bag size — for now, reduced from 20 to 8 (supabase/migrations/0049_bag_size_8.sql),
  * matching the 4x2 grid in RoomStage.tsx's inventory panel. */
 export const EQUIPMENT_BAG_SIZE = 8;
@@ -128,6 +146,11 @@ export const EQUIPMENT_BAG_SIZE = 8;
  * the only bag item whose `equipmentBagQty` entry can be greater than 1, and (since 0050) the only
  * slug the `extraAttack` equip slot ever holds. */
 export const SHURIKEN_ITEM_SLUG = "shuriken";
+
+/** Bag slug for the stackable potion-of-swiftness item (see
+ * supabase/migrations/0057_usable_slots.sql) — the only slug the two `usable` equip slots ever
+ * hold today. */
+export const POTION_ITEM_SLUG = "potion_of_swiftness";
 
 /** Pads/truncates a raw `equipment_bag` value to the fixed EQUIPMENT_BAG_SIZE — defensive against
  * a missing column (pre-migration) or a row whose array length drifted. */
@@ -151,6 +174,14 @@ function normalizeQty(raw: (number | null)[] | null | undefined): number[] {
  * still unequipped in the bag. */
 function shurikenAmmoFromEquip(equippedExtraAttack: string | null, equippedExtraAttackQty: number): number {
   return equippedExtraAttack === SHURIKEN_ITEM_SLUG ? Math.max(0, equippedExtraAttackQty) : 0;
+}
+
+/** Drinkable potion-of-swiftness count — the sum of both `usable` slots that actually hold
+ * POTION_ITEM_SLUG, same "only counts while equipped" rule as shurikenAmmoFromEquip above. */
+function potionsFromUsable(f: UsableFields): number {
+  const q1 = f.equippedUsable1 === POTION_ITEM_SLUG ? Math.max(0, f.equippedUsable1Qty) : 0;
+  const q2 = f.equippedUsable2 === POTION_ITEM_SLUG ? Math.max(0, f.equippedUsable2Qty) : 0;
+  return q1 + q2;
 }
 
 /** Cosmetic slug if its timer hasn't run out yet, otherwise null — one active slot (see 0027). */
@@ -220,9 +251,15 @@ export type MyProfile = {
    * EquipmentFields' doc comment above. Private, same as the other equipped_* fields. */
   equippedExtraAttack: string | null;
   equippedExtraAttackQty: number;
-  /** STU-77/0044: 8-slot bag (0049) of owned-but-unequipped gear (plus the stackable "shuriken"
-   * item, see 0045), `null` for an empty slot — see EquipmentFields' doc comment above. Private,
-   * same as coins/flashGrenades. */
+  /** 0057: the two usable-item equip slots' slugs (always "potion_of_swiftness" or null today) and
+   * stack sizes — see UsableFields' doc comment above. Private, same as the other equipped_* fields. */
+  equippedUsable1: string | null;
+  equippedUsable1Qty: number;
+  equippedUsable2: string | null;
+  equippedUsable2Qty: number;
+  /** STU-77/0044: 8-slot bag (0049) of owned-but-unequipped gear (plus the stackable "shuriken"/
+   * "potion_of_swiftness" items, see 0045/0057), `null` for an empty slot — see EquipmentFields'
+   * doc comment above. Private, same as coins/flashGrenades. */
   equipmentBag: (string | null)[];
   /** Quantity per equipmentBag slot — see EquipmentFields' doc comment above. */
   equipmentBagQty: number[];
@@ -327,6 +364,19 @@ export type MyProfile = {
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** STU-77/0044: swaps two bag slots — the "drag within the bag" reorder gesture. Free. */
   moveBagItem: (fromIndex: number, toIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * 0057: equips the stack sitting at `equipmentBag[bagIndex]` into usable slot 1 or 2, swapping
+   * whatever was equipped there (if anything) back into that bag slot — same "drag a bag item onto
+   * a gear slot" gesture as equipFromBag, generalized to a caller-chosen target slot since there are
+   * two usable slots instead of one. Free. Fails with "not_usable" if the bag item isn't a
+   * consumable (e.g. gear or shurikens).
+   */
+  equipUsableFromBag: (bagIndex: number, usableIndex: 1 | 2) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
+   * 0057: clears usable slot 1 or 2 and drops its stack into a specific empty bag slot — the "drag
+   * an equipped consumable back into the bag" gesture. Free. Fails if that bag slot isn't empty.
+   */
+  unequipUsableToBag: (usableIndex: 1 | 2, bagIndex: number) => Promise<{ ok: true } | { ok: false; error: string }>;
 };
 
 /** Zwraca błąd walidacji nicku albo null, gdy jest poprawny. */
@@ -355,7 +405,8 @@ export function useMyProfile(): MyProfile {
         PotionFields &
         BallSkinFields &
         ShurikenAmmoFields &
-        EquipmentFields)
+        EquipmentFields &
+        UsableFields)
     | null
   >(null);
   const [error, setError] = useState<string | null>(null);
@@ -365,7 +416,7 @@ export function useMyProfile(): MyProfile {
     let cancelled = false;
     sb.from("profiles")
       .select(
-        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, potions_of_swiftness, ball_skin, equipped_helm, equipped_armor, equipped_boots, equipped_extra_attack, equipped_extra_attack_qty, equipment_bag, equipment_bag_qty",
+        "nickname, color, xp, balls_shot, fist_swings, kills, deaths, mob_kills, coins, cosmetic, cosmetic_expires_at, character_slug, flash_grenades, ball_skin, equipped_helm, equipped_armor, equipped_boots, equipped_extra_attack, equipped_extra_attack_qty, equipped_usable_1, equipped_usable_1_qty, equipped_usable_2, equipped_usable_2_qty, equipment_bag, equipment_bag_qty",
       )
       .eq("id", userId)
       .maybeSingle()
@@ -388,7 +439,12 @@ export function useMyProfile(): MyProfile {
           cosmeticExpiresAt: data?.cosmetic_expires_at ?? null,
           character: data?.character_slug ?? null,
           flashGrenades: data?.flash_grenades ?? 0,
-          potionsOfSwiftness: data?.potions_of_swiftness ?? 0,
+          potionsOfSwiftness: potionsFromUsable({
+            equippedUsable1: data?.equipped_usable_1 ?? null,
+            equippedUsable1Qty: Number(data?.equipped_usable_1_qty ?? 0),
+            equippedUsable2: data?.equipped_usable_2 ?? null,
+            equippedUsable2Qty: Number(data?.equipped_usable_2_qty ?? 0),
+          }),
           ballSkin: data?.ball_skin ?? null,
           shurikenAmmo: shurikenAmmoFromEquip(data?.equipped_extra_attack ?? null, Number(data?.equipped_extra_attack_qty ?? 0)),
           equippedHelm: data?.equipped_helm ?? null,
@@ -396,6 +452,10 @@ export function useMyProfile(): MyProfile {
           equippedBoots: data?.equipped_boots ?? null,
           equippedExtraAttack: data?.equipped_extra_attack ?? null,
           equippedExtraAttackQty: Number(data?.equipped_extra_attack_qty ?? 0),
+          equippedUsable1: data?.equipped_usable_1 ?? null,
+          equippedUsable1Qty: Number(data?.equipped_usable_1_qty ?? 0),
+          equippedUsable2: data?.equipped_usable_2 ?? null,
+          equippedUsable2Qty: Number(data?.equipped_usable_2_qty ?? 0),
           equipmentBag: normalizeBag(data?.equipment_bag),
           equipmentBagQty: normalizeQty(data?.equipment_bag_qty),
         });
@@ -415,7 +475,8 @@ export function useMyProfile(): MyProfile {
             PotionFields &
             BallSkinFields &
             ShurikenAmmoFields &
-            EquipmentFields
+            EquipmentFields &
+            UsableFields
         >
       ).detail;
       if (next.userId === userId) setLoaded(next);
@@ -448,13 +509,16 @@ export function useMyProfile(): MyProfile {
             cosmetic_expires_at?: string | null;
             character_slug?: string | null;
             flash_grenades?: number;
-            potions_of_swiftness?: number;
             ball_skin?: string | null;
             equipped_helm?: string | null;
             equipped_armor?: string | null;
             equipped_boots?: string | null;
             equipped_extra_attack?: string | null;
             equipped_extra_attack_qty?: number | string;
+            equipped_usable_1?: string | null;
+            equipped_usable_1_qty?: number | string;
+            equipped_usable_2?: string | null;
+            equipped_usable_2_qty?: number | string;
             equipment_bag?: (string | null)[] | null;
             equipment_bag_qty?: (number | null)[] | null;
           };
@@ -463,6 +527,10 @@ export function useMyProfile(): MyProfile {
           const bagQty = normalizeQty(p.equipment_bag_qty);
           const equippedExtraAttack = p.equipped_extra_attack ?? null;
           const equippedExtraAttackQty = Number(p.equipped_extra_attack_qty ?? 0);
+          const equippedUsable1 = p.equipped_usable_1 ?? null;
+          const equippedUsable1Qty = Number(p.equipped_usable_1_qty ?? 0);
+          const equippedUsable2 = p.equipped_usable_2 ?? null;
+          const equippedUsable2Qty = Number(p.equipped_usable_2_qty ?? 0);
           setLoaded({
             userId,
             nickname: p.nickname,
@@ -478,7 +546,7 @@ export function useMyProfile(): MyProfile {
             cosmeticExpiresAt: p.cosmetic_expires_at ?? null,
             character: p.character_slug ?? null,
             flashGrenades: p.flash_grenades ?? 0,
-            potionsOfSwiftness: p.potions_of_swiftness ?? 0,
+            potionsOfSwiftness: potionsFromUsable({ equippedUsable1, equippedUsable1Qty, equippedUsable2, equippedUsable2Qty }),
             ballSkin: p.ball_skin ?? null,
             shurikenAmmo: shurikenAmmoFromEquip(equippedExtraAttack, equippedExtraAttackQty),
             equippedHelm: p.equipped_helm ?? null,
@@ -486,6 +554,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: p.equipped_boots ?? null,
             equippedExtraAttack,
             equippedExtraAttackQty,
+            equippedUsable1,
+            equippedUsable1Qty,
+            equippedUsable2,
+            equippedUsable2Qty,
             equipmentBag: bag,
             equipmentBagQty: bagQty,
           });
@@ -518,6 +590,10 @@ export function useMyProfile(): MyProfile {
   const currentEquippedBoots = loaded?.userId === userId ? loaded.equippedBoots : null;
   const currentEquippedExtraAttack = loaded?.userId === userId ? loaded.equippedExtraAttack : null;
   const currentEquippedExtraAttackQty = loaded?.userId === userId ? loaded.equippedExtraAttackQty : 0;
+  const currentEquippedUsable1 = loaded?.userId === userId ? loaded.equippedUsable1 : null;
+  const currentEquippedUsable1Qty = loaded?.userId === userId ? loaded.equippedUsable1Qty : 0;
+  const currentEquippedUsable2 = loaded?.userId === userId ? loaded.equippedUsable2 : null;
+  const currentEquippedUsable2Qty = loaded?.userId === userId ? loaded.equippedUsable2Qty : 0;
   const currentEquipmentBag = loaded?.userId === userId ? loaded.equipmentBag : normalizeBag(null);
   const currentEquipmentBagQty = loaded?.userId === userId ? loaded.equipmentBagQty : normalizeQty(null);
 
@@ -575,6 +651,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -605,6 +685,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -655,6 +739,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -685,6 +773,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -738,6 +830,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -767,6 +863,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -820,6 +920,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -851,6 +955,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -904,6 +1012,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -934,6 +1046,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -977,6 +1093,10 @@ export function useMyProfile(): MyProfile {
           equippedBoots: currentEquippedBoots,
           equippedExtraAttack: currentEquippedExtraAttack,
           equippedExtraAttackQty: currentEquippedExtraAttackQty,
+          equippedUsable1: currentEquippedUsable1,
+          equippedUsable1Qty: currentEquippedUsable1Qty,
+          equippedUsable2: currentEquippedUsable2,
+          equippedUsable2Qty: currentEquippedUsable2Qty,
           equipmentBag: currentEquipmentBag,
           equipmentBagQty: currentEquipmentBagQty,
         },
@@ -1007,6 +1127,10 @@ export function useMyProfile(): MyProfile {
     currentEquippedBoots,
     currentEquippedExtraAttack,
     currentEquippedExtraAttackQty,
+    currentEquippedUsable1,
+    currentEquippedUsable1Qty,
+    currentEquippedUsable2,
+    currentEquippedUsable2Qty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -1050,6 +1174,10 @@ export function useMyProfile(): MyProfile {
           equippedBoots: currentEquippedBoots,
           equippedExtraAttack: currentEquippedExtraAttack,
           equippedExtraAttackQty: currentEquippedExtraAttackQty,
+          equippedUsable1: currentEquippedUsable1,
+          equippedUsable1Qty: currentEquippedUsable1Qty,
+          equippedUsable2: currentEquippedUsable2,
+          equippedUsable2Qty: currentEquippedUsable2Qty,
           equipmentBag: currentEquipmentBag,
           equipmentBagQty: currentEquipmentBagQty,
         },
@@ -1080,6 +1208,10 @@ export function useMyProfile(): MyProfile {
     currentEquippedBoots,
     currentEquippedExtraAttack,
     currentEquippedExtraAttackQty,
+    currentEquippedUsable1,
+    currentEquippedUsable1Qty,
+    currentEquippedUsable2,
+    currentEquippedUsable2Qty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -1123,6 +1255,10 @@ export function useMyProfile(): MyProfile {
           equippedBoots: currentEquippedBoots,
           equippedExtraAttack: currentEquippedExtraAttack,
           equippedExtraAttackQty: currentEquippedExtraAttackQty,
+          equippedUsable1: currentEquippedUsable1,
+          equippedUsable1Qty: currentEquippedUsable1Qty,
+          equippedUsable2: currentEquippedUsable2,
+          equippedUsable2Qty: currentEquippedUsable2Qty,
           equipmentBag: currentEquipmentBag,
           equipmentBagQty: currentEquipmentBagQty,
         },
@@ -1153,6 +1289,10 @@ export function useMyProfile(): MyProfile {
     currentEquippedBoots,
     currentEquippedExtraAttack,
     currentEquippedExtraAttackQty,
+    currentEquippedUsable1,
+    currentEquippedUsable1Qty,
+    currentEquippedUsable2,
+    currentEquippedUsable2Qty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -1193,6 +1333,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: currentEquipmentBag,
             equipmentBagQty: currentEquipmentBagQty,
           },
@@ -1223,6 +1367,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -1271,6 +1419,10 @@ export function useMyProfile(): MyProfile {
           equippedBoots: currentEquippedBoots,
           equippedExtraAttack: newEquippedExtraAttack,
           equippedExtraAttackQty: newEquippedExtraAttackQty,
+          equippedUsable1: currentEquippedUsable1,
+          equippedUsable1Qty: currentEquippedUsable1Qty,
+          equippedUsable2: currentEquippedUsable2,
+          equippedUsable2Qty: currentEquippedUsable2Qty,
           equipmentBag: currentEquipmentBag,
           equipmentBagQty: currentEquipmentBagQty,
         },
@@ -1300,6 +1452,10 @@ export function useMyProfile(): MyProfile {
     currentEquippedBoots,
     currentEquippedExtraAttack,
     currentEquippedExtraAttackQty,
+    currentEquippedUsable1,
+    currentEquippedUsable1Qty,
+    currentEquippedUsable2,
+    currentEquippedUsable2Qty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -1360,6 +1516,10 @@ export function useMyProfile(): MyProfile {
           equippedBoots: currentEquippedBoots,
           equippedExtraAttack: newEquippedExtraAttack,
           equippedExtraAttackQty: newEquippedExtraAttackQty,
+          equippedUsable1: currentEquippedUsable1,
+          equippedUsable1Qty: currentEquippedUsable1Qty,
+          equippedUsable2: currentEquippedUsable2,
+          equippedUsable2Qty: currentEquippedUsable2Qty,
           equipmentBag: newBag,
           equipmentBagQty: newBagQty,
         },
@@ -1389,6 +1549,10 @@ export function useMyProfile(): MyProfile {
     currentEquippedBoots,
     currentEquippedExtraAttack,
     currentEquippedExtraAttackQty,
+    currentEquippedUsable1,
+    currentEquippedUsable1Qty,
+    currentEquippedUsable2,
+    currentEquippedUsable2Qty,
     currentEquipmentBag,
     currentEquipmentBagQty,
   ]);
@@ -1452,6 +1616,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: newBag,
             equipmentBagQty: newBagQty,
           },
@@ -1483,6 +1651,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -1535,6 +1707,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: row?.equipped_boots ?? currentEquippedBoots,
             equippedExtraAttack: newEquippedExtraAttack,
             equippedExtraAttackQty: newEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
             equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
@@ -1565,6 +1741,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -1620,6 +1800,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: row?.equipped_boots ?? (slot === "boots" ? null : currentEquippedBoots),
             equippedExtraAttack: newEquippedExtraAttack,
             equippedExtraAttackQty: newEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
             equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
@@ -1650,6 +1834,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
@@ -1692,6 +1880,10 @@ export function useMyProfile(): MyProfile {
             equippedBoots: currentEquippedBoots,
             equippedExtraAttack: currentEquippedExtraAttack,
             equippedExtraAttackQty: currentEquippedExtraAttackQty,
+            equippedUsable1: currentEquippedUsable1,
+            equippedUsable1Qty: currentEquippedUsable1Qty,
+            equippedUsable2: currentEquippedUsable2,
+            equippedUsable2Qty: currentEquippedUsable2Qty,
             equipmentBag: normalizeBag(row?.equipment_bag ?? currentEquipmentBag),
             equipmentBagQty: normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty),
           },
@@ -1723,6 +1915,10 @@ export function useMyProfile(): MyProfile {
       currentEquippedBoots,
       currentEquippedExtraAttack,
       currentEquippedExtraAttackQty,
+      currentEquippedUsable1,
+      currentEquippedUsable1Qty,
+      currentEquippedUsable2,
+      currentEquippedUsable2Qty,
       currentEquipmentBag,
       currentEquipmentBagQty,
     ],
