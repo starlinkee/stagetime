@@ -846,7 +846,7 @@ function SpeakingIndicator() {
   return (
     <svg
       aria-label="Speaking"
-      className="h-3 w-3 shrink-0 animate-pulse text-emerald-400"
+      className="h-5 w-5 shrink-0 animate-pulse text-emerald-400"
       viewBox="0 0 24 24"
       fill="currentColor"
     >
