@@ -19,8 +19,10 @@ const DECOR_DIR = "/map/props/decor";
 const LAMP_GLOW_SIZE = 160;
 
 /** CSS px square for the left-edge house backdrop — 2.5x its original 180px (45 native px *
- * DECOR_SCALE) placement, per request (started at 5x, then halved). */
-const HOUSE_SIZE = 450;
+ * DECOR_SCALE) placement, per request (started at 5x, then halved). Exported so src/app/page.tsx
+ * can compute the house entrance zone's position from the same source instead of a duplicated
+ * magic number (see housePortalZone there). */
+export const HOUSE_SIZE = 450;
 
 /** CSS px square for the Fountain of Wealth's sprite — 2x its original 130px size (which closely
  * filled its 140px-tall zone box, see fountainZone in src/app/page.tsx), per request. Now

@@ -1,12 +1,13 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { HOUSE_SIZE } from "@/components/LobbyDecor";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
-import { ROOMS } from "@/lib/rooms";
+import { HOUSE_ROOM_SLUG, ROOMS } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { useMyProfile } from "@/lib/useProfile";
 import { useRoomOccupancy } from "@/lib/useRoomOccupancy";
 import { useSession } from "@/lib/useSession";
-import { SCREEN_W, worldH, worldW } from "@realtime-shared/constants";
+import { SCREEN_H, SCREEN_W, worldH, worldW } from "@realtime-shared/constants";
 
 /**
  * Kwadraty pokoi w lobby: ułożone w kółko wokół wspólnego środka, zamiast kolumny pomodoro +
@@ -107,12 +108,37 @@ const lobby2PortalZone: RoomZone = {
   noReward: true,
 };
 
+// House: an empty room (src/lib/rooms.ts's HOUSE_ROOM_SLUG) entered through the decorative house
+// sprite instead of a normal door. That sprite sits at a fixed spot in the world's outer margin —
+// raw world coordinates (left:0, top:height/2-HOUSE_SIZE/2, see LobbyDecor.tsx) — while zones here
+// are content-square-relative (RoomStage's toWorldZone adds CONTENT_OX/OY before using them), so
+// subtract that same offset to land this zone on top of the sprite instead of in the ring. `hidden`
+// (RoomStage.tsx) suppresses the usual box/name so it reads as walking into the house itself; the
+// "E to enter room" prompt still shows once in range, same as any other door.
+const HOUSE_PORTAL_W = 220;
+const HOUSE_PORTAL_H = 140;
+const HOUSE_CONTENT_OX = (worldW(true) - SCREEN_W) / 2;
+const HOUSE_CONTENT_OY = (worldH(true) - SCREEN_H) / 2;
+const housePortalZone: RoomZone = {
+  slug: HOUSE_ROOM_SLUG,
+  name: "House",
+  x: HOUSE_SIZE / 2 - HOUSE_CONTENT_OX - HOUSE_PORTAL_W / 2,
+  y: worldH(true) / 2 - HOUSE_CONTENT_OY - HOUSE_PORTAL_H / 2,
+  w: HOUSE_PORTAL_W,
+  h: HOUSE_PORTAL_H,
+  hidden: true,
+  noReward: true,
+};
+
 // Fountain of Wealth: donate coins into a room-scoped fund (see
 // supabase/migrations/0052_fountain_of_wealth.sql). Hand-placed at the top of the ring, above all
 // the pomodoro/timer/shop/arena doors, rather than via ringPos() — it isn't a navigable room, just
 // a floor button (kind: "action", same pattern as the Shop's floor buttons in ShopRoom.tsx) that
 // opens a donate dialog in place. `room_funds` is keyed by room slug so a future guild room can
-// reuse the same fund mechanism (see AGENTS.md).
+// reuse the same fund mechanism (see AGENTS.md). `hidden` (RoomStage.tsx) suppresses the box/
+// name/fund-total caption so only the fountain sprite (LobbyDecor.tsx) shows from a distance; the
+// "E  Fountain of Wealth" / "Press E to interact" prompt (plus the fund total) appears centered on
+// the character once in range, same mechanism as the always-hidden `kind: "action"` case below.
 export const FOUNTAIN_ZONE_SLUG = "fountain-of-wealth";
 const FOUNTAIN_ZONE_W = 220;
 const FOUNTAIN_ZONE_H = 140;
@@ -127,10 +153,12 @@ const fountainZone: RoomZone = {
   color: "#ca8a04",
   requiresAuth: true,
   noReward: true,
+  hidden: true,
 };
 
 const LOBBY_ZONES: RoomZone[] = [
   fountainZone,
+  housePortalZone,
   ...pomodoroZones,
   ...stopwatchZones,
   ...shopZones,

@@ -44,7 +44,16 @@ export interface ArenaRoomConfig {
   exitTo?: string;
 }
 
-export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig | ShopRoomConfig | ArenaRoomConfig;
+/** A room with nothing in it beyond its exit zone — no timer, no shop, no enemy, no XP/coins. */
+export interface EmptyRoomConfig {
+  slug: string;
+  name: string;
+  kind: "empty";
+  color?: string;
+  exitTo?: string;
+}
+
+export type RoomConfig = PomodoroRoomConfig | StopwatchRoomConfig | ShopRoomConfig | ArenaRoomConfig | EmptyRoomConfig;
 
 export interface SessionTimerState {
   phase: Phase;

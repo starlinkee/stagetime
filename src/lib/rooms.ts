@@ -55,11 +55,18 @@ const LOBBY2_ROOMS: RoomConfig[] = [
   { slug: "timer-2", name: "Timer Room 2", kind: "stopwatch", exitTo: "lobby2" },
 ];
 
+/**
+ * House: an empty room behind the decorative house sprite in the lobby (see HOUSE_ROOM_SLUG's
+ * doc comment / housePortalZone in src/app/page.tsx) — nothing in it yet beyond its own exit zone.
+ */
+export const HOUSE_ROOM_SLUG = "house";
+
 export const ROOMS: RoomConfig[] = [
   ...POMODORO_ROOMS,
   { slug: "timer", name: "Timer Room", kind: "stopwatch" },
   { slug: "shop", name: "Shop", kind: "shop", color: "#eab308" },
   { slug: "arena", name: "Arena", kind: "arena", color: "#dc2626" },
+  { slug: HOUSE_ROOM_SLUG, name: "House", kind: "empty" },
   ...LOBBY2_ROOMS,
 ];
 

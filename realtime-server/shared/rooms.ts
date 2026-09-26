@@ -17,7 +17,7 @@
  * directly usable as a world position — don't add the offset again at the call site.
  */
 
-import { SCREEN_W, SCREEN_H } from "./constants";
+import { SCREEN_W, SCREEN_H, worldH } from "./constants";
 
 export type RoomKind = "pomodoro" | "stopwatch" | "shop" | "arena";
 
@@ -134,6 +134,21 @@ function ringRect(slug: string, w: number, h: number, angles: Record<string, num
   };
 }
 
+// House: hand-placed entrance behind the decorative house sprite, not on the ring — mirrors
+// housePortalZone in src/app/page.tsx (HOUSE_SIZE must match HOUSE_SIZE in
+// src/components/LobbyDecor.tsx exactly). Since that zone's screen-relative x/y already cancel out
+// the CONTENT_OX/OY offset RoomStage adds (see the comment there), its final world position is just
+// the house sprite's own center minus half the zone box — no ringRect() needed.
+const HOUSE_SIZE = 450;
+const HOUSE_PORTAL_W = 220;
+const HOUSE_PORTAL_H = 140;
+const HOUSE_RECT: Rect = {
+  x: HOUSE_SIZE / 2 - HOUSE_PORTAL_W / 2,
+  y: worldH(true) / 2 - HOUSE_PORTAL_H / 2,
+  w: HOUSE_PORTAL_W,
+  h: HOUSE_PORTAL_H,
+};
+
 function buildLobbyZoneRects(): ReadonlyMap<string, Rect> {
   const rects = new Map<string, Rect>();
   for (const r of ROOM_META) {
@@ -144,6 +159,7 @@ function buildLobbyZoneRects(): ReadonlyMap<string, Rect> {
   for (const r of ROOM_META_LOBBY2) {
     rects.set(r.slug, ringRect(r.slug, WIDE_ZONE_W, WIDE_ZONE_H, RING_ANGLES_DEG_LOBBY2));
   }
+  rects.set("house", HOUSE_RECT);
   return rects;
 }
 

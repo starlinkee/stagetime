@@ -6,13 +6,14 @@ import { CharacterSprite } from "@/components/CharacterSprite";
 import { CoinBadge, CoinIcon } from "@/components/CoinBadge";
 import { DungeonBackground } from "@/components/DungeonBackground";
 import { ArenaDecor } from "@/components/ArenaDecor";
+import { HouseInsideDecor } from "@/components/HouseInsideDecor";
 import { LobbyDecor } from "@/components/LobbyDecor";
 import { LevelBadge } from "@/components/LevelBadge";
 import { DIR_DOWN, type Dir } from "@/components/PixelPerson";
 import { getAdminSettings, isAdminUiEnabled } from "@/lib/adminSettings";
 import { playAttackSound, playHitSound } from "@/lib/chime";
 import { setHowToPlay } from "@/lib/howToPlay";
-import { getRoom, roomLabel } from "@/lib/rooms";
+import { getRoom, HOUSE_ROOM_SLUG, roomLabel } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { useAccountLock } from "@/lib/useAccountLock";
 import { MAX_BODY, useChat, type ChatMessage } from "@/lib/useChat";
@@ -343,6 +344,14 @@ export type RoomZone = {
    * Wealth: aktualna suma funduszu tego pokoju) — inny mechanizm niż `phase`-driven reward text
    * powyżej, który liczy się tylko dla "nav". */
   caption?: string;
+  /** Strefa bez rysowanego kwadratu/etykiety (np. wejście do domu ukryte pod jego sprite'em w
+   * LobbyDecor.tsx, albo Fountain of Wealth ukryta pod swoim sprite'em w LobbyDecor.tsx) —
+   * trafienie (`inZone`) i pasek trzymania E działają jak zwykle, tylko sam prostokąt/nazwa/caption
+   * się nie rysują. Dla `kind: "nav"` podpowiedź "E to enter room" i tak się pokazuje (jak dotąd);
+   * dla `kind: "action"` stojąc w strefie pojawia się zamiast tego wyśrodkowany na postaci napis
+   * "E  {name}" / "Press E to interact" (i `caption`, jeśli ustawiony) — patrz gałąź `z.hidden &&
+   * z.kind === "action"` w pętli rysującej strefy. */
+  hidden?: boolean;
 };
 /** Ile ms trzeba przytrzymać E stojąc w kwadracie, żeby go użyć — patrz roomEnterSec w src/lib/adminSettings.ts. */
 const roomEnterMs = () => getAdminSettings().roomEnterSec * 1000;
@@ -2364,32 +2373,36 @@ export function RoomStage({
         // reset globalAlpha po pętli.
         const closed = (authLocked || doorClosed) && !active;
         ctx.globalAlpha = closed ? 0.18 : 0.85;
-        ctx.lineWidth = active ? 3 : 1.5;
-        ctx.strokeStyle = active ? "#ffffff" : (z.color ?? "rgba(255,255,255,0.4)");
-        ctx.fillStyle = active ? "rgba(255,255,255,0.12)" : (z.color ? `${z.color}26` : "rgba(255,255,255,0.05)");
-        ctx.beginPath();
-        ctx.roundRect(z.x, z.y, z.w, z.h, 10);
-        ctx.fill();
-        ctx.stroke();
+        if (!z.hidden) {
+          ctx.lineWidth = active ? 3 : 1.5;
+          ctx.strokeStyle = active ? "#ffffff" : (z.color ?? "rgba(255,255,255,0.4)");
+          ctx.fillStyle = active ? "rgba(255,255,255,0.12)" : (z.color ? `${z.color}26` : "rgba(255,255,255,0.05)");
+          ctx.beginPath();
+          ctx.roundRect(z.x, z.y, z.w, z.h, 10);
+          ctx.fill();
+          ctx.stroke();
+        }
         ctx.fillStyle = "rgba(255,255,255,0.85)";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        if (authLocked || doorClosed) {
-          // Zablokowane (drzwi właśnie się zamknęły albo trzeba się zalogować) — kłódka zamiast numeru pokoju.
-          ctx.font = "28px sans-serif";
-          ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
-        } else {
-          // Nazwy pokoi pomodoro są teraz pełnymi etykietami ("Hour Block 50+10", nie samo
-          // "50+10") — mogą nie zmieścić się w wąskim (180px) kwadracie przy stałych 24px, więc
-          // zamiast przycinać tekst, zmniejszamy font aż się zmieści.
-          const maxNameW = z.w - 16;
-          let nameFontPx = 24;
-          ctx.font = `600 ${nameFontPx}px sans-serif`;
-          while (nameFontPx > 13 && ctx.measureText(z.name).width > maxNameW) {
-            nameFontPx -= 1;
+        if (!z.hidden) {
+          if (authLocked || doorClosed) {
+            // Zablokowane (drzwi właśnie się zamknęły albo trzeba się zalogować) — kłódka zamiast numeru pokoju.
+            ctx.font = "28px sans-serif";
+            ctx.fillText("🔒", z.x + z.w / 2, z.y + z.h / 2 - 6);
+          } else {
+            // Nazwy pokoi pomodoro są teraz pełnymi etykietami ("Hour Block 50+10", nie samo
+            // "50+10") — mogą nie zmieścić się w wąskim (180px) kwadracie przy stałych 24px, więc
+            // zamiast przycinać tekst, zmniejszamy font aż się zmieści.
+            const maxNameW = z.w - 16;
+            let nameFontPx = 24;
             ctx.font = `600 ${nameFontPx}px sans-serif`;
+            while (nameFontPx > 13 && ctx.measureText(z.name).width > maxNameW) {
+              nameFontPx -= 1;
+              ctx.font = `600 ${nameFontPx}px sans-serif`;
+            }
+            ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2 - 6);
           }
-          ctx.fillText(z.name, z.x + z.w / 2, z.y + z.h / 2 - 6);
         }
         // Pod numerem/kłódką: stojąc na wyjściu (kwadrat "lobby" na scenie samego pokoju) — zielony
         // "E to exit room"; stojąc na wejściu — zielony "E to enter room" (albo "Room is closed",
@@ -2422,7 +2435,7 @@ export function RoomStage({
             z.y + z.h / 2 + 30,
           );
         }
-        if (z.caption) {
+        if (z.caption && !z.hidden) {
           ctx.fillStyle = "#fbbf24";
           ctx.font = "700 14px sans-serif";
           ctx.fillText(z.caption, z.x + z.w / 2, z.y + z.h / 2 + 14);
@@ -2445,6 +2458,33 @@ export function RoomStage({
           ctx.fillStyle = "rgba(255,255,255,0.75)";
           ctx.font = "500 16px sans-serif";
           ctx.fillText(`${occupants} player${occupants === 1 ? "" : "s"} inside`, z.x + z.w / 2, z.y + z.h / 2 + 42);
+        } else if (z.hidden && z.kind === "action" && inZone(x, y, z)) {
+          // Fontanna (i wszelkie inne ukryte strefy typu "action"): bez kwadratu/nazwy na scenie,
+          // więc podpowiedź musi wyśrodkować się na postaci zamiast na (niewidzialnym) kwadracie —
+          // dzięki kamerze podążającej za graczem ląduje to mniej więcej na środku ekranu, kawałek
+          // poniżej postaci, zamiast w losowym miejscu mapy.
+          ctx.globalAlpha = 1;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const promptCx = x + PERSON_W / 2;
+          const promptY = y + PERSON_H + 34;
+          if (authLocked) {
+            ctx.fillStyle = "rgba(255,255,255,0.9)";
+            ctx.font = "700 16px sans-serif";
+            ctx.fillText("Sign in required", promptCx, promptY);
+          } else {
+            ctx.fillStyle = "#e5e7eb";
+            ctx.font = "700 16px sans-serif";
+            ctx.fillText(`E   ${z.name}`, promptCx, promptY);
+            ctx.fillStyle = "#22c55e";
+            ctx.font = "700 14px sans-serif";
+            ctx.fillText("Press E to interact", promptCx, promptY + 20);
+            if (z.caption) {
+              ctx.fillStyle = "#fbbf24";
+              ctx.font = "700 13px sans-serif";
+              ctx.fillText(z.caption, promptCx, promptY + 40);
+            }
+          }
         }
         // "NEW ITEMS" / "NEW ROOM" bouncing callouts (STU-50): pure decoration, no state behind
         // it (no "seen it already" tracking) — just draws attention to the Shop/Arena zones.
@@ -4084,6 +4124,7 @@ export function RoomStage({
         <DungeonBackground width={WORLD_W} height={WORLD_H} />
         {isLobby && <LobbyDecor width={WORLD_W} height={WORLD_H} lampsOn={lampsOn} />}
         {isArenaSlug(roomSlug) && <ArenaDecor />}
+        {roomSlug === HOUSE_ROOM_SLUG && <HouseInsideDecor />}
         {Object.entries(others).map(([k, o]) => {
           // respawnAt > 0: this player just died — o.x/o.y/o.d is their corpse, frozen where it
           // dropped, and o.gx/o.gy/o.gd is the ghost they're still steering (see
