@@ -50,7 +50,7 @@ export const DECOR_SCALE = 4;
 export const CENTER_ITEMS: DecorItem[] = [
   // One big rug covering most of the content square, centered, faded so it reads as a floor
   // texture under everything else rather than competing with the room-grid tiles on top of it.
-  { file: "rug-fst", w: 450, h: 255, x: -54, y: -32, opacity: 0.35 },
+  { file: "rug-fst", w: 450, h: 319, x: -54, y: -64, opacity: 0.35 },
   // Empty band above the room grid (world y 0-220, full width).
   { file: "floor-lamp", w: 15, h: 46, x: 110, y: 2 },
   { file: "plant", w: 10, h: 23, x: 200, y: 10 },
