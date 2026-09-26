@@ -42,6 +42,7 @@ import {
   ENEMY_H,
   ENEMY_W,
   GHOST_OPACITY,
+  GHOST_OPACITY_CLASSIC,
   HITBOX_H,
   HITBOX_OFFSET_X,
   HITBOX_OFFSET_Y,
@@ -530,6 +531,12 @@ function spawnShuriken(balls: Ball[], x: number, y: number, d: Dir, color: strin
 /** `dmgTint` now lives in @realtime-shared/constants (see its doc comment) so the server can stamp
  * the same tier color onto a `HitEvent`'s splash — this just adds the charge-fraction -> dmg step
  * on top for the charging orb's own preview. */
+/** "classic" reads too faint at GHOST_OPACITY, so its ghost gets a higher floor (STU ghost
+ * opacity tweak) — other looks keep GHOST_OPACITY. */
+function ghostOpacityFor(character: string | null | undefined): number {
+  return safeCharacter(character) === "classic" ? GHOST_OPACITY_CLASSIC : GHOST_OPACITY;
+}
+
 function chargeTint(p: number): string {
   return dmgTint(DMG_MIN + (DMG_MAX - DMG_MIN) * Math.max(0, Math.min(1, p)));
 }
@@ -1452,6 +1459,7 @@ export function RoomStage({
   const chargingRef = useRef<Record<string, number>>({});
   const othersRef = useRef<Others>({});
   const colorRef = useRef(color);
+  const characterRef = useRef(character);
   const userIdRef = useRef(userId);
   // Bieżąca sesja (access token) do nagłówka Authorization przy wejściu do pokoi wymagających
   // logowania (np. Shop) — ref, żeby fetch w pętli ruchu (efekt montowany raz) widział świeży token.
@@ -2493,7 +2501,7 @@ export function RoomStage({
       if (REALTIME_SERVER_URL) {
         person.style.opacity =
           myRespawnAtRef.current > 0
-            ? String(GHOST_OPACITY)
+            ? String(ghostOpacityFor(characterRef.current))
             : myImmuneUntilRef.current > Date.now()
               ? String(IMMUNE_OPACITY)
               : "0.7";
@@ -3110,6 +3118,7 @@ export function RoomStage({
   // Zmiana koloru / nicku / XP (np. po zalogowaniu albo po heartbeacie) — odświeżamy wpis w Presence.
   useEffect(() => {
     colorRef.current = color;
+    characterRef.current = character;
     userIdRef.current = userId;
     metaRef.current = { at: Date.now(), color, nick, xp: profile.xp, user: userId, cosmetic, character, ballSkin };
     const channel = channelRef.current;
@@ -3426,7 +3435,7 @@ export function RoomStage({
       return;
     }
     // /flex-money: brag about your own coin balance instead of sending the raw command text.
-    const toSend = text === "/flex-money" ? `💰 flexing ${Math.floor(profile.coins)} coins` : text;
+    const toSend = text === "/flex-money" ? `${nick} is flexing ${Math.floor(profile.coins)} coins` : text;
     setChatSending(true);
     const ok = await chat.send(toSend);
     setChatSending(false);
@@ -3654,7 +3663,7 @@ export function RoomStage({
           return (
             <div key={k}>
               {dead && (
-                <div className="absolute left-0 top-0" style={{ transform: `translate(${o.x}px, ${o.y}px)`, opacity: GHOST_OPACITY }}>
+                <div className="absolute left-0 top-0" style={{ transform: `translate(${o.x}px, ${o.y}px)`, opacity: ghostOpacityFor(o.character) }}>
                   <NameTag name={o.nick} xp={o.user ? o.xp : undefined} />
                   <CharacterSprite
                     character={safeCharacter(o.character)}
@@ -3695,7 +3704,7 @@ export function RoomStage({
                   // countdown, see GHOST_OPACITY) — see IMMUNE_OPACITY in
                   // realtime-server/shared/constants.ts. `others` re-renders every state broadcast
                   // (~BROADCAST_MS) regardless of movement, so this clears on its own.
-                  opacity: dead ? GHOST_OPACITY : o.immuneUntil && o.immuneUntil > nowTick ? IMMUNE_OPACITY : 0.7,
+                  opacity: dead ? ghostOpacityFor(o.character) : o.immuneUntil && o.immuneUntil > nowTick ? IMMUNE_OPACITY : 0.7,
                   filter: dead ? "grayscale(1) brightness(1.3)" : undefined,
                 }}
               >

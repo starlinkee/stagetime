@@ -177,4 +177,7 @@ Wiadomość commita jest wymagana tylko wtedy, gdy jest faktycznie coś do zacom
    przykładzie wyżej. Trzymane jako materiał wejściowy do (re)generowania spriteów w grze, nie
    jako aktywne assety gry.
 
+7. Nie używaj emoji/ikonek Unicode w tekstach generowanych dla użytkownika (napisy w UI, treść
+   wiadomości czatu, komunikaty systemowe itp.) — czysty tekst, bez ozdobników w stylu 💰/✅/🎉.
+
    Po każdym rozwiązaniu commituj lub merguj od razu zmiany do dev

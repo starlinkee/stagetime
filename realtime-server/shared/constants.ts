@@ -249,7 +249,10 @@ export const IMMUNITY_MS = 5000;
 export const IMMUNE_OPACITY = 0.4;
 /** Client-side rendering hint: sprite opacity for a ghost (dead player, controllable for
  * RESPAWN_MS — see PlayerState.gx/gy/gd's doc comment in shared/types.ts). */
-export const GHOST_OPACITY = 0.6;
+export const GHOST_OPACITY = 0.35;
+/** Same as GHOST_OPACITY, but for the "classic" character look specifically — its art reads as
+ * too faint at GHOST_OPACITY, so it gets a higher floor while other looks keep GHOST_OPACITY. */
+export const GHOST_OPACITY_CLASSIC = 0.45;
 
 /**
  * Kill reward shown to the killer only (as "+N xp"/"+N gold" text next to the big "KILL" callout,
