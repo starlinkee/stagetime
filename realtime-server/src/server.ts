@@ -225,6 +225,11 @@ type Conn = {
   gx: number;
   gy: number;
   gd: Dir;
+  // True right after joinRoom (initial join, respawn/session-end redirect, or room switch) until
+  // this connection has received one full `players` snapshot — see the broadcast loop below. A
+  // diff-only `players` list (changed-since-last-room-broadcast) would otherwise leave a
+  // freshly-joined connection never learning about anyone already standing still in the room.
+  needsFullState: boolean;
 };
 
 /** Frozen (no movement, no roll/charge/fire/slash) while waiting out RESPAWN_MS. */
@@ -336,6 +341,31 @@ function persistedRoomSlug(roomSlug: string): string {
  * count: called only from the "fire" handler (to spend) and the broadcast loop (to report), never
  * from the tick loop.
  */
+/** Field-by-field compare for the broadcast loop's diff (see `lastBroadcastPlayers` below) —
+ * `prev === undefined` (never broadcast in this room before, e.g. a brand new player) always
+ * counts as changed. Every PlayerState field is a primitive, so this never needs to recurse. */
+function playerStateEqual(a: PlayerState, b: PlayerState | undefined): boolean {
+  if (!b) return false;
+  return (
+    a.id === b.id &&
+    a.userId === b.userId &&
+    a.nick === b.nick &&
+    a.color === b.color &&
+    a.x === b.x &&
+    a.y === b.y &&
+    a.d === b.d &&
+    a.hp === b.hp &&
+    a.respawnAt === b.respawnAt &&
+    a.immuneUntil === b.immuneUntil &&
+    a.gx === b.gx &&
+    a.gy === b.gy &&
+    a.gd === b.gd &&
+    a.stamina === b.stamina &&
+    a.staminaMax === b.staminaMax &&
+    a.maxHp === b.maxHp
+  );
+}
+
 function currentStamina(conn: Conn, now: number): number {
   const elapsedSec = Math.max(0, now - conn.staminaUpdatedAt) / 1000;
   return Math.min(conn.stats.staminaMax, conn.staminaAt + elapsedSec * conn.stats.staminaRegenPerSec);
@@ -347,6 +377,11 @@ const roomBalls = new Map<string, ServerBall[]>();
 /** Hits resolved since the last broadcast, drained into the next `state` message and cleared —
  * not cumulative, see the broadcast loop below. */
 const roomHits = new Map<string, HitEvent[]>();
+
+/** Each room's own `players` array as of the last broadcast tick — the baseline the next tick's
+ * diff is computed against (see the broadcast loop below). Keyed by PlayerState.id, not by Conn,
+ * since a diff only needs to compare field values, never touch the connection itself. */
+const lastBroadcastPlayers = new Map<string, Map<string, PlayerState>>();
 
 /**
  * A ball/melee hitbox consumed by the environment (solid furniture, or the room's own edge)
@@ -472,6 +507,11 @@ function joinRoom(conn: Conn) {
     rooms.set(conn.roomSlug, set);
   }
   set.add(conn);
+  // Diff-only `players` broadcasts (see the broadcast loop below) are computed against the
+  // room's own previous tick, not against what this connection has actually received — so a
+  // connection landing in a room it wasn't already in needs one full snapshot first, regardless
+  // of whether anyone in the room actually changed this tick.
+  conn.needsFullState = true;
 }
 
 function leaveRoom(conn: Conn) {
@@ -480,6 +520,8 @@ function leaveRoom(conn: Conn) {
   set.delete(conn);
   if (set.size === 0) {
     rooms.delete(conn.roomSlug);
+    // Nothing left to diff against — the next joiner gets a full snapshot anyway (needsFullState).
+    lastBroadcastPlayers.delete(conn.roomSlug);
     // Faza F3: no players left to own or get hit by these — drop them instead of leaking one
     // array per room slug that ever had combat in it.
     roomBalls.delete(conn.roomSlug);
@@ -1041,6 +1083,7 @@ wss.on("connection", (ws, req) => {
     gx: 0,
     gy: 0,
     gd: 2,
+    needsFullState: true,
   };
 
   send(ws, { type: "welcome", id: conn.id });
@@ -1653,10 +1696,8 @@ setInterval(() => {
       : undefined;
     const instance = pomodoroInstances.get(slug);
     const cfg = instance ? POMODORO_TYPES.get(instance.typeSlug) : undefined;
-    const msg: ServerMessage = {
-      type: "state",
+    const sharedFields = {
       schemaVersion: SCHEMA_VERSION,
-      players,
       balls,
       hits,
       enemies,
@@ -1667,7 +1708,21 @@ setInterval(() => {
         : {}),
       ...(isLobbySlug(slug) ? { doors: doorStates } : {}),
     };
-    for (const conn of set) send(conn.ws, msg);
+    const prevPlayers = lastBroadcastPlayers.get(slug);
+    const changedPlayers = prevPlayers ? players.filter((p) => !playerStateEqual(p, prevPlayers.get(p.id))) : players;
+    const fullMsg: ServerMessage = { type: "state", players, full: true, ...sharedFields };
+    // Skipped (not just cheaper) when nothing changed — an empty `players: []` diff still needs
+    // sending so `hits`/`balls`/`pomodoro`/`doors` reach everyone even on an otherwise-quiet tick.
+    const diffMsg: ServerMessage = { type: "state", players: changedPlayers, ...sharedFields };
+    for (const conn of set) {
+      if (conn.needsFullState) {
+        send(conn.ws, fullMsg);
+        conn.needsFullState = false;
+      } else {
+        send(conn.ws, diffMsg);
+      }
+    }
+    lastBroadcastPlayers.set(slug, new Map(players.map((p) => [p.id, p])));
   }
 }, BROADCAST_MS);
 

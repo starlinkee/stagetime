@@ -291,7 +291,18 @@ export type ServerMessage =
   | {
       type: "state";
       schemaVersion: number;
+      /**
+       * Bandwidth: full snapshot only for a connection that just landed in this room
+       * (`full: true`, see `needsFullState` in server.ts); every other tick, only players whose
+       * PlayerState actually changed since this room's last broadcast (`full: false`/absent). A
+       * player who left simply stops appearing — RoomStage.tsx never inferred room membership
+       * from this list (Supabase Presence owns that), only updated whichever ids showed up in it,
+       * so omitting an unchanged id is already indistinguishable from omitting a departed one.
+       * Balls/hits/enemies stay full every tick — already small (Faza F3), and hits are already
+       * drained-not-cumulative (see roomHits' doc comment).
+       */
       players: PlayerState[];
+      full?: boolean;
       balls: ServerBall[];
       hits: HitEvent[];
       enemies: EnemyState[];
