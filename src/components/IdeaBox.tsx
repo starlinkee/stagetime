@@ -132,7 +132,7 @@ export function IdeaBox() {
           </div>
         )}
         <button type="button" onClick={toggle} className={HEADER_BUTTON_CLASS}>
-          Idea
+          Got an idea?
         </button>
     </div>
   );
