@@ -17,37 +17,28 @@ import { DEFAULT_COLOR, type CharacterSlug, useMyProfile } from "@/lib/useProfil
 import { EQUIPMENT_ITEMS, type EquipSlot } from "@realtime-shared/constants";
 
 type CosmeticSlug = "flower" | "sparkles";
-const CHARACTER_ZONE_SLUG = "character-select";
 
 /**
  * One entry per purchasable cosmetic (see supabase/migrations/0027_cosmetic_items.sql,
  * 0035_sparkles_cosmetic.sql) — cost/hours here are display-only copies of what purchase_cosmetic
- * actually charges server-side, same caveat as FLOWER_COST/SPARKLES_COST in lib/coins.ts. Adding a
- * new item means adding a branch to purchase_cosmetic plus one entry here; the dialog below reads
- * everything else off this.
+ * actually charges server-side, same caveat as FLOWER_COST/SPARKLES_COST in lib/coins.ts. Both are
+ * sold by the Florist NPC below, alongside the character-change service, so this only carries the
+ * per-item display info (no zone of its own anymore).
  */
-const COSMETIC_ITEMS: Record<CosmeticSlug, { name: string; cost: number; hours: number; zone: RoomZone; blurb: string }> = {
+const COSMETIC_ITEMS: Record<CosmeticSlug, { name: string; cost: number; hours: number; blurb: string }> = {
   flower: {
     name: "Flower crown",
     cost: FLOWER_COST,
     hours: FLOWER_HOURS,
-    zone: { slug: "flower-item", name: "Flower crown", kind: "action", x: 573, y: 320, w: 220, h: 140 },
     blurb: "Purely decorative — sits on your head, no effect on gameplay.",
   },
   sparkles: {
     name: "Shining",
     cost: SPARKLES_COST,
     hours: SPARKLES_HOURS,
-    zone: { slug: "sparkles-item", name: "Shining", kind: "action", x: 996, y: 320, w: 220, h: 140 },
     blurb: "A sparkling aura around you — purely decorative, no effect on gameplay.",
   },
 };
-const COSMETIC_ZONE_SLUGS: Record<string, CosmeticSlug> = Object.fromEntries(
-  (Object.entries(COSMETIC_ITEMS) as [CosmeticSlug, (typeof COSMETIC_ITEMS)[CosmeticSlug]][]).map(([slug, item]) => [
-    item.zone.slug,
-    slug,
-  ]),
-);
 /**
  * Character look (see supabase/migrations/0031_character_selection.sql,
  * 0033_girl_character.sql) — the three choices that exist today, see CharacterSprite.tsx.
@@ -57,27 +48,30 @@ const CHARACTER_OPTIONS: { slug: CharacterSlug; name: string }[] = [
   { slug: "girl", name: "Girl" },
   { slug: "pixel", name: "Pixel" },
 ];
-const CHARACTER_ZONE: RoomZone = { slug: CHARACTER_ZONE_SLUG, name: "Change character", kind: "action", x: 573, y: 500, w: 220, h: 140 };
+/**
+ * Florist NPC: one stall selling everything purely cosmetic — flower crown, shining, and
+ * character change (all no gameplay effect, see AGENTS.md) — instead of three separate floor
+ * buttons. Interacting opens a menu (see floristOpen below) that fans out into the existing
+ * cosmetic/character dialogs.
+ */
+const FLORIST_ZONE_SLUG = "florist";
+const FLORIST_ZONE: RoomZone = { slug: FLORIST_ZONE_SLUG, name: "Florist", kind: "action", x: 573, y: 610, w: 220, h: 140 };
 /** Third weapon (weapon slot 3, see WEAPON_SLOTS in RoomStage.tsx): the gunman NPC sells shuriken
  * ammo packs for coins — a real gameplay effect (unlike the cosmetics/character above), so the
  * atomic balance-check-and-grant happens server-side (see buy_shuriken_ammo in
  * supabase/migrations/0040_shuriken_ammo.sql), same "coins never disappear before the item is
  * granted" guarantee as purchaseCosmetic. */
 const GUNMAN_ZONE_SLUG = "gunman";
-const GUNMAN_ZONE: RoomZone = { slug: GUNMAN_ZONE_SLUG, name: "Gunman", kind: "action", x: 996, y: 500, w: 220, h: 140 };
+const GUNMAN_ZONE: RoomZone = { slug: GUNMAN_ZONE_SLUG, name: "Gunman", kind: "action", x: 763, y: 280, w: 220, h: 140 };
 /** STU-77: the only place helm/armor/boots (see EQUIPMENT_ITEMS in
  * realtime-server/shared/constants.ts) can be bought/equipped — the Tab inventory panel
  * (RoomStage.tsx) only shows what's already equipped and lets you unequip, same "buy here, view
  * there" split as the gunman above (ammo bought here, hotbar/hp shown elsewhere). */
 const GEAR_ZONE_SLUG = "gear-specialist";
-const GEAR_ZONE: RoomZone = { slug: GEAR_ZONE_SLUG, name: "Gear specialist", kind: "action", x: 180, y: 500, w: 220, h: 140 };
-const SHOP_ZONES: RoomZone[] = [
-  EXIT_ZONE,
-  ...Object.values(COSMETIC_ITEMS).map((item) => item.zone),
-  CHARACTER_ZONE,
-  GUNMAN_ZONE,
-  GEAR_ZONE,
-];
+const GEAR_ZONE: RoomZone = { slug: GEAR_ZONE_SLUG, name: "Gear specialist", kind: "action", x: 383, y: 280, w: 220, h: 140 };
+/** The three sellers sit evenly spaced (120° apart) on a circle around the shop floor, Florist
+ * closest to the entrance, Gear specialist and Gunman mirrored either side further back. */
+const SHOP_ZONES: RoomZone[] = [EXIT_ZONE, FLORIST_ZONE, GUNMAN_ZONE, GEAR_ZONE];
 
 /**
  * Pokój-sklep: wejście już wymaga konta (patrz RoomZone.requiresAuth w lobby i sprawdzenie w
@@ -103,6 +97,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     purchaseEquipment,
     unequipEquipment,
   } = useMyProfile();
+  const [floristOpen, setFloristOpen] = useState(false);
   const [activeItem, setActiveItem] = useState<CosmeticSlug | null>(null);
   const [confirmingRebuy, setConfirmingRebuy] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -125,14 +120,8 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   }, [toast]);
 
   const onZoneAction = useCallback((slug: string) => {
-    const item = COSMETIC_ZONE_SLUGS[slug];
-    if (item) {
-      setConfirmingRebuy(false);
-      setError(null);
-      setActiveItem(item);
-    } else if (slug === CHARACTER_ZONE_SLUG) {
-      setCharacterError(null);
-      setCharacterOpen(true);
+    if (slug === FLORIST_ZONE_SLUG) {
+      setFloristOpen(true);
     } else if (slug === GUNMAN_ZONE_SLUG) {
       setGunmanError(null);
       setGunmanOpen(true);
@@ -140,6 +129,21 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
       setGearError(null);
       setGearOpen(true);
     }
+  }, []);
+
+  const closeFlorist = useCallback(() => setFloristOpen(false), []);
+
+  const openCosmetic = useCallback((item: CosmeticSlug) => {
+    setFloristOpen(false);
+    setConfirmingRebuy(false);
+    setError(null);
+    setActiveItem(item);
+  }, []);
+
+  const openCharacter = useCallback(() => {
+    setFloristOpen(false);
+    setCharacterError(null);
+    setCharacterOpen(true);
   }, []);
 
   const close = useCallback(() => {
@@ -272,11 +276,67 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
       />
       <div className="flex w-full max-w-2xl flex-col items-center gap-2 text-center">
         <p className="text-sm text-zinc-500">
-          Hold E on a floor button to browse a cosmetic, the wardrobe to change your character, the gunman
+          Hold E on a floor button to visit the florist for cosmetics and a character change, the gunman
           for shurikens, or the gear specialist for helm/armor/boots.
         </p>
         {toast && <p className="text-sm font-semibold text-emerald-400">{toast}</p>}
       </div>
+      {floristOpen && ready && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Florist"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-zinc-100">Florist</h2>
+              <span className="flex flex-col gap-1 text-right text-sm text-zinc-400">
+                Your balance
+                <span className="text-lg font-semibold text-zinc-100">{coins.toFixed(1)} coins</span>
+              </span>
+            </div>
+            <p className="mb-5 text-center text-sm text-zinc-400">
+              Flower crown, shining, and a character change — all purely cosmetic, no effect on gameplay.
+            </p>
+            <div className="mb-3 flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => openCosmetic("flower")}
+                className="flex items-center justify-between rounded-xl border border-zinc-700 px-4 py-3 text-left hover:bg-zinc-900"
+              >
+                <span className="text-sm font-medium text-zinc-100">{COSMETIC_ITEMS.flower.name}</span>
+                <span className="text-xs text-zinc-500">{COSMETIC_ITEMS.flower.cost} coins</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openCosmetic("sparkles")}
+                className="flex items-center justify-between rounded-xl border border-zinc-700 px-4 py-3 text-left hover:bg-zinc-900"
+              >
+                <span className="text-sm font-medium text-zinc-100">{COSMETIC_ITEMS.sparkles.name}</span>
+                <span className="text-xs text-zinc-500">{COSMETIC_ITEMS.sparkles.cost} coins</span>
+              </button>
+              <button
+                type="button"
+                onClick={openCharacter}
+                className="flex items-center justify-between rounded-xl border border-zinc-700 px-4 py-3 text-left hover:bg-zinc-900"
+              >
+                <span className="text-sm font-medium text-zinc-100">Change character</span>
+                <span className="text-xs text-zinc-500">{CHARACTER_CHANGE_COST} coins</span>
+              </button>
+            </div>
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={closeFlorist}
+                className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {characterOpen && ready && (
         <div
           role="dialog"
