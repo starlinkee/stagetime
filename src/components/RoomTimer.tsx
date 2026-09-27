@@ -62,8 +62,20 @@ export function RoomTimer({ room, session }: { room: PomodoroRoomConfig; session
 
   if (!s) return <p className="text-zinc-400">Syncing clock…</p>;
 
+  // STU-73: `session.multiplier` is live while waiting/working (see PomodoroSessionState's doc
+  // comment) — climbs as players join, so this line updates on its own with no extra polling.
+  const bonusLabel =
+    session && session.multiplier > 1
+      ? `Room bonus: +${Math.round((session.multiplier - 1) * 100)}% XP and coins`
+      : null;
+
   if (isWaiting) {
-    return <p className="text-zinc-400">Nobody's started this session yet — hold E on the button in the middle to start it for everyone here.</p>;
+    return (
+      <div className="flex flex-col items-center gap-2 text-center">
+        <p className="text-zinc-400">Nobody's started this session yet — hold E on the button in the middle to start it for everyone here.</p>
+        {bonusLabel && <p className="text-sm font-medium text-emerald-400">{bonusLabel} so far — more players, more bonus</p>}
+      </div>
+    );
   }
 
   const progress = 1 - s.remainingMs / s.phaseMs;
@@ -105,6 +117,8 @@ export function RoomTimer({ room, session }: { room: PomodoroRoomConfig; session
           <div className="h-full bg-emerald-400" style={{ width: `${breakFill * 100}%` }} />
         </div>
       </div>
+      {/* STU-73: still climbing during work (frozen only once break starts) — see bonusLabel above. */}
+      {isWork && bonusLabel && <p className="text-sm font-medium text-emerald-400">{bonusLabel}</p>}
     </div>
   );
 }

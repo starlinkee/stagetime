@@ -299,8 +299,10 @@ type PomodoroInstance = {
    * (`join_rejected`/"room_starting") — see DOOR_REOPEN_MS's doc comment in shared/constants.ts.
    * 0 for a type's very first-ever instance (never locked). */
   joinableAt: number;
-  /** STU-73: room-population XP/coin bonus multiplier, frozen at the work->break transition (see
-   * that block below) from this instance's own connection count at that instant — 1 until then. */
+  /** STU-73: room-population XP/coin bonus multiplier — live (recomputed every tick from this
+   * instance's own connection count, see the tick loop below) while `state` is "waiting" or
+   * "work", so the room can show players what they'll get and have it climb as people join; frozen
+   * the instant work ends (the work->break transition below stops updating it). */
   rewardMultiplier: number;
 };
 /** Keyed by instance slug, same key `rooms` groups connections under. */
@@ -310,6 +312,12 @@ const openInstanceByType = new Map<string, string>();
 
 function newInstanceSlug(typeSlug: string): string {
   return `${typeSlug}#${randomUUID().slice(0, 8)}`;
+}
+
+/** STU-73: +10% per player beyond the first, capped at +90% for a 10+ player room — shared by the
+ * live per-tick update (waiting/work) and the work->break freeze, so both always agree. */
+function roomBonusMultiplier(population: number): number {
+  return 1 + 0.1 * Math.min(Math.max(population - 1, 0), 9);
 }
 
 /** The type's current open door, creating a fresh empty one if it doesn't have one yet (first-
@@ -1539,6 +1547,14 @@ setInterval(() => {
   // connections into the lobby room mutates `rooms` mid-iteration, which is unsafe to interleave
   // with the per-room movement loop right after this.
   for (const instance of [...pomodoroInstances.values()]) {
+    // STU-73: keep the bonus multiplier live while anyone could still join or be counted — so a
+    // room shows "here's your bonus so far" the moment you walk in, and it climbs the instant the
+    // next person does too, instead of only appearing once the session ends. Stops updating (and
+    // thus freezes) the moment `state` flips to "break" below.
+    if (instance.state !== "break") {
+      const population = rooms.get(instance.slug)?.size ?? 1;
+      instance.rewardMultiplier = roomBonusMultiplier(population);
+    }
     if (instance.state === "waiting" || instance.startedAt === null) continue;
     const cfg = POMODORO_TYPES.get(instance.typeSlug);
     if (!cfg) continue;
@@ -1547,15 +1563,15 @@ setInterval(() => {
     const elapsed = now - instance.startedAt;
     if (instance.state === "work" && elapsed >= workMs) {
       instance.state = "break";
-      // STU-73: freeze this run's room-population XP/coin bonus the instant work ends, from this
-      // instance's own connection count at that exact moment (rooms.get(instance.slug) — the only
-      // place a trustworthy count exists, see reportSessionBonus's doc comment) — +10% per player
-      // beyond the first, capped at +90% for a 10+ player room. The base (unmultiplied) reward still
+      // STU-73: `instance.rewardMultiplier` was already brought current for this exact tick by the
+      // live-update at the top of this loop iteration, from this instance's own connection count
+      // (rooms.get(instance.slug) — the only place a trustworthy count exists, see
+      // reportSessionBonus's doc comment) — +10% per player beyond the first, capped at +90% for a
+      // 10+ player room. Flipping `state` to "break" above is what freezes it from here on (the
+      // live-update above only runs while `state !== "break"`). The base (unmultiplied) reward still
       // flows through the client's own room_session_complete call unchanged; this only tops it up,
       // server-to-server, for players who actually have an account (guests have no profile to pay).
-      const population = rooms.get(instance.slug)?.size ?? 1;
-      const multiplier = 1 + 0.1 * Math.min(Math.max(population - 1, 0), 9);
-      instance.rewardMultiplier = multiplier;
+      const multiplier = instance.rewardMultiplier;
       if (multiplier > 1 && instance.startedAt !== null) {
         const conns = rooms.get(instance.slug);
         if (conns) {

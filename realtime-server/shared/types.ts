@@ -330,10 +330,11 @@ export interface PomodoroSessionState {
   workMin: number;
   breakMin: number;
   /** STU-73: room-population XP/coin bonus multiplier for this instance's run (1 = no bonus,
-   * capped at 1.9 for a 10+ player room) — frozen the instant work ends (see the work->break
-   * transition in server.ts), display-only here; the actual bonus is credited server-to-server via
-   * /api/internal/room-session-bonus, never trusted from the client. Absent/1 for non-pomodoro
-   * rooms and any instance that hasn't finished a work phase yet. */
+   * capped at 1.9 for a 10+ player room) — live while `state` is "waiting" or "work" (climbs as
+   * players join, so the room can show "here's your bonus so far" before the session even ends),
+   * then frozen the instant work ends (see the work->break transition in server.ts). Display-only
+   * here; the actual bonus is credited server-to-server via /api/internal/room-session-bonus,
+   * never trusted from the client. */
   multiplier: number;
 }
 
