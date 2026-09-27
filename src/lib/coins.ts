@@ -60,3 +60,14 @@ export const SHURIKEN_AMMO_COST = 10;
  */
 export const POTION_OF_SWIFTNESS_COST = 40;
 export const POTION_OF_SWIFTNESS_DURATION_MINUTES = 1;
+
+/**
+ * Flash grenade, sold by the gunman NPC in the Shop (src/components/ShopRoom.tsx) alongside
+ * shurikens — a full-screen room-wide flash (see FLASH_GRENADE_COOLDOWN_MS in
+ * realtime-server/shared/constants.ts, which is what actually triggers the effect). Starts at
+ * FLASH_GRENADE_START, same "usable" equip-slot item as potion of swiftness since
+ * supabase/migrations/0061_flash_grenade_usable_slot.sql. Cost here is a display-only copy;
+ * buy_flash_grenades in that migration is what actually charges the player.
+ */
+export const FLASH_GRENADE_START = 3;
+export const FLASH_GRENADE_COST = 20;

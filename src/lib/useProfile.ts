@@ -74,7 +74,10 @@ export type Profiles = Record<string, Profile>;
 type CosmeticFields = { cosmetic: string | null; cosmeticExpiresAt: string | null };
 /** Raw character column as stored. */
 type CharacterFields = { character: string | null };
-/** STU-35: raw flash-grenade stock, see supabase/migrations/0037_flash_grenade_item.sql. */
+/** STU-35: flash-grenade stock — since supabase/migrations/0061_flash_grenade_usable_slot.sql this
+ * is derived from the two `usable` equip slots below (see UsableFields, flashGrenadesFromUsable),
+ * not a standalone stock column anymore; the old `flash_grenades` counter
+ * (0037_flash_grenade_item.sql) is superseded and no longer read here. */
 type FlashGrenadeFields = { flashGrenades: number };
 /** First consumable item (potion of swiftness) — since supabase/migrations/0057_usable_slots.sql
  * this is derived from the two `usable` equip slots below (see UsableFields, potionsFromUsable),
@@ -124,8 +127,9 @@ type EquipmentFields = {
 
 /**
  * STU-?? (supabase/migrations/0057_usable_slots.sql): two "usable" equip slots, alongside
- * helm/armor/boots/extraAttack — each holds one stackable consumable slug + quantity (only
- * "potion_of_swiftness" exists today, see POTION_ITEM_SLUG below), same swap-in-place shape as
+ * helm/armor/boots/extraAttack — each holds one stackable consumable slug + quantity ("potion_of_swiftness"
+ * or, since 0061_flash_grenade_usable_slot.sql, "flash_grenade" — see POTION_ITEM_SLUG/
+ * FLASH_GRENADE_ITEM_SLUG below), same swap-in-place shape as
  * `equippedExtraAttack`/`equippedExtraAttackQty` just doubled up so a player isn't limited to one
  * consumable type equipped at once. A consumable only counts toward `potionsOfSwiftness`
  * (drinkable via H) while it sits in one of these two slots — owning a stack in `equipmentBag`
@@ -148,9 +152,13 @@ export const EQUIPMENT_BAG_SIZE = 8;
 export const SHURIKEN_ITEM_SLUG = "shuriken";
 
 /** Bag slug for the stackable potion-of-swiftness item (see
- * supabase/migrations/0057_usable_slots.sql) — the only slug the two `usable` equip slots ever
- * hold today. */
+ * supabase/migrations/0057_usable_slots.sql) — one of the two slugs the `usable` equip slots hold. */
 export const POTION_ITEM_SLUG = "potion_of_swiftness";
+
+/** Bag slug for the stackable flash-grenade item (see
+ * supabase/migrations/0061_flash_grenade_usable_slot.sql) — the other slug the `usable` equip slots
+ * hold, alongside POTION_ITEM_SLUG above. */
+export const FLASH_GRENADE_ITEM_SLUG = "flash_grenade";
 
 /** Pads/truncates a raw `equipment_bag` value to the fixed EQUIPMENT_BAG_SIZE — defensive against
  * a missing column (pre-migration) or a row whose array length drifted. */
@@ -181,6 +189,14 @@ function shurikenAmmoFromEquip(equippedExtraAttack: string | null, equippedExtra
 function potionsFromUsable(f: UsableFields): number {
   const q1 = f.equippedUsable1 === POTION_ITEM_SLUG ? Math.max(0, f.equippedUsable1Qty) : 0;
   const q2 = f.equippedUsable2 === POTION_ITEM_SLUG ? Math.max(0, f.equippedUsable2Qty) : 0;
+  return q1 + q2;
+}
+
+/** Usable flash-grenade count — same "only counts while equipped" rule as potionsFromUsable above,
+ * just for FLASH_GRENADE_ITEM_SLUG instead of POTION_ITEM_SLUG. */
+function flashGrenadesFromUsable(f: UsableFields): number {
+  const q1 = f.equippedUsable1 === FLASH_GRENADE_ITEM_SLUG ? Math.max(0, f.equippedUsable1Qty) : 0;
+  const q2 = f.equippedUsable2 === FLASH_GRENADE_ITEM_SLUG ? Math.max(0, f.equippedUsable2Qty) : 0;
   return q1 + q2;
 }
 
@@ -221,11 +237,12 @@ export type MyProfile = {
   /** Character look (see supabase/migrations/0031_character_selection.sql) — same Presence-only
    * path as cosmetic/color, no gameplay effect. */
   character: CharacterSlug;
-  /** STU-35: how many flash grenades this player can still use — see
-   * supabase/migrations/0037_flash_grenade_item.sql. Unlike cosmetic/character, this has a real
-   * gameplay effect, so *using* one (not just owning one) is validated by realtime-server, not
-   * just Postgres — see the "useItem" handler in realtime-server/src/server.ts. Private, like
-   * coins: not shown for other players. */
+  /** STU-35: how many flash grenades this player can still use — since
+   * supabase/migrations/0061_flash_grenade_usable_slot.sql derived from the two `usable` equip
+   * slots (see UsableFields, flashGrenadesFromUsable), same as potionsOfSwiftness below. Unlike
+   * cosmetic/character, this has a real gameplay effect, so *using* one (not just owning one) is
+   * validated by realtime-server, not just Postgres — see the "useItem" handler in
+   * realtime-server/src/server.ts. Private, like coins: not shown for other players. */
   flashGrenades: number;
   /** How many potions of swiftness this player can still drink — see
    * supabase/migrations/0055_potion_of_swiftness.sql. Same "ownership is Postgres, *use* is
@@ -303,6 +320,12 @@ export type MyProfile = {
    * this function alone has no visible effect.
    */
   useFlashGrenade: () => Promise<{ ok: true; remaining: number } | { ok: false; error: string }>;
+  /**
+   * Buys one flash grenade from the gunman for FLASH_GRENADE_COST coins (see src/lib/coins.ts and
+   * buy_flash_grenades in supabase/migrations/0061_flash_grenade_usable_slot.sql) — same atomic
+   * balance-check-and-grant RPC pattern as purchasePotionOfSwiftness.
+   */
+  purchaseFlashGrenades: () => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
    * Drinks one potion of swiftness (atomic check-and-decrement RPC, see
    * supabase/migrations/0055_potion_of_swiftness.sql — no coins involved, just stock, same shape as
@@ -438,7 +461,12 @@ export function useMyProfile(): MyProfile {
           cosmetic: data?.cosmetic ?? null,
           cosmeticExpiresAt: data?.cosmetic_expires_at ?? null,
           character: data?.character_slug ?? null,
-          flashGrenades: data?.flash_grenades ?? 0,
+          flashGrenades: flashGrenadesFromUsable({
+            equippedUsable1: data?.equipped_usable_1 ?? null,
+            equippedUsable1Qty: Number(data?.equipped_usable_1_qty ?? 0),
+            equippedUsable2: data?.equipped_usable_2 ?? null,
+            equippedUsable2Qty: Number(data?.equipped_usable_2_qty ?? 0),
+          }),
           potionsOfSwiftness: potionsFromUsable({
             equippedUsable1: data?.equipped_usable_1 ?? null,
             equippedUsable1Qty: Number(data?.equipped_usable_1_qty ?? 0),
@@ -545,7 +573,7 @@ export function useMyProfile(): MyProfile {
             cosmetic: p.cosmetic ?? null,
             cosmeticExpiresAt: p.cosmetic_expires_at ?? null,
             character: p.character_slug ?? null,
-            flashGrenades: p.flash_grenades ?? 0,
+            flashGrenades: flashGrenadesFromUsable({ equippedUsable1, equippedUsable1Qty, equippedUsable2, equippedUsable2Qty }),
             potionsOfSwiftness: potionsFromUsable({ equippedUsable1, equippedUsable1Qty, equippedUsable2, equippedUsable2Qty }),
             ballSkin: p.ball_skin ?? null,
             shurikenAmmo: shurikenAmmoFromEquip(equippedExtraAttack, equippedExtraAttackQty),
@@ -1058,16 +1086,34 @@ export function useMyProfile(): MyProfile {
   const useFlashGrenade = useCallback(async () => {
     if (!sb) return { ok: false as const, error: "Requires Supabase to be configured." };
     if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
-    // Same atomic check-and-decrement pattern as purchaseCosmetic (0027/0035), see
-    // supabase/migrations/0037_flash_grenade_item.sql — no coins involved, just stock.
+    // Same atomic check-and-decrement pattern as usePotionOfSwiftness below, see
+    // supabase/migrations/0061_flash_grenade_usable_slot.sql — no coins involved, just stock,
+    // decremented from whichever usable slot actually holds the grenade stack (slot 1 checked
+    // first).
     const { data, error } = await sb.rpc("consume_flash_grenade");
     if (error) {
       console.error("consume_flash_grenade", error);
       const message = error.message === "no_flash_grenades" ? "No flash grenades left." : `Failed: ${saveHint(error)}`;
       return { ok: false as const, error: message };
     }
-    const row = (Array.isArray(data) ? data[0] : data) as { flash_grenades?: number } | null;
-    const remaining = Number(row?.flash_grenades ?? Math.max(0, currentFlashGrenades - 1));
+    const row = (Array.isArray(data) ? data[0] : data) as
+      | {
+          equipped_usable_1?: string | null;
+          equipped_usable_1_qty?: number | string;
+          equipped_usable_2?: string | null;
+          equipped_usable_2_qty?: number | string;
+        }
+      | null;
+    const newEquippedUsable1 = row?.equipped_usable_1 ?? currentEquippedUsable1;
+    const newEquippedUsable1Qty = Number(row?.equipped_usable_1_qty ?? currentEquippedUsable1Qty);
+    const newEquippedUsable2 = row?.equipped_usable_2 ?? currentEquippedUsable2;
+    const newEquippedUsable2Qty = Number(row?.equipped_usable_2_qty ?? currentEquippedUsable2Qty);
+    const remaining = flashGrenadesFromUsable({
+      equippedUsable1: newEquippedUsable1,
+      equippedUsable1Qty: newEquippedUsable1Qty,
+      equippedUsable2: newEquippedUsable2,
+      equippedUsable2Qty: newEquippedUsable2Qty,
+    });
     saved.dispatchEvent(
       new CustomEvent("saved", {
         detail: {
@@ -1093,10 +1139,10 @@ export function useMyProfile(): MyProfile {
           equippedBoots: currentEquippedBoots,
           equippedExtraAttack: currentEquippedExtraAttack,
           equippedExtraAttackQty: currentEquippedExtraAttackQty,
-          equippedUsable1: currentEquippedUsable1,
-          equippedUsable1Qty: currentEquippedUsable1Qty,
-          equippedUsable2: currentEquippedUsable2,
-          equippedUsable2Qty: currentEquippedUsable2Qty,
+          equippedUsable1: newEquippedUsable1,
+          equippedUsable1Qty: newEquippedUsable1Qty,
+          equippedUsable2: newEquippedUsable2,
+          equippedUsable2Qty: newEquippedUsable2Qty,
           equipmentBag: currentEquipmentBag,
           equipmentBagQty: currentEquipmentBagQty,
         },
@@ -1118,7 +1164,6 @@ export function useMyProfile(): MyProfile {
     currentCosmetic,
     currentCosmeticExpiresAt,
     currentCharacter,
-    currentFlashGrenades,
     currentPotionsOfSwiftness,
     currentBallSkin,
     currentShurikenAmmo,
@@ -1326,6 +1371,115 @@ export function useMyProfile(): MyProfile {
     currentCosmeticExpiresAt,
     currentCharacter,
     currentFlashGrenades,
+    currentBallSkin,
+    currentShurikenAmmo,
+    currentEquippedHelm,
+    currentEquippedArmor,
+    currentEquippedBoots,
+    currentEquippedExtraAttack,
+    currentEquippedExtraAttackQty,
+    currentEquippedUsable1,
+    currentEquippedUsable1Qty,
+    currentEquippedUsable2,
+    currentEquippedUsable2Qty,
+    currentEquipmentBag,
+    currentEquipmentBagQty,
+  ]);
+
+  const purchaseFlashGrenades = useCallback(async () => {
+    if (!sb) return { ok: false as const, error: "Buying requires Supabase to be configured." };
+    if (!userId) return { ok: false as const, error: "Session expired — please sign in again." };
+    // One RPC: balance check, coin deduction and the stock grant (equipped usable slot if a grenade
+    // is already equipped there, otherwise the bag's "flash_grenade" stack) in one transaction (see
+    // supabase/migrations/0061_flash_grenade_usable_slot.sql), same atomic pattern as
+    // purchasePotionOfSwiftness — fails with `bag_full` when neither applies and the backpack has
+    // no room.
+    const { data, error } = await sb.rpc("buy_flash_grenades");
+    if (error) {
+      console.error("buy_flash_grenades", error);
+      const message =
+        error.message === "insufficient_coins"
+          ? "Not enough copper coins."
+          : error.message === "bag_full"
+            ? "Backpack is full."
+            : `Purchase failed: ${saveHint(error)}`;
+      return { ok: false as const, error: message };
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as
+      | {
+          equipped_usable_1?: string | null;
+          equipped_usable_1_qty?: number | string;
+          equipped_usable_2?: string | null;
+          equipped_usable_2_qty?: number | string;
+          equipment_bag?: (string | null)[] | null;
+          equipment_bag_qty?: (number | null)[] | null;
+          coins?: number | string;
+        }
+      | null;
+    const newEquippedUsable1 = row?.equipped_usable_1 ?? currentEquippedUsable1;
+    const newEquippedUsable1Qty = Number(row?.equipped_usable_1_qty ?? currentEquippedUsable1Qty);
+    const newEquippedUsable2 = row?.equipped_usable_2 ?? currentEquippedUsable2;
+    const newEquippedUsable2Qty = Number(row?.equipped_usable_2_qty ?? currentEquippedUsable2Qty);
+    const newBag = normalizeBag(row?.equipment_bag ?? currentEquipmentBag);
+    const newBagQty = normalizeQty(row?.equipment_bag_qty ?? currentEquipmentBagQty);
+    const newGrenades = flashGrenadesFromUsable({
+      equippedUsable1: newEquippedUsable1,
+      equippedUsable1Qty: newEquippedUsable1Qty,
+      equippedUsable2: newEquippedUsable2,
+      equippedUsable2Qty: newEquippedUsable2Qty,
+    });
+    const newCoins = Number(row?.coins ?? currentCoins);
+    saved.dispatchEvent(
+      new CustomEvent("saved", {
+        detail: {
+          userId,
+          nickname: currentNickname,
+          color: currentColor,
+          xp: currentXp,
+          ballsShot: currentBallsShot,
+          fistSwings: currentFistSwings,
+          kills: currentKills,
+          deaths: currentDeaths,
+          mobKills: currentMobKills,
+          coins: newCoins,
+          cosmetic: currentCosmetic,
+          cosmeticExpiresAt: currentCosmeticExpiresAt,
+          character: currentCharacter,
+          flashGrenades: newGrenades,
+          potionsOfSwiftness: currentPotionsOfSwiftness,
+          ballSkin: currentBallSkin,
+          shurikenAmmo: currentShurikenAmmo,
+          equippedHelm: currentEquippedHelm,
+          equippedArmor: currentEquippedArmor,
+          equippedBoots: currentEquippedBoots,
+          equippedExtraAttack: currentEquippedExtraAttack,
+          equippedExtraAttackQty: currentEquippedExtraAttackQty,
+          equippedUsable1: newEquippedUsable1,
+          equippedUsable1Qty: newEquippedUsable1Qty,
+          equippedUsable2: newEquippedUsable2,
+          equippedUsable2Qty: newEquippedUsable2Qty,
+          equipmentBag: newBag,
+          equipmentBagQty: newBagQty,
+        },
+      }),
+    );
+    return { ok: true as const };
+  }, [
+    sb,
+    userId,
+    currentNickname,
+    currentColor,
+    currentXp,
+    currentBallsShot,
+    currentFistSwings,
+    currentKills,
+    currentDeaths,
+    currentMobKills,
+    currentCoins,
+    currentCosmetic,
+    currentCosmeticExpiresAt,
+    currentCharacter,
+    currentPotionsOfSwiftness,
     currentBallSkin,
     currentShurikenAmmo,
     currentEquippedHelm,
@@ -2008,7 +2162,12 @@ export function useMyProfile(): MyProfile {
             cosmetic: currentCosmetic,
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
-            flashGrenades: currentFlashGrenades,
+            flashGrenades: flashGrenadesFromUsable({
+              equippedUsable1: newEquippedUsable1,
+              equippedUsable1Qty: newEquippedUsable1Qty,
+              equippedUsable2: newEquippedUsable2,
+              equippedUsable2Qty: newEquippedUsable2Qty,
+            }),
             potionsOfSwiftness: potionsFromUsable({
               equippedUsable1: newEquippedUsable1,
               equippedUsable1Qty: newEquippedUsable1Qty,
@@ -2048,7 +2207,6 @@ export function useMyProfile(): MyProfile {
       currentCosmetic,
       currentCosmeticExpiresAt,
       currentCharacter,
-      currentFlashGrenades,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -2105,7 +2263,12 @@ export function useMyProfile(): MyProfile {
             cosmetic: currentCosmetic,
             cosmeticExpiresAt: currentCosmeticExpiresAt,
             character: currentCharacter,
-            flashGrenades: currentFlashGrenades,
+            flashGrenades: flashGrenadesFromUsable({
+              equippedUsable1: newEquippedUsable1,
+              equippedUsable1Qty: newEquippedUsable1Qty,
+              equippedUsable2: newEquippedUsable2,
+              equippedUsable2Qty: newEquippedUsable2Qty,
+            }),
             potionsOfSwiftness: potionsFromUsable({
               equippedUsable1: newEquippedUsable1,
               equippedUsable1Qty: newEquippedUsable1Qty,
@@ -2145,7 +2308,6 @@ export function useMyProfile(): MyProfile {
       currentCosmetic,
       currentCosmeticExpiresAt,
       currentCharacter,
-      currentFlashGrenades,
       currentBallSkin,
       currentShurikenAmmo,
       currentEquippedHelm,
@@ -2205,6 +2367,7 @@ export function useMyProfile(): MyProfile {
     donateToFountain,
     purchaseCharacter,
     useFlashGrenade,
+    purchaseFlashGrenades,
     usePotionOfSwiftness,
     purchasePotionOfSwiftness,
     saveBallSkin,

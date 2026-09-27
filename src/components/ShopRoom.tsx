@@ -5,6 +5,7 @@ import { CosmeticOverlay } from "@/components/CosmeticOverlay";
 import { RoomStage, type RoomZone } from "@/components/RoomStage";
 import {
   CHARACTER_CHANGE_COST,
+  FLASH_GRENADE_COST,
   FLOWER_COST,
   FLOWER_HOURS,
   POTION_OF_SWIFTNESS_COST,
@@ -108,6 +109,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     character,
     shurikenAmmo,
     potionsOfSwiftness,
+    flashGrenades,
     equippedHelm,
     equippedArmor,
     equippedBoots,
@@ -117,6 +119,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     purchaseShurikenAmmo,
     purchaseEquipment,
     purchasePotionOfSwiftness,
+    purchaseFlashGrenades,
   } = useMyProfile();
   const [floristOpen, setFloristOpen] = useState(false);
   const [activeItem, setActiveItem] = useState<CosmeticSlug | null>(null);
@@ -257,6 +260,19 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
     setToast(`+${SHURIKEN_AMMO_PACK} shurikens!`);
   }, [gunmanBusy, purchaseShurikenAmmo]);
 
+  const buyFlashGrenade = useCallback(async () => {
+    if (gunmanBusy) return;
+    setGunmanBusy(true);
+    setGunmanError(null);
+    const result = await purchaseFlashGrenades();
+    setGunmanBusy(false);
+    if (!result.ok) {
+      setGunmanError(result.error);
+      return;
+    }
+    setToast("Flash grenade added to your bag!");
+  }, [gunmanBusy, purchaseFlashGrenades]);
+
   // Only gear slots (EQUIPMENT_ITEMS never uses "extraAttack" — see its doc comment in
   // realtime-server/shared/constants.ts), so this deliberately excludes it rather than widening to
   // the full EquipSlot union.
@@ -301,6 +317,7 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
   const canAffordCharacter = coins >= CHARACTER_CHANGE_COST;
   const canAffordShurikens = coins >= SHURIKEN_AMMO_COST;
   const canAffordPotion = coins >= POTION_OF_SWIFTNESS_COST;
+  const canAffordFlashGrenade = coins >= FLASH_GRENADE_COST;
 
   const zones = useMemo(() => SHOP_ZONES, []);
 
@@ -485,6 +502,29 @@ export function ShopRoom({ roomSlug }: { roomSlug: string }) {
               >
                 {gunmanBusy ? "Processing…" : `Buy ${SHURIKEN_AMMO_PACK} shurikens`}
               </button>
+            </div>
+            <div className="mb-5 border-t border-zinc-800 pt-4">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-zinc-200">Flash grenades</h3>
+                <span className="flex items-center gap-1 rounded-full bg-orange-500/20 px-2.5 py-1 text-xs font-semibold text-orange-300">
+                  {FLASH_GRENADE_COST} copper coins
+                </span>
+              </div>
+              <p className="mb-3 text-center text-sm text-zinc-400">
+                Blinds the whole room with a full-screen flash (press G). You have{" "}
+                <span className="font-semibold text-zinc-100">{flashGrenades}</span> equipped — buying more tops up
+                an equipped stack, otherwise it drops into your backpack (equip it from Tab).
+              </p>
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => void buyFlashGrenade()}
+                  disabled={gunmanBusy || !canAffordFlashGrenade}
+                  className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {gunmanBusy ? "Processing…" : "Buy 1 flash grenade"}
+                </button>
+              </div>
             </div>
             <div className="border-t border-zinc-800 pt-4">
               <h3 className="mb-1 text-center text-sm font-semibold text-zinc-200">Pistols</h3>

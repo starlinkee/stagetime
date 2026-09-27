@@ -21,6 +21,7 @@ import { MAX_DM_BODY, useConversations, useThread } from "@/lib/useDirectMessage
 import { useFriends } from "@/lib/useFriends";
 import {
   BALL_SKINS,
+  FLASH_GRENADE_ITEM_SLUG,
   POTION_ITEM_SLUG,
   SHURIKEN_ITEM_SLUG,
   safeBallSkin,
@@ -903,19 +904,21 @@ function equipBonusLabel(item: (typeof EQUIPMENT_ITEMS)[number]): string {
   return "";
 }
 
-/** Display name for a backpack slot's slug — EQUIPMENT_ITEMS covers gear, plus the two stackable
+/** Display name for a backpack slot's slug — EQUIPMENT_ITEMS covers gear, plus the three stackable
  * non-gear items (shurikens, see SHURIKEN_ITEM_SLUG in useProfile.ts and
  * supabase/migrations/0045_shuriken_bag_item.sql; potions of swiftness, see POTION_ITEM_SLUG and
- * supabase/migrations/0058_usable_slots.sql). */
+ * supabase/migrations/0058_usable_slots.sql; flash grenades, see FLASH_GRENADE_ITEM_SLUG and
+ * supabase/migrations/0061_flash_grenade_usable_slot.sql). */
 function bagItemName(slug: string): string {
   if (slug === SHURIKEN_ITEM_SLUG) return "Shurikens";
   if (slug === POTION_ITEM_SLUG) return "Potion of swiftness";
+  if (slug === FLASH_GRENADE_ITEM_SLUG) return "Flash grenades";
   return EQUIPMENT_ITEMS.find((i) => i.slug === slug)?.name ?? slug;
 }
 
-/** Icon for a backpack/usable-slot slug, or null to fall back to the plain text label — only
- * consumables have art today (a blue potion bottle from the modern-items-pack sprite sheet, see
- * public/map/items/modern-items-pack/sliced/bottles), gear stays text-only. */
+/** Icon for a backpack/usable-slot slug, or null to fall back to the plain text label — only the
+ * potion has art today (a blue potion bottle from the modern-items-pack sprite sheet, see
+ * public/map/items/modern-items-pack/sliced/bottles); gear and the flash grenade stay text-only. */
 function bagItemIconSrc(slug: string): string | null {
   if (slug === POTION_ITEM_SLUG) return "/map/items/modern-items-pack/sliced/bottles/bottle_blue_cap.png";
   return null;
@@ -1074,8 +1077,9 @@ function ExtraAttackSlotBox({
 /**
  * 0058: one of the two usable equip slots — same drag-to-equip gesture as ExtraAttackSlotBox
  * above, but generalized to a caller-chosen index (1 or 2) instead of a single fixed slot, since a
- * player can equip up to two consumable stacks at once (only "potion_of_swiftness" exists today,
- * see POTION_ITEM_SLUG in useProfile.ts and supabase/migrations/0058_usable_slots.sql).
+ * player can equip up to two consumable stacks at once ("potion_of_swiftness" or, since
+ * supabase/migrations/0061_flash_grenade_usable_slot.sql, "flash_grenade" — see POTION_ITEM_SLUG/
+ * FLASH_GRENADE_ITEM_SLUG in useProfile.ts).
  */
 function UsableSlotBox({
   index,
@@ -3524,8 +3528,8 @@ export function RoomStage({
       // is an attack item, unlike the emote wheel above which deliberately isn't. Ownership is
       // checked client-side first (profileRef.current.flashGrenades, an optimistic read that can
       // be briefly stale — harmless, see useFlashGrenade's doc comment) via the atomic Postgres
-      // RPC in supabase/migrations/0037_flash_grenade_item.sql; only on that RPC's success do we
-      // ask realtime-server to actually broadcast the room-wide effect.
+      // RPC in supabase/migrations/0061_flash_grenade_usable_slot.sql; only on that RPC's success
+      // do we ask realtime-server to actually broadcast the room-wide effect.
       if (e.code === "KeyG" && !e.repeat) {
         if (!myDead && !frozenByWork()) {
           const p = profileRef.current;

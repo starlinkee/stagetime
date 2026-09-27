@@ -97,4 +97,11 @@ export const ITEM_ENCYCLOPEDIA: EncyclopediaEntry[] = [
     iconSrc: "/map/items/modern-items-pack/sliced/bottles/bottle_blue_cap.png",
     description: "+50% move speed for 1 minute after drinking (press H). Sold by the Chemist in the Shop.",
   },
+  {
+    slug: "flash_grenade",
+    name: "Flash grenade",
+    category: "Consumables",
+    iconSrc: null,
+    description: "Blinds the whole room with a full-screen flash when thrown (press G). Sold by the Gunman in the Shop.",
+  },
 ];
