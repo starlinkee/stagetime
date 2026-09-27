@@ -6,6 +6,7 @@ import { AuthButton } from "@/components/AuthButton";
 import { HowToPlayButton } from "@/components/HowToPlayButton";
 import { FirstVisitGuideOverlay } from "@/components/FirstVisitGuideOverlay";
 import { AllIdeasLink, IdeaBox } from "@/components/IdeaBox";
+import { PartyButton } from "@/components/PartyButton";
 import { PresenceBar } from "@/components/PresenceBar";
 import { VersionWatcher } from "@/components/VersionWatcher";
 import { WelcomeGiftOverlay } from "@/components/WelcomeGiftOverlay";
@@ -51,6 +52,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <AboutGameButton />
             <HowToPlayButton />
             <IdeaBox />
+            <PartyButton />
             <AuthButton />
           </div>
         </header>
