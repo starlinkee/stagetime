@@ -12,7 +12,10 @@ Kroki:
 1. Wylistuj backlog Linearu posortowany od najwyższego priorytetu i wybierz pierwsze zadanie, które
    jeszcze nie ma solidnego, szczegółowego opisu (np. jednoliniowy tytuł bez kontekstu, bez
    kryteriów akceptacji, bez wskazania których plików/modułów dotyczy). Zaraz po wybraniu tego
-   zadania zaznacz je w Linearze jako In Progress, zanim zaczniesz cokolwiek dalej robić.
+   zadania zaznacz je w Linearze jako In Progress, zanim zaczniesz cokolwiek dalej robić. Sprawdź
+   też, czy zadanie ma przypisany Project pasujący do obszaru funkcjonalności, którego dotyczy
+   (np. realtime-server/multiplayer, XP/ekonomia, UI/dashboard); jeśli nie ma pasującego Projectu,
+   stwórz nowy o odpowiedniej nazwie i przypisz do niego zadanie.
 2. Przeczytaj istniejący opis zadania oraz komentarze, jeśli są. Jeżeli czegoś nie wiesz, a jest to
    potrzebne, aby napisać dobry opis (np. dokładne zachowanie, zakres, priorytety UX, czy dotyczy
    `realtime-server` czy `src/`), zadaj użytkownikowi konkretne pytania — nie zgaduj i nie
@@ -25,6 +28,7 @@ Kroki:
 4. Zaktualizuj opis zadania w Linearze tym nowym tekstem (zastąp stary opis, nie dopisuj się do
    niego chaotycznie — chyba że użytkownik prosi o dopisanie). Nie implementuj samego zadania —
    to polecenie zajmuje się tylko doprecyzowaniem opisu.
-5. Gdy opis jest gotowy i zapisany, zaznacz zadanie w Linearze jako Done.
+5. Gdy opis jest gotowy i zapisany, zaznacz zadanie w Linearze jako Done i dodaj do niego label
+   "done by claude" (jeśli ten label jeszcze nie istnieje w workspace, stwórz go).
 6. Na koniec pokaż użytkownikowi krótkie podsumowanie: które zadanie wybrałeś i co zmieniłeś
    w opisie.

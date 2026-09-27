@@ -7,7 +7,10 @@ strony. Dla każdego zadania:
 1. Jeśli widzisz, że zadanie zostało już faktycznie zrobione (kod/repo to potwierdza), oznacz je
    jako takie w Linearze i przejdź do następnego — nie wykonuj go od nowa.
 2. W przeciwnym wypadku najpierw ustaw status zadania na In Progress, a dopiero potem zacznij je
-   wykonywać.
+   wykonywać. Zanim zaczniesz pracę, sprawdź czy zadanie ma przypisany Project w Linearze pasujący
+   do obszaru funkcjonalności, którego dotyczy (np. realtime-server/multiplayer, XP/ekonomia,
+   UI/dashboard). Jeśli nie ma pasującego Projectu, stwórz nowy o odpowiedniej nazwie i przypisz
+   do niego zadanie.
 3. Pracuj na krótkotrwałym branchu utworzonym z `dev` (zgodnie z wyjątkiem dla automatycznego
    przetwarzania zadań z Linear w `AGENTS.md` — branch per zadanie, nie na stałe). Gdy zadanie jest
    gotowe, zmerguj branch z powrotem do `dev` i usuń go.
@@ -15,7 +18,9 @@ strony. Dla każdego zadania:
    zbadał ten konkretny konflikt i zaproponował/rozwiązał go. Zlicz ten przypadek wraz ze
    szczegółami (zadanie, plik(i), na czym polegał konflikt, jak został rozwiązany) do raportu
    końcowego.
-5. Jeśli natrafisz na zadanie wymagające wyjaśnienia od użytkownika, pomiń je (zostaw w backlogu,
+5. Gdy zadanie jest ukończone i zmergowane: zaznacz je w Linearze jako Done i dodaj do niego label
+   "done by claude" (jeśli ten label jeszcze nie istnieje w workspace, stwórz go).
+6. Jeśli natrafisz na zadanie wymagające wyjaśnienia od użytkownika, pomiń je (zostaw w backlogu,
    nie zaznaczaj jako In Progress) i zanotuj je do raportu końcowego zamiast pytać w trakcie pętli.
 
 Zatrzymaj pętlę, gdy nie zostaną już żadne proste zadania nienadające się do samodzielnego
