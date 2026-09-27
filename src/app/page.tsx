@@ -1,7 +1,9 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { CosmeticOverlay } from "@/components/CosmeticOverlay";
 import { HOUSE_SIZE } from "@/components/LobbyDecor";
 import { type RoomZone, RoomStage } from "@/components/RoomStage";
+import { ITEM_ENCYCLOPEDIA, type EncyclopediaCategory } from "@/lib/itemEncyclopedia";
 import { HOUSE_ROOM_SLUG, ROOMS } from "@/lib/rooms";
 import { getSupabase } from "@/lib/supabase";
 import { useMyProfile } from "@/lib/useProfile";
@@ -163,9 +165,31 @@ const fountainZone: RoomZone = {
   hidden: true,
 };
 
+// Item Encyclopedia (STU-82): a floor button (kind: "action", same pattern as the Fountain above)
+// that opens a browse-only dialog listing every item's icon and description — no room to walk
+// into, no server-side authoritative state, just a client-side reference. Mirrors the Fountain's
+// corner placement, opposite the lobby2 portal.
+export const ENCYCLOPEDIA_ZONE_SLUG = "item-encyclopedia";
+const ENCYCLOPEDIA_ZONE_W = 220;
+const ENCYCLOPEDIA_ZONE_H = 140;
+const encyclopediaZone: RoomZone = {
+  slug: ENCYCLOPEDIA_ZONE_SLUG,
+  name: "Item Encyclopedia",
+  kind: "action",
+  x: 80,
+  y: worldH(true) - ENCYCLOPEDIA_ZONE_H - 80,
+  w: ENCYCLOPEDIA_ZONE_W,
+  h: ENCYCLOPEDIA_ZONE_H,
+  color: "#4338ca",
+  noReward: true,
+};
+
+const ENCYCLOPEDIA_CATEGORIES: EncyclopediaCategory[] = ["Cosmetics", "Weapons", "Gear", "Consumables"];
+
 const LOBBY_ZONES: RoomZone[] = [
   fountainZone,
   housePortalZone,
+  encyclopediaZone,
   ...pomodoroZones,
   ...stopwatchZones,
   ...shopZones,
@@ -193,6 +217,7 @@ export default function Home() {
   const [fundTotal, setFundTotal] = useState<number | null>(null);
   const [myDonated, setMyDonated] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [encyclopediaOpen, setEncyclopediaOpen] = useState(false);
 
   useEffect(() => {
     if (!toast) return;
@@ -260,8 +285,12 @@ export default function Home() {
       setFountainAmount("0");
       setFountainError(null);
       setFountainOpen(true);
+    } else if (slug === ENCYCLOPEDIA_ZONE_SLUG) {
+      setEncyclopediaOpen(true);
     }
   }, []);
+
+  const closeEncyclopedia = useCallback(() => setEncyclopediaOpen(false), []);
 
   const closeFountain = useCallback(() => {
     if (fountainBusy) return;
@@ -383,6 +412,61 @@ export default function Home() {
               </div>
             </>
           )}
+        </div>
+      </div>
+    )}
+    {encyclopediaOpen && (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Item Encyclopedia"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      >
+        <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-zinc-100">Item Encyclopedia</h2>
+            <button
+              type="button"
+              onClick={closeEncyclopedia}
+              className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-900"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex flex-col gap-6 overflow-y-auto pr-1">
+            {ENCYCLOPEDIA_CATEGORIES.map((category) => {
+              const entries = ITEM_ENCYCLOPEDIA.filter((e) => e.category === category);
+              if (entries.length === 0) return null;
+              return (
+                <div key={category}>
+                  <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500">{category}</h3>
+                  <div className="flex flex-col gap-3">
+                    {entries.map((entry) => (
+                      <div
+                        key={entry.slug}
+                        className="flex items-center gap-4 rounded-xl border border-zinc-700 px-4 py-3"
+                      >
+                        <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-zinc-700 bg-zinc-900">
+                          {entry.slug === "sparkles" ? (
+                            <CosmeticOverlay cosmetic="sparkles" variant="preview" />
+                          ) : entry.iconSrc ? (
+                            // eslint-disable-next-line @next/next/no-img-element -- small fixed-size encyclopedia thumbnail, not worth next/image's overhead
+                            <img src={entry.iconSrc} alt="" className="h-9 w-9 object-contain" />
+                          ) : (
+                            <span className="text-sm font-semibold text-zinc-500">{entry.name.charAt(0)}</span>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-zinc-100">{entry.name}</p>
+                          <p className="text-xs text-zinc-400">{entry.description}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     )}
