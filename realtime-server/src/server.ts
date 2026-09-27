@@ -299,6 +299,9 @@ type PomodoroInstance = {
    * (`join_rejected`/"room_starting") — see DOOR_REOPEN_MS's doc comment in shared/constants.ts.
    * 0 for a type's very first-ever instance (never locked). */
   joinableAt: number;
+  /** STU-73: room-population XP/coin bonus multiplier, frozen at the work->break transition (see
+   * that block below) from this instance's own connection count at that instant — 1 until then. */
+  rewardMultiplier: number;
 };
 /** Keyed by instance slug, same key `rooms` groups connections under. */
 const pomodoroInstances = new Map<string, PomodoroInstance>();
@@ -317,7 +320,7 @@ function ensureOpenInstance(typeSlug: string): PomodoroInstance {
   const existing = existingSlug ? pomodoroInstances.get(existingSlug) : undefined;
   if (existing) return existing;
   const slug = newInstanceSlug(typeSlug);
-  const instance: PomodoroInstance = { slug, typeSlug, state: "waiting", startedAt: null, joinableAt: 0 };
+  const instance: PomodoroInstance = { slug, typeSlug, state: "waiting", startedAt: null, joinableAt: 0, rewardMultiplier: 1 };
   pomodoroInstances.set(slug, instance);
   openInstanceByType.set(typeSlug, slug);
   return instance;
@@ -874,6 +877,31 @@ function persistPosition(conn: Conn) {
  * paid out at DUMMY_XP_REWARD/DUMMY_GOLD_REWARD instead of the regular KILL_XP_REWARD/
  * KILL_GOLD_REWARD (see route.ts, which picks the payout based on this flag).
  */
+/**
+ * STU-73: pays out the room-population XP/coin bonus once a pomodoro session's work phase ends —
+ * mirrors reportCombatEvent. realtime-server is the only process that ever knows how many players
+ * were actually in a given instance (`rooms.get(instance.slug)`, see the work->break transition
+ * above), so it's the only trusted source for `multiplier`; the internal endpoint's own RPC clamps
+ * it again regardless (defense-in-depth, same "never trust a cross-process input at face value" as
+ * everywhere else this bridge is used). Idempotent per (user, room, session) on the Postgres side,
+ * so it's safe to fire alongside the client's own unmultiplied room_session_complete call in either
+ * order.
+ */
+async function reportSessionBonus(entries: Array<{ userId: string; room: string; cycle: number; multiplier: number }>) {
+  if (!PERSISTENCE_ENABLED || entries.length === 0) return;
+  try {
+    const url = new URL("/api/internal/room-session-bonus", PERSISTENCE_API_URL!);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` },
+      body: JSON.stringify({ entries }),
+    });
+    if (!res.ok) console.error(`reportSessionBonus: ${res.status} ${res.statusText} from ${url}`);
+  } catch (err) {
+    console.error("reportSessionBonus failed", err);
+  }
+}
+
 async function reportCombatEvent(killerUserId: string | null, victimUserId: string | null, enemyKill = false, dummyKill = false) {
   if (!PERSISTENCE_ENABLED || (!killerUserId && !victimUserId)) return;
   try {
@@ -1384,6 +1412,7 @@ wss.on("connection", (ws, req) => {
         state: "waiting",
         startedAt: null,
         joinableAt: now + DOOR_REOPEN_MS,
+        rewardMultiplier: 1,
       });
       openInstanceByType.set(instance.typeSlug, freshSlug);
       return;
@@ -1513,6 +1542,24 @@ setInterval(() => {
     const elapsed = now - instance.startedAt;
     if (instance.state === "work" && elapsed >= workMs) {
       instance.state = "break";
+      // STU-73: freeze this run's room-population XP/coin bonus the instant work ends, from this
+      // instance's own connection count at that exact moment (rooms.get(instance.slug) — the only
+      // place a trustworthy count exists, see reportSessionBonus's doc comment) — +10% per player
+      // beyond the first, capped at +90% for a 10+ player room. The base (unmultiplied) reward still
+      // flows through the client's own room_session_complete call unchanged; this only tops it up,
+      // server-to-server, for players who actually have an account (guests have no profile to pay).
+      const population = rooms.get(instance.slug)?.size ?? 1;
+      const multiplier = 1 + 0.1 * Math.min(Math.max(population - 1, 0), 9);
+      instance.rewardMultiplier = multiplier;
+      if (multiplier > 1 && instance.startedAt !== null) {
+        const conns = rooms.get(instance.slug);
+        if (conns) {
+          const entries = [...conns]
+            .filter((c): c is Conn & { userId: string } => c.userId !== null)
+            .map((c) => ({ userId: c.userId, room: instance.typeSlug, cycle: instance.startedAt as number, multiplier }));
+          void reportSessionBonus(entries);
+        }
+      }
       continue;
     }
     if (instance.state === "break" && elapsed >= workMs + breakMs) {
@@ -1866,7 +1913,15 @@ setInterval(() => {
       at: Date.now(),
       ...(dummy ? { dummy } : {}),
       ...(instance && cfg
-        ? { pomodoro: { state: instance.state, startedAt: instance.startedAt, workMin: cfg.workMin, breakMin: cfg.breakMin } }
+        ? {
+            pomodoro: {
+              state: instance.state,
+              startedAt: instance.startedAt,
+              workMin: cfg.workMin,
+              breakMin: cfg.breakMin,
+              multiplier: instance.rewardMultiplier,
+            },
+          }
         : {}),
       ...(isLobbySlug(slug) ? { doors: doorStates, lamps: Object.fromEntries(roomLamps.get(slug) ?? []) } : {}),
     };

@@ -1678,8 +1678,13 @@ export function RoomStage({
     handledStartedAtRef.current = pomodoroSession.startedAt;
     setShowCongrats(true);
     if (userId) {
-      const dXp = xpForMinutes(phase.workMin);
-      const dCoins = coinsForMinutes(phase.workMin);
+      // STU-73: `multiplier` (frozen server-side at the instant work ended — see
+      // PomodoroSessionState's doc comment) only ever scales this *displayed* total; the actual
+      // credit is split base (room_session_complete below, unmultiplied) + bonus top-up
+      // (server-to-server via /api/internal/room-session-bonus), never a client-computed amount.
+      const multiplier = pomodoroSession.multiplier || 1;
+      const dXp = Math.round(xpForMinutes(phase.workMin) * multiplier * 10) / 10;
+      const dCoins = Math.round(coinsForMinutes(phase.workMin) * multiplier * 10) / 10;
       void getSupabase()
         ?.rpc("room_session_complete", { p_room: roomSlug, p_cycle: pomodoroSession.startedAt })
         .then(({ data, error }) => {
@@ -4280,6 +4285,11 @@ export function RoomStage({
       <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-zinc-950/90 text-center backdrop-blur-sm">
         <p className="text-4xl font-bold text-amber-400">🎉 Congratulations!</p>
         <p className="text-lg text-zinc-200">Work session complete — heading back to the lobby…</p>
+        {pomodoroSession && pomodoroSession.multiplier > 1 && (
+          <p className="text-sm font-medium text-emerald-400">
+            Full room bonus: +{Math.round((pomodoroSession.multiplier - 1) * 100)}% XP and coins
+          </p>
+        )}
       </div>
     )}
     {entryError && (
