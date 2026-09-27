@@ -879,22 +879,27 @@ function persistPosition(conn: Conn) {
  */
 /**
  * STU-73: pays out the room-population XP/coin bonus once a pomodoro session's work phase ends —
- * mirrors reportCombatEvent. realtime-server is the only process that ever knows how many players
- * were actually in a given instance (`rooms.get(instance.slug)`, see the work->break transition
- * above), so it's the only trusted source for `multiplier`; the internal endpoint's own RPC clamps
- * it again regardless (defense-in-depth, same "never trust a cross-process input at face value" as
- * everywhere else this bridge is used). Idempotent per (user, room, session) on the Postgres side,
- * so it's safe to fire alongside the client's own unmultiplied room_session_complete call in either
- * order.
+ * mirrors reportCombatEvent. realtime-server is the only process that ever knows who was actually
+ * in a given instance (`rooms.get(instance.slug)`, see the work->break transition above), so it's
+ * the only trusted source for both `multiplier` (population-based) and `roster` (every account'd
+ * userId present, used Postgres-side to add a bigger top-up for whichever of them share a party —
+ * see admin_award_room_session_bonus in supabase/migrations/0060_room_session_population_bonus.sql,
+ * which clamps/recomputes from these regardless, same "never trust a cross-process input at face
+ * value" as everywhere else this bridge is used). Idempotent per (user, room, session) on the
+ * Postgres side, so it's safe to fire alongside the client's own unmultiplied room_session_complete
+ * call in either order.
  */
-async function reportSessionBonus(entries: Array<{ userId: string; room: string; cycle: number; multiplier: number }>) {
+async function reportSessionBonus(
+  entries: Array<{ userId: string; room: string; cycle: number; multiplier: number }>,
+  roster: string[],
+) {
   if (!PERSISTENCE_ENABLED || entries.length === 0) return;
   try {
     const url = new URL("/api/internal/room-session-bonus", PERSISTENCE_API_URL!);
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${REALTIME_INTERNAL_SECRET}` },
-      body: JSON.stringify({ entries }),
+      body: JSON.stringify({ entries, roster }),
     });
     if (!res.ok) console.error(`reportSessionBonus: ${res.status} ${res.statusText} from ${url}`);
   } catch (err) {
@@ -1554,10 +1559,22 @@ setInterval(() => {
       if (multiplier > 1 && instance.startedAt !== null) {
         const conns = rooms.get(instance.slug);
         if (conns) {
-          const entries = [...conns]
-            .filter((c): c is Conn & { userId: string } => c.userId !== null)
-            .map((c) => ({ userId: c.userId, room: instance.typeSlug, cycle: instance.startedAt as number, multiplier }));
-          void reportSessionBonus(entries);
+          // STU-73: `roster` (every account'd userId present, same set `entries` is built from) rides
+          // along once per batch — the party half of the bonus needs to know who ELSE was in the
+          // room to check for a shared party, and party membership only exists in Postgres
+          // (party_members, see supabase/migrations/0059_parties.sql), so that check happens inside
+          // admin_award_room_session_bonus itself rather than realtime-server round-tripping a party
+          // lookup first. This population-only `multiplier` is still what's shown room-wide (see
+          // PomodoroSessionState.multiplier) — the party top-up is personal, computed and credited
+          // entirely server-to-server, never broadcast.
+          const roster = [...conns].map((c) => c.userId).filter((id): id is string => id !== null);
+          const entries = roster.map((userId) => ({
+            userId,
+            room: instance.typeSlug,
+            cycle: instance.startedAt as number,
+            multiplier,
+          }));
+          void reportSessionBonus(entries, roster);
         }
       }
       continue;
